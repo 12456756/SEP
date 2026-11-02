@@ -1,4 +1,5 @@
 import { Decimal } from "@prisma/client/runtime/library";
+import type { ModelBillingSnapshot } from 'shared';
 
 /** 赠送额度来源，用于对账时区分是哪条链路产生的额度。 */
 export type CreditSourceType = "subscription" | "order" | "migration";
@@ -25,6 +26,8 @@ export interface ChargeUsageParams {
   modelId: string;
   inputTokens: number;
   outputTokens: number;
+  /** 服务端在模型调用开始时冻结的中转倍率与模型免费状态。 */
+  billingSnapshot?: ModelBillingSnapshot;
 }
 
 export interface ChargeUsageResult {

@@ -128,6 +128,15 @@ export default function ModelManagement() {
     }
   };
 
+  const toggleFree = async (id: string, isFree: boolean, label: string) => {
+    try {
+      await updateModel.mutateAsync({ id, isFree });
+      toast.success(`${label} 活动免费已${isFree ? "开启" : "关闭"}`);
+    } catch (err) {
+      toast.error(`操作失败：${(err as Error).message}`);
+    }
+  };
+
   const handleTest = async (modelId: string, label: string) => {
     try {
       const result = await testModel.mutateAsync(modelId);
@@ -145,7 +154,7 @@ export default function ModelManagement() {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="text-base font-semibold text-fg-base">上游会话模型</h2>
-              <p className="mt-1 text-sm text-fg-muted">同步后仅显示上游当前支持的模型，启用后可供用户选择。</p>
+              <p className="mt-1 text-sm text-fg-muted">同步后仅显示上游当前支持的模型；开启活动免费后由平台承担模型费用，关闭后恢复正常中转倍率。</p>
             </div>
             <Button variant="primary" onClick={handleSync} disabled={isSyncing}>
               <RefreshCw className={`h-4 w-4 ${isSyncing ? "animate-spin" : ""}`} />
@@ -228,6 +237,9 @@ export default function ModelManagement() {
                     启用
                   </th>
                   <th className="px-4 py-3 text-center text-xs font-medium text-fg-muted">
+                    活动免费
+                  </th>
+                  <th className="px-4 py-3 text-center text-xs font-medium text-fg-muted">
                     操作
                   </th>
                 </tr>
@@ -235,7 +247,7 @@ export default function ModelManagement() {
               <tbody className="divide-y divide-border">
                 {filteredModels.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-4 py-8 text-center text-fg-muted">
+                    <td colSpan={7} className="px-4 py-8 text-center text-fg-muted">
                       {searchQuery || vendorFilter !== "all" || statusFilter !== "all"
                         ? "没有符合条件的模型"
                         : "上游暂未返回模型，可稍后重新同步"}
@@ -301,6 +313,20 @@ export default function ModelManagement() {
                             disabled={model.isStale || updateModel.isPending}
                             onChange={(e) =>
                               toggle(model.id, e.target.checked, model.label)
+                            }
+                          />
+                        </td>
+
+                        {/* 活动免费开关 */}
+                        <td className="px-4 py-3 text-center">
+                          <input
+                            type="checkbox"
+                            aria-label={`活动免费 ${model.label}`}
+                            className="h-4 w-4 cursor-pointer accent-primary"
+                            checked={model.isFree}
+                            disabled={model.isStale || updateModel.isPending}
+                            onChange={(e) =>
+                              toggleFree(model.id, e.target.checked, model.label)
                             }
                           />
                         </td>

@@ -46,6 +46,10 @@ export interface EnterpriseModelConfig {
 export interface PlatformModel {
   modelId: string;
   label: string;
+  displayName: string;
+  billingMultiplier: string | null;
+  discountLabel: string;
+  isFree: boolean;
   vendor: string | null;
   category: string | null;
   contextLength: number | null;

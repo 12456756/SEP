@@ -6,7 +6,8 @@ import {
 } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
 import { SettingService } from "../setting/setting.service";
-import { SETTING_KEYS, hasPricing } from "shared";
+import { SETTING_KEYS, hasPricing, type UpdatePlatformModelDto } from "shared";
+import { ModelBillingService } from './model-billing.service';
 
 /** 上游返回的模型条目（标准化后）。 */
 export interface UpstreamModelEntry {
@@ -43,6 +44,7 @@ export class ModelService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly settingService: SettingService,
+    private readonly billing: ModelBillingService,
   ) {}
 
   // ── 上游 ────────────────────────────────────────────────────────────────
@@ -179,6 +181,7 @@ export class ModelService {
       select: {
         modelId: true,
         label: true,
+        isFree: true,
         vendor: true,
         category: true,
         description: true,
@@ -189,9 +192,13 @@ export class ModelService {
         supportedFeatures: true,
       },
     });
-    return rows.map((r) => ({
+    const billing = await this.billing.describe(rows);
+    return rows.map((r, index) => ({
       id: r.modelId,
+      modelId: r.modelId,
       label: r.label,
+      displayName: r.label,
+      ...billing[index],
       vendor: r.vendor,
       category: r.category,
       description: r.description,
@@ -214,10 +221,10 @@ export class ModelService {
 
   // ── 修改 ────────────────────────────────────────────────────────────────
 
-  /** 管理端：更新单个模型（启用状态 / 显示名 / 排序）。 */
+  /** 管理端：更新单个模型（启用状态 / 活动免费 / 显示名 / 排序）。 */
   async updateModel(
     id: string,
-    data: { enabled?: boolean; label?: string; sortOrder?: number },
+    data: UpdatePlatformModelDto,
   ) {
     const found = await this.prisma.platformModel.findUnique({ where: { id } });
     if (!found) throw new NotFoundException(`Model ${id} not found`);
@@ -228,6 +235,7 @@ export class ModelService {
         ...(data.enabled !== undefined && { enabled: data.enabled }),
         ...(data.label !== undefined && { label: data.label }),
         ...(data.sortOrder !== undefined && { sortOrder: data.sortOrder }),
+        ...(data.isFree !== undefined && { isFree: data.isFree }),
       },
     });
     // 与 listAll 保持同样的返回结构，避免前端 PlatformModel 类型与实际响应不一致

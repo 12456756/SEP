@@ -101,10 +101,10 @@ export class GatewayController {
         message: '模型策略快照不可用', type: 'server_error', source: 'platform',
         code: 'MODEL_RUNTIME_POLICY_UNAVAILABLE',
       } });
-      const authorization = await waitForGatewayOperation(this.gatewayService.validateAndAuthorize(claims), 'PLATFORM_AUTHORIZATION_TIMEOUT');
+      const authorization = await waitForGatewayOperation(this.gatewayService.validateAndAuthorize(claims, dto.model), 'PLATFORM_AUTHORIZATION_TIMEOUT');
       const { request: prepared } = await waitForGatewayOperation(this.gatewayService.prepareRequest(claims, dto, snapshot), 'PLATFORM_MODEL_POLICY_TIMEOUT');
       client.signal.throwIfAborted();
-      const execution = await waitForGatewayOperation(this.executions.start(claims, authorization.employeeId, prepared.model, requestId, snapshot));
+      const execution = await waitForGatewayOperation(this.executions.start(claims, authorization.employeeId, prepared.model, requestId, snapshot, authorization.billingSnapshot));
       executionId = execution.id;
       res.setHeader('X-SEP-Execution-ID', executionId);
       const acquisition = this.admission.acquire(claims, snapshot);

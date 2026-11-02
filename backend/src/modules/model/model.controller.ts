@@ -4,6 +4,8 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { ModelService } from './model.service';
+import { UpdatePlatformModelDtoSchema, type UpdatePlatformModelDto } from 'shared';
+import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 
 @ApiTags('models')
 @ApiBearerAuth()
@@ -53,11 +55,12 @@ export class ModelController {
   @Patch(':id')
   @UseGuards(RolesGuard)
   @Roles('ADMIN')
-  @ApiOperation({ summary: '更新模型（启用状态/显示名/排序，仅管理员）' })
-  @ApiResponse({ status: 200, description: '更新后的模型' })
+  @ApiOperation({ summary: '更新模型（启用状态/活动免费开关/显示名/排序，仅管理员）' })
+  @ApiResponse({ status: 200, description: '更新后的模型，包含 isFree 活动免费配置' })
+  @ApiResponse({ status: 400, description: '模型配置字段无效' })
   update(
     @Param('id') id: string,
-    @Body() body: { enabled?: boolean; label?: string; sortOrder?: number },
+    @Body(new ZodValidationPipe(UpdatePlatformModelDtoSchema)) body: UpdatePlatformModelDto,
   ) {
     return this.modelService.updateModel(id, body ?? {});
   }

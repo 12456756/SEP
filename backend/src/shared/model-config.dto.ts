@@ -89,12 +89,15 @@ export type EffectiveModelConfig = z.infer<typeof EffectiveModelConfigSchema>;
 // ── 可用模型列表 ──────────────────────────────────────────────────────────
 
 /**
- * 平台可用模型。除 modelId / label 外全部可空 —— platform_models 的元数据
- * 由同步任务补齐，前端必须能在缺失时降级展示。
+ * 平台可用模型。目录元数据允许为空；未知中转倍率返回 null，客户端不自行估算。
  */
 export const AvailableModelSchema = z.object({
   modelId: z.string(),
   label: z.string(),
+  displayName: z.string(),
+  billingMultiplier: z.string().nullable(),
+  discountLabel: z.string(),
+  isFree: z.boolean(),
   vendor: z.string().nullable(),
   category: z.string().nullable(),
   contextLength: z.number().int().nullable(),
@@ -106,3 +109,25 @@ export const AvailableModelSchema = z.object({
 });
 
 export type AvailableModel = z.infer<typeof AvailableModelSchema>;
+
+export const UpdatePlatformModelDtoSchema = z.object({
+  enabled: z.boolean().optional(),
+  label: z.string().trim().min(1).optional(),
+  sortOrder: z.number().int().optional(),
+  isFree: z.boolean().optional(),
+}).strict();
+export type UpdatePlatformModelDto = z.infer<typeof UpdatePlatformModelDtoSchema>;
+
+/** 仅由服务端生成，冻结调用开始时的单价、倍率和汇率。 */
+export const ModelBillingSnapshotSchema = z.object({
+  modelId: z.string().min(1),
+  isFree: z.boolean(),
+  billingMultiplier: z.number().finite().nonnegative(),
+  rate: z.number().finite().positive(),
+  inputPriceUsdPerMillion: z.number().finite().nonnegative(),
+  outputPriceUsdPerMillion: z.number().finite().nonnegative(),
+  isFallback: z.boolean(),
+}).refine(snapshot => !snapshot.isFree || (
+  snapshot.billingMultiplier === 0 && snapshot.inputPriceUsdPerMillion === 0 && snapshot.outputPriceUsdPerMillion === 0
+), '免费活动快照必须为零倍率、零单价');
+export type ModelBillingSnapshot = z.infer<typeof ModelBillingSnapshotSchema>;

@@ -4,7 +4,7 @@ import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ComputeCreditService } from '../compute-credit/compute-credit.service';
 import type { ClientEmploymentClaims } from '../client/client-employment.guard';
-import type { ChatCompletionUsage, ModelRuntimePolicySnapshot } from 'shared';
+import { ModelBillingSnapshotSchema, type ChatCompletionUsage, type ModelRuntimePolicySnapshot, type ModelBillingSnapshot } from 'shared';
 import { validGatewayUsage } from './gateway-response';
 import { timeoutValue } from './gateway-stream';
 import { waitForGatewayOperation } from './gateway-operation';
@@ -25,7 +25,7 @@ export class GatewayExecutionService implements OnModuleInit {
   }
 
   async start(claims: ClientEmploymentClaims, employeeId: string, modelId: string, requestId: string,
-    snapshot?: ModelRuntimePolicySnapshot) {
+    snapshot?: ModelRuntimePolicySnapshot, billingSnapshot?: ModelBillingSnapshot) {
     const budget = snapshot ? Math.max(
       snapshot.values.GATEWAY_STREAM_TOTAL_TIMEOUT_MS,
       snapshot.values.GATEWAY_NON_STREAM_TIMEOUT_MS,
@@ -33,6 +33,7 @@ export class GatewayExecutionService implements OnModuleInit {
       timeoutValue(this.config, 'GATEWAY_STREAM_TOTAL_TIMEOUT_MS', 600000),
       timeoutValue(this.config, 'GATEWAY_NON_STREAM_TIMEOUT_MS', 120000),
     );
+    const frozenBilling = ModelBillingSnapshotSchema.parse(billingSnapshot ?? await this.credit.getBillingSnapshot(modelId));
     try {
       return await this.prisma.$transaction(async tx => {
         const users = await tx.$queryRaw<Array<{ id: string; status: string }>>`SELECT id, status FROM users WHERE id = ${claims.sub} FOR UPDATE`;
@@ -42,6 +43,7 @@ export class GatewayExecutionService implements OnModuleInit {
         return tx.gatewayExecution.create({ data: {
         enterpriseId: claims.enterpriseId, userId: claims.sub, memberId: claims.memberId,
         subscriptionId: claims.subscriptionId, employeeId, modelId, requestId,
+        billingSnapshot: frozenBilling,
         expiresAt: new Date(Date.now() + budget + 120000),
         } });
       });
@@ -114,11 +116,15 @@ export class GatewayExecutionService implements OnModuleInit {
       const execution = await waitForGatewayOperation(this.prisma.gatewayExecution.findUniqueOrThrow({ where: { id } }));
       requestId = execution.requestId;
       if (execution.status !== 'USAGE_PENDING' || execution.settlementLeaseUntil?.getTime() !== leaseUntil.getTime()) return;
+      const frozenBilling = execution.billingSnapshot
+        ? ModelBillingSnapshotSchema.parse(execution.billingSnapshot)
+        : await this.credit.getLegacyBillingSnapshot(execution.modelId);
       const result = await waitForGatewayOperation(this.credit.chargeUsage({
         enterpriseId: execution.enterpriseId, userId: execution.userId,
         subscriptionId: execution.subscriptionId, employeeId: execution.employeeId,
         sessionId: 'gateway-execution', messageId: execution.id, modelId: execution.modelId,
         inputTokens: execution.inputTokens!, outputTokens: execution.outputTokens!,
+        billingSnapshot: frozenBilling,
       }));
       const settled = await waitForGatewayOperation(this.prisma.gatewayExecution.updateMany({ where: owned, data: {
         status: 'SETTLED', usageRecordId: result.usageRecordId, settlementLeaseUntil: null,

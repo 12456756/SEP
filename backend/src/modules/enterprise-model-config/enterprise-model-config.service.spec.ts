@@ -48,6 +48,7 @@ function makeConfig(over: Record<string, unknown> = {}) {
 describe('EnterpriseModelConfigService', () => {
   let prisma: any;
   let ctxSvc: any;
+  let billing: any;
   let svc: EnterpriseModelConfigService;
 
   beforeEach(() => {
@@ -75,7 +76,12 @@ describe('EnterpriseModelConfigService', () => {
       resolve: jest.fn().mockResolvedValue(ACME),
       assertEnterpriseAdmin: jest.fn(),
     };
-    svc = new EnterpriseModelConfigService(prisma, ctxSvc);
+    billing = {
+      describe: jest.fn().mockResolvedValue([
+        { isFree: false, billingMultiplier: '1', discountLabel: '按中转倍率计费' },
+      ]),
+    };
+    svc = new EnterpriseModelConfigService(prisma, ctxSvc, undefined, billing);
   });
 
   describe('get', () => {
@@ -167,6 +173,7 @@ describe('EnterpriseModelConfigService', () => {
         {
           modelId: 'claude-sonnet-5',
           label: 'Claude Sonnet 5',
+          isFree: false,
           vendor: null,
           category: null,
           contextLength: null,
@@ -181,6 +188,11 @@ describe('EnterpriseModelConfigService', () => {
       const models = await svc.getAvailableModels('u1');
 
       expect(models[0].modelId).toBe('claude-sonnet-5');
+      expect(models[0]).toMatchObject({
+        billingMultiplier: '1',
+        discountLabel: '按中转倍率计费',
+        isFree: false,
+      });
       // 元数据列目前大多为空，必须原样透传 null 让前端降级，不能塞 0 / ''
       expect(models[0].contextLength).toBeNull();
       expect(models[0].pricingInputPer1M).toBeNull();

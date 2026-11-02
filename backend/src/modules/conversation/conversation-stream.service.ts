@@ -21,12 +21,10 @@ import { KnowledgeSearchService } from "../knowledge/knowledge-search.service";
 import { EnterpriseModelConfigService } from "../enterprise-model-config/enterprise-model-config.service";
 import { ComputeCreditService } from "../compute-credit/compute-credit.service";
 import {
-  calculateCost,
-  parseFallbackPriceConfig,
-  parseUsdToCnyRate,
-  SETTING_KEYS,
   type MessageAttachment,
+  type ModelBillingSnapshot,
 } from "shared";
+import { calculateBilledCost } from '../model/model-billing.service';
 import { SettingService } from "../setting/setting.service";
 import { UploadService } from "../upload/upload.service";
 import { AttachmentContextService } from "./attachment-context.service";
@@ -176,6 +174,13 @@ export class ConversationStreamService {
       select: { id: true },
     });
     const subscriptionId = subscription?.id;
+    const effective = await this.modelConfig.resolveEffectiveModel({
+      userId, userSelectedModel: session.modelId ?? undefined, subscriptionId,
+      employeeTemplateModel: employee.modelId, departmentId: enterpriseCtx.departmentId ?? undefined,
+    });
+    const modelId = effective.chatModel;
+    const billingSnapshot = await this.computeCredit.getBillingSnapshot(modelId);
+    Object.assign(handledByMetadata, { billingSnapshot });
 
     // 1c. 额度 / 余额闸门 —— **每条消息**都要过，不能只在建会话时过一次。
     //
@@ -189,6 +194,7 @@ export class ConversationStreamService {
       enterpriseCtx.enterpriseId,
       subscriptionId,
       userId,
+      billingSnapshot,
     );
     if (!gate.allowed) {
       // 结构化字段而不是只给一句话：前端要据此弹「额度用尽」对话框并给出
@@ -219,12 +225,7 @@ export class ConversationStreamService {
     }
 
     signal?.throwIfAborted();
-    const effective = await this.modelConfig.resolveEffectiveModel({
-      userId, userSelectedModel: session.modelId ?? undefined, subscriptionId,
-      employeeTemplateModel: employee.modelId, departmentId: enterpriseCtx.departmentId ?? undefined,
-    });
     const policy = await this.runtimePolicies.getSnapshot();
-    const modelId = effective.chatModel;
     const model = await this.prisma.platformModel.findUnique({ where: { modelId }, select: { maxOutputTokens: true } });
     const maxOutputTokens = this.modelPolicy.internalOutputTokens(model, policy, policy.values.WEB_DEFAULT_MAX_OUTPUT_TOKENS);
     const requestId = randomUUID();
@@ -584,24 +585,8 @@ export class ConversationStreamService {
           );
 
           // 计算消息成本（用于账单明细和成本分析）。
-          // 保底价与汇率都取系统设置的生效值，和 chargeUsage 用的是同一套配置，
-          // 否则消息上显示的成本和实际扣款金额会不一致。
-          const [rawRate, rawFallbackIn, rawFallbackOut] = await Promise.all([
-            this.settingService.getEffectiveValue(SETTING_KEYS.USD_TO_CNY_RATE),
-            this.settingService.getEffectiveValue(
-              SETTING_KEYS.FALLBACK_PRICE_INPUT,
-            ),
-            this.settingService.getEffectiveValue(
-              SETTING_KEYS.FALLBACK_PRICE_OUTPUT,
-            ),
-          ]);
-          const { costCNY } = calculateCost(
-            modelId,
-            inputTokens,
-            outputTokens,
-            parseUsdToCnyRate(rawRate),
-            parseFallbackPriceConfig(rawFallbackIn, rawFallbackOut),
-          );
+          // 与 chargeUsage 共用调用开始时的快照，活动中途切换不会改变本笔价格。
+          const { costCNY } = calculateBilledCost(billingSnapshot, inputTokens, outputTokens);
 
           lifecycle.assertActive();
           assertOwnership();
@@ -637,6 +622,7 @@ export class ConversationStreamService {
               outputTokens,
               employeeId: employee.id,
               subscriptionId,
+              billingSnapshot,
             });
           } else {
             this.logger.error(
@@ -1039,6 +1025,7 @@ export class ConversationStreamService {
     outputTokens: number;
     employeeId: string;
     subscriptionId?: string;
+    billingSnapshot: ModelBillingSnapshot;
   }): Promise<void> {
     const { enterpriseId, userId, sessionId, messageId, modelId } = params;
     try {
@@ -1052,6 +1039,7 @@ export class ConversationStreamService {
         modelId,
         inputTokens: params.inputTokens,
         outputTokens: params.outputTokens,
+        billingSnapshot: params.billingSnapshot,
       });
 
       if (result.alreadyCharged) {

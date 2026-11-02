@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SettingService } from '../setting/setting.service';
 import { DEFAULT_MODEL_ID, SETTING_KEYS } from 'shared';
-import type { ChatCompletionRequest, ModelRuntimePolicySnapshot } from 'shared';
+import type { ChatCompletionRequest, ModelRuntimePolicySnapshot, ModelBillingSnapshot } from 'shared';
 import { ComputeCreditService } from '../compute-credit/compute-credit.service';
 import { createGatewayStreamLifecycle, createChatCompletionStreamObserver, timeoutValue } from './gateway-stream';
 import { readGatewayJson } from './gateway-response';
@@ -60,11 +60,12 @@ export class GatewayService {
     enterpriseId: string;
     subscriptionId: string;
     memberId: string;
-  }): Promise<{
+  }, modelId?: string): Promise<{
     enterpriseId: string;
     subscriptionId: string;
     memberId: string;
     employeeId: string;
+    billingSnapshot?: ModelBillingSnapshot;
   }> {
     const { enterpriseId, subscriptionId, memberId } = claims;
 
@@ -112,10 +113,12 @@ export class GatewayService {
 
     // 3. 使用统一算力账本检查余额。不要读取已废弃的 ComputeAccount，
     // 否则 Web 展示的钱包余额与客户端网关会继续使用两套账本。
+    const billingSnapshot = modelId ? await this.computeCreditService.getBillingSnapshot(modelId) : undefined;
     const balance = await this.computeCreditService.checkBalanceBeforeConversation(
       enterpriseId,
       subscriptionId,
       claims.sub,
+      ...(billingSnapshot ? [billingSnapshot] as const : []),
     );
     if (!balance.allowed) {
       const message = balance.reason || '企业算力余额不足，请联系管理员充值';
@@ -124,7 +127,7 @@ export class GatewayService {
       } });
     }
 
-    return { enterpriseId, subscriptionId, memberId, employeeId: subscription.employeeId };
+    return { enterpriseId, subscriptionId, memberId, employeeId: subscription.employeeId, ...(billingSnapshot ? { billingSnapshot } : {}) };
   }
 
   prepareRequest(claims: Parameters<GatewayModelPolicyService['prepare']>[0], dto: ChatCompletionRequest, snapshot: ModelRuntimePolicySnapshot) {

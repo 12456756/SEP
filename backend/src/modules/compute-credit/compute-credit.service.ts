@@ -19,12 +19,11 @@ import {
 } from "./allowance-notifier.service";
 import {
   SETTING_KEYS,
-  calculateCost,
   parseCnyAmount,
-  parseFallbackPriceConfig,
-  parseUsdToCnyRate,
-  type FallbackPriceConfigCNY,
+  type ModelBillingSnapshot,
 } from "shared";
+import { calculateBilledCost, ModelBillingService } from '../model/model-billing.service';
+import { ModelBillingSnapshotSchema } from 'shared';
 import type {
   BalanceCheckResult,
   ChargeUsageParams,
@@ -66,6 +65,7 @@ export class ComputeCreditService {
     private readonly settings: SettingService,
     private readonly memberAllowance: MemberAllowanceService,
     private readonly allowanceNotifier: AllowanceNotifierService,
+    private readonly modelBilling: ModelBillingService,
   ) {}
 
   // ── 赠送额度配置与发放 ─────────────────────────────────────────────────────
@@ -189,7 +189,20 @@ export class ComputeCreditService {
     enterpriseId: string,
     subscriptionId?: string | null,
     userId?: string | null,
+    model?: string | ModelBillingSnapshot,
   ): Promise<BalanceCheckResult> {
+    if (model) {
+      const free = typeof model === 'string'
+        ? (await this.prisma.platformModel.findUnique({ where: { modelId: model }, select: { isFree: true } }))?.isFree === true
+        : model.billingMultiplier === 0;
+      if (free) {
+        return {
+          allowed: true, enterpriseFundsAllowed: true, creditRemainingCNY: 0,
+          walletBalanceCNY: 0, memberWalletBalanceCNY: 0, totalAvailableCNY: 0,
+          personalBalanceCNY: 0,
+        };
+      }
+    }
     // 算力分配的闸门排在余额之前：额度用尽是「这个人不能再花公司的钱」，
     // 与「企业没钱了」是两件事，话术和出路都不同，不能合并成一句「余额不足」。
     const allowance = await this.memberAllowance.check(enterpriseId, userId);
@@ -300,14 +313,12 @@ export class ComputeCreditService {
     const idempotencyKey = `${params.sessionId}:${params.messageId}`;
 
     // 计价参数在事务外读：它们是配置读取，放进事务只会拉长持锁时间
-    const { rate, fallbackConfig } = await this.loadPricingContext();
-    const cost = calculateCost(
-      params.modelId,
-      params.inputTokens,
-      params.outputTokens,
-      rate,
-      fallbackConfig,
-    );
+    const billingSnapshot = params.billingSnapshot
+      ? ModelBillingSnapshotSchema.parse(params.billingSnapshot)
+      : await this.getBillingSnapshot(params.modelId);
+    if (billingSnapshot.modelId !== params.modelId) throw new BadRequestException('模型计费快照不匹配');
+    const cost = calculateBilledCost(billingSnapshot, params.inputTokens, params.outputTokens);
+    const rate = billingSnapshot.rate;
     const costCNY = money(cost.costCNY);
     const description = `对话算力消费（${params.modelId}，${params.inputTokens}+${params.outputTokens} tokens）`;
 
@@ -483,7 +494,7 @@ export class ComputeCreditService {
           },
           // 通知判定所需的一切都在这儿了：闸门刚读出的额度快照 + 这一笔的实际去向。
           // 攒成一个对象带出事务，是为了让「要不要发通知」这一步不必再打库。
-          notify: {
+          notify: costCNY.isZero() ? null : {
             enterpriseId: params.enterpriseId,
             userId: params.userId,
             windowId: plan.windowId,
@@ -511,6 +522,14 @@ export class ComputeCreditService {
     }
 
     return result;
+  }
+
+  async getBillingSnapshot(modelId: string): Promise<ModelBillingSnapshot> {
+    return this.modelBilling.getSnapshot(modelId);
+  }
+
+  getLegacyBillingSnapshot(modelId: string): Promise<ModelBillingSnapshot> {
+    return this.modelBilling.getLegacySnapshot(modelId);
   }
 
   /**
@@ -563,22 +582,6 @@ export class ComputeCreditService {
     }
 
     return { creditId: credit.id, creditPaid: paid };
-  }
-
-  /** 读取生效汇率与保底单价配置。 */
-  private async loadPricingContext(): Promise<{
-    rate: number;
-    fallbackConfig: FallbackPriceConfigCNY | null;
-  }> {
-    const [rawRate, rawIn, rawOut] = await Promise.all([
-      this.settings.getEffectiveValue(SETTING_KEYS.USD_TO_CNY_RATE),
-      this.settings.getEffectiveValue(SETTING_KEYS.FALLBACK_PRICE_INPUT),
-      this.settings.getEffectiveValue(SETTING_KEYS.FALLBACK_PRICE_OUTPUT),
-    ]);
-    return {
-      rate: parseUsdToCnyRate(rawRate),
-      fallbackConfig: parseFallbackPriceConfig(rawIn, rawOut),
-    };
   }
 
   // ── 查询 ───────────────────────────────────────────────────────────────────

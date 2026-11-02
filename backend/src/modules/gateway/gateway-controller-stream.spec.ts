@@ -135,7 +135,7 @@ describe('GatewayController raw SSE streaming', () => {
     expect(release).toHaveBeenCalledTimes(1);
     expect(releaseRequest).toHaveBeenCalledTimes(1);
     expect(prepare).toHaveBeenCalledWith(claims, dto, snapshot);
-    expect(executions.start).toHaveBeenCalledWith(claims, 'employee-1', dto.model, requestId, snapshot);
+    expect(executions.start).toHaveBeenCalledWith(claims, 'employee-1', dto.model, requestId, snapshot, undefined);
     expect(acquire).toHaveBeenCalledTimes(1);
     expect(acquire).toHaveBeenCalledWith(claims, snapshot);
     expect(reserve).toHaveBeenCalledTimes(1);

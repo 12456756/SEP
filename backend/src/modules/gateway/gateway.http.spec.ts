@@ -217,8 +217,8 @@ describe('Gateway tool-call HTTP round trip', () => {
       expect(executions.saveUsage).toHaveBeenCalledWith(id, usage);
       expect(executions.finish).toHaveBeenCalledWith(id, { finishReason: 'stop' });
     }
-    expect(executions.start).toHaveBeenNthCalledWith(1, claims, 'employee-1', body.model, 'same-client-request', snapshot);
-    expect(executions.start).toHaveBeenNthCalledWith(2, claims, 'employee-1', body.model, 'same-client-request', snapshot);
+    expect(executions.start).toHaveBeenNthCalledWith(1, claims, 'employee-1', body.model, 'same-client-request', snapshot, undefined);
+    expect(executions.start).toHaveBeenNthCalledWith(2, claims, 'employee-1', body.model, 'same-client-request', snapshot, undefined);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(executions.fail).not.toHaveBeenCalled();
     expect(releaseAdmission).toHaveBeenCalledTimes(2);

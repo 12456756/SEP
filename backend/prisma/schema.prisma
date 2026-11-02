@@ -1932,6 +1932,8 @@ model GatewayExecution {
   modelId              String
   requestId            String
   upstreamRequestId    String?
+  /// 请求开始时冻结的会话计费规则，供延迟结算和恢复重试使用。
+  billingSnapshot      Json?
   status               GatewayExecutionStatus @default(STARTED)
   inputTokens          Int?
   outputTokens         Int?
@@ -2291,6 +2293,8 @@ model PlatformModel {
   modelId   String  @unique
   label     String
   enabled   Boolean @default(false)
+  /// 平台活动免费；关闭后恢复当前中转倍率。
+  isFree    Boolean @default(false)
   sortOrder Int     @default(0)
 
   lastSeenAt DateTime @default(now())

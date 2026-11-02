@@ -4,7 +4,12 @@ import { api } from "@/lib/api-client";
 /** 用户端可选模型（平台已启用的）。 */
 export interface AvailableModel {
   id: string;
+  modelId: string;
   label: string;
+  displayName: string;
+  billingMultiplier: string | null;
+  discountLabel: string;
+  isFree: boolean;
   vendor: string | null;
   category: string | null;
   description: string | null;
@@ -26,6 +31,7 @@ export interface PlatformModel {
   isStale: boolean;
   /** 是否已配置真实价格。false 表示启用后按保底价计费。 */
   hasPricing: boolean;
+  isFree: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -85,6 +91,9 @@ export function useSyncModels() {
     mutationFn: () => api.post<SyncResult>("/models/sync"),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["models"] });
+      qc.invalidateQueries({
+        predicate: ({ queryKey }) => queryKey.includes("available-models"),
+      });
     },
   });
 }
@@ -99,11 +108,15 @@ export function useUpdatePlatformModel() {
     }: {
       id: string;
       enabled?: boolean;
+      isFree?: boolean;
       label?: string;
       sortOrder?: number;
     }) => api.patch<PlatformModel>(`/models/${id}`, data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["models"] });
+      qc.invalidateQueries({
+        predicate: ({ queryKey }) => queryKey.includes("available-models"),
+      });
     },
   });
 }

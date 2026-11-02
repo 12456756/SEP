@@ -13,12 +13,15 @@ import { ConflictException } from "@nestjs/common";
 import { Decimal } from "@prisma/client/runtime/library";
 import { ComputeCreditService } from "./compute-credit.service";
 import { SETTING_KEYS } from "shared";
+import { ModelBillingService } from '../model/model-billing.service';
 
 const ENTERPRISE = "ent-acme";
 const SUBSCRIPTION = "sub-1";
 
 /** 固定 1 元/1K 输入、0 输出的保底价，让每个用例的成本都是好算的整数。 */
 const FLAT_PRICE_SETTINGS: Record<string, string> = {
+  [SETTING_KEYS.SUB2API_BASE_URL]: 'https://relay.example/v1',
+  [SETTING_KEYS.SUB2API_API_KEY]: 'test-key',
   [SETTING_KEYS.USD_TO_CNY_RATE]: "7.2",
   [SETTING_KEYS.FALLBACK_PRICE_INPUT]: "1",
   [SETTING_KEYS.FALLBACK_PRICE_OUTPUT]: "0",
@@ -73,6 +76,7 @@ describe("ComputeCreditService.chargeUsage", () => {
     createdRecord = null;
 
     prisma = {
+      platformModel: { findUnique: jest.fn().mockResolvedValue({ isFree: false }) },
       $queryRaw: jest.fn().mockResolvedValue([{ status: 'ACTIVE' }]),
       computeUsageRecord: {
         findUnique: jest.fn().mockResolvedValue(null),
@@ -164,6 +168,9 @@ describe("ComputeCreditService.chargeUsage", () => {
     };
 
     allowanceNotifier = { afterCharge: jest.fn(async () => undefined) };
+    jest.spyOn(global, 'fetch').mockImplementation(async () => new Response(JSON.stringify({
+      object: 'sub2api.key_billing', schema_version: 1, billing_scope: 'token', effective_rate_multiplier: 1,
+    })));
 
     svc = new ComputeCreditService(
       prisma,
@@ -172,8 +179,11 @@ describe("ComputeCreditService.chargeUsage", () => {
       settings,
       allowance,
       allowanceNotifier,
+      new ModelBillingService(prisma, settings),
     );
   });
+
+  afterEach(() => jest.restoreAllMocks());
 
   const charge = (overrides: Record<string, unknown> = {}) =>
     svc.chargeUsage({
@@ -188,6 +198,70 @@ describe("ComputeCreditService.chargeUsage", () => {
       outputTokens: 0,
       ...overrides,
     } as any);
+
+  it('活动免费保留非零 token 用量账单，不消耗赠送、钱包或额度', async () => {
+    prisma.platformModel.findUnique.mockResolvedValue({ isFree: true });
+    creditRow = makeCredit({ grantedCNY: new Decimal(50) });
+    personalBalance = new Decimal(40);
+    allowanceCap = new Decimal(0);
+
+    const result = await charge();
+
+    expect(result.costCNY.toNumber()).toBe(0);
+    expect(result.unpaidCNY.toNumber()).toBe(0);
+    expect(Number(createdRecord.inputPriceUsdPerMillion)).toBe(0);
+    expect(createdRecord.inputTokens).toBe(10_000);
+    expect(walletBalance.toNumber()).toBe(100);
+    expect(personalBalance.toNumber()).toBe(40);
+    expect(creditRow.usedCNY.toNumber()).toBe(0);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('关闭免费恢复中转倍率，并只应用一次倍率', async () => {
+    (global.fetch as jest.Mock).mockImplementation(async () => new Response(JSON.stringify({
+      object: 'sub2api.key_billing', schema_version: 1, billing_scope: 'token', effective_rate_multiplier: 0.5,
+    })));
+
+    const result = await charge();
+
+    expect(result.costCNY.toNumber()).toBe(5);
+    expect(walletBalance.toNumber()).toBe(95);
+    expect(Number(createdRecord.inputPriceUsdPerMillion)).toBeCloseTo(1000 / 7.2 / 2);
+  });
+
+  it('冻结的免费规则在活动关闭后仍以零元结算', async () => {
+    prisma.platformModel.findUnique.mockResolvedValue({ isFree: true });
+    const billingSnapshot = await svc.getBillingSnapshot('unknown-model');
+    prisma.platformModel.findUnique.mockResolvedValue({ isFree: false });
+
+    expect((await charge({ billingSnapshot })).costCNY.toNumber()).toBe(0);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('免费模型余额为零且额度用尽时仍放行，不查询资金闸门', async () => {
+    prisma.platformModel.findUnique.mockResolvedValue({ isFree: true });
+    walletBalance = new Decimal(0);
+    allowance.check.mockResolvedValue({ allowed: false, enterpriseFundsAllowed: false });
+
+    expect(await svc.checkBalanceBeforeConversation(ENTERPRISE, SUBSCRIPTION, 'user-1', 'unknown-model'))
+      .toMatchObject({ allowed: true, enterpriseFundsAllowed: true });
+    expect(allowance.check).not.toHaveBeenCalled();
+  });
+
+  it('非免费模型仍受额度与余额闸门限制', async () => {
+    allowance.check.mockResolvedValue({ allowed: false, enterpriseFundsAllowed: false, reason: '额度用尽' });
+
+    expect(await svc.checkBalanceBeforeConversation(ENTERPRISE, SUBSCRIPTION, 'user-1', 'unknown-model'))
+      .toMatchObject({ allowed: false, enterpriseFundsAllowed: false });
+  });
+
+  it('未知中转倍率不扣费，也不落入倍率 1', async () => {
+    (global.fetch as jest.Mock).mockRejectedValue(new Error('unavailable'));
+
+    await expect(charge()).rejects.toMatchObject({ status: 503 });
+    expect(prisma.computeUsageRecord.create).not.toHaveBeenCalled();
+    expect(wallet.consumeComputeUpTo).not.toHaveBeenCalled();
+  });
 
   it('关闭企业拒绝新扣费，并按账号、企业的顺序锁定', async () => {
     prisma.$queryRaw.mockResolvedValueOnce([{ status: 'ACTIVE' }]).mockResolvedValueOnce([{ status: 'CLOSED' }]);

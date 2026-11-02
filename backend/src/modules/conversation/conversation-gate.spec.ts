@@ -34,7 +34,13 @@ describe("ConversationStreamService —— 逐条消息的额度闸门", () => {
       message: { create: jest.fn() },
       platformModel: { findUnique: jest.fn().mockResolvedValue(null) },
     };
-    computeCredit = { checkBalanceBeforeConversation: jest.fn() };
+    computeCredit = {
+      getBillingSnapshot: jest.fn().mockResolvedValue({
+        modelId: 'model', isFree: false, billingMultiplier: 1, rate: 7,
+        inputPriceUsdPerMillion: 0.15, outputPriceUsdPerMillion: 0.6, isFallback: false,
+      }),
+      checkBalanceBeforeConversation: jest.fn(),
+    };
     sessionLock = { acquireLock: jest.fn().mockRejectedValue(REACHED_LOCK) };
 
     svc = new ConversationStreamService(
@@ -154,6 +160,7 @@ describe("ConversationStreamService —— 逐条消息的额度闸门", () => {
       "ent-1",
       "sub-1",
       "user-1",
+      expect.objectContaining({ modelId: "model", billingMultiplier: 1 }),
     );
   });
 });

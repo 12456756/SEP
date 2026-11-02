@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
@@ -13,6 +14,7 @@ import type {
   EffectiveModelConfig,
   AvailableModel,
 } from 'shared/model-config.dto';
+import { ModelBillingService } from '../model/model-billing.service';
 import { DEFAULT_MODEL_ID } from 'shared';
 
 
@@ -22,6 +24,7 @@ export class EnterpriseModelConfigService {
     private readonly prisma: PrismaService,
     private readonly ctx: EnterpriseContextService,
     private readonly config?: ConfigService,
+    private readonly billing?: ModelBillingService,
   ) {}
 
   private getEffectiveEmbeddingConfig() {
@@ -161,6 +164,7 @@ export class EnterpriseModelConfigService {
       select: {
         modelId: true,
         label: true,
+        isFree: true,
         vendor: true,
         category: true,
         contextLength: true,
@@ -172,11 +176,16 @@ export class EnterpriseModelConfigService {
       },
     });
 
+    if (!this.billing) throw new ServiceUnavailableException('模型计费服务不可用');
+    const billing = await this.billing.describe(models);
+
     // modelId 是调用模型时的标识，不能用主键 cuid 代替。
     // 元数据列大多为空（等同步任务补齐），保持 null 让前端降级展示。
-    return models.map((m) => ({
+    return models.map((m, index) => ({
       modelId: m.modelId,
       label: m.label,
+      displayName: m.label,
+      ...billing[index],
       vendor: m.vendor,
       category: m.category,
       contextLength: m.contextLength,

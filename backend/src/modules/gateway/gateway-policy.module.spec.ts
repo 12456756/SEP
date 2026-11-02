@@ -1,5 +1,7 @@
 import { Injectable, Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
 import { RedisService } from '../../redis/redis.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { EnterpriseModelConfigService } from '../enterprise-model-config/enterprise-model-config.service';
@@ -13,7 +15,7 @@ import { policySnapshot } from './gateway-policy.test-fixtures';
 class Consumer {
   constructor(readonly admission: GatewayAdmissionService, readonly policy: GatewayModelPolicyService) {}
 }
-@Module({ imports: [GatewayPolicyModule], providers: [Consumer] })
+@Module({ imports: [ConfigModule.forRoot({ isGlobal: true }), GatewayPolicyModule], providers: [Consumer] })
 class ConsumerModule {}
 
 describe('GatewayPolicyModule registration', () => {
@@ -23,6 +25,7 @@ describe('GatewayPolicyModule registration', () => {
       .overrideProvider(RedisService).useValue({ redis: { eval: evalMock } })
       .overrideProvider(PrismaService).useValue({})
       .overrideProvider(EnterpriseModelConfigService).useValue({})
+      .overrideProvider(ConfigService).useValue({ get: jest.fn(), getOrThrow: jest.fn().mockReturnValue('test-secret') })
       .compile();
     try {
       const consumer = module.get(Consumer);

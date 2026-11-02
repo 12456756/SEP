@@ -11,6 +11,7 @@ vi.mock('@/components/ui/toast', () => ({ toast: { success: vi.fn(), error: vi.f
 const active: PlatformModel = {
   id: 'upstream-1', modelId: 'vendorx-model-alpha', label: 'VendorX Alpha', enabled: false,
   sortOrder: 1, lastSeenAt: '2026-10-27', isStale: false, hasPricing: true,
+  isFree: false,
   createdAt: '2026-10-27', updatedAt: '2026-10-27',
 };
 const retired: PlatformModel = {
@@ -120,6 +121,33 @@ describe('ModelManagement upstream catalog', () => {
     expect(screen.getByText('没有符合条件的模型')).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('筛选启用状态'), { target: { value: 'enabled' } });
     expect(screen.getByText('VendorX Alpha')).toBeInTheDocument();
+  });
+
+  it('updates the per-model free campaign setting independently from model enablement', async () => {
+    mount();
+    synchronize();
+    await screen.findByText('VendorX Alpha');
+
+    fireEvent.click(screen.getByRole('checkbox', { name: '活动免费 VendorX Alpha' }));
+
+    await waitFor(() => expect(api.patch).toHaveBeenCalledWith('/models/upstream-1', { isFree: true }));
+    expect(api.patch).not.toHaveBeenCalledWith('/models/upstream-1', { enabled: true });
+  });
+
+  it('turns an existing free campaign off and keeps the checkbox unchanged when saving fails', async () => {
+    const free = { ...active, isFree: true };
+    vi.mocked(api.get).mockResolvedValue([free, retired]);
+    mount();
+    synchronize();
+    await screen.findByText('VendorX Alpha');
+
+    const checkbox = screen.getByRole('checkbox', { name: '活动免费 VendorX Alpha' });
+    expect(checkbox).toBeChecked();
+    vi.mocked(api.patch).mockRejectedValueOnce(new Error('保存失败'));
+    fireEvent.click(checkbox);
+
+    await waitFor(() => expect(api.patch).toHaveBeenCalledWith('/models/upstream-1', { isFree: false }));
+    expect(checkbox).toBeChecked();
   });
 
   it('replaces the prior catalog and clears filters when upstream is synchronized again', async () => {

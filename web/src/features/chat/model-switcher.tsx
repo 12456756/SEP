@@ -95,11 +95,6 @@ export function ModelSwitcher({
     return `${length}`;
   };
 
-  const formatPrice = (price: string | null) => {
-    if (price === null) return '未配置';
-    return `¥${parseFloat(price).toFixed(2)}`;
-  };
-
   // ── 锁定模式：管理员禁止用户切换 ──────────────────────────────────────────
   if (!canSwitch) {
     return (
@@ -138,10 +133,6 @@ export function ModelSwitcher({
             )}
             {models.map((model) => {
               const isActive = model.modelId === effective;
-              const hasPricing =
-                model.pricingInputPer1M !== null &&
-                model.pricingOutputPer1M !== null;
-
               return (
                 <button
                   key={model.modelId}
@@ -170,24 +161,17 @@ export function ModelSwitcher({
                           {model.description}
                         </div>
                       )}
-                      <div className="flex items-center gap-3 text-[10px] text-fg-muted">
+                      <div className="flex flex-wrap items-center gap-3 text-[10px] text-fg-muted">
                         {model.contextLength && (
                           <span title="上下文长度">
                             📄 {formatContext(model.contextLength)}
                           </span>
                         )}
-                        {hasPricing ? (
-                          <>
-                            <span title="输入价格（每百万 tokens）">
-                              ↓ {formatPrice(model.pricingInputPer1M)}/1M
-                            </span>
-                            <span title="输出价格（每百万 tokens）">
-                              ↑ {formatPrice(model.pricingOutputPer1M)}/1M
-                            </span>
-                          </>
-                        ) : (
-                          <span className="text-amber-600">保底价计费</span>
-                        )}
+                        <span className={model.isFree ? 'font-medium text-emerald-600' : 'font-medium text-fg-muted'}>
+                          {model.billingMultiplier === null
+                            ? model.discountLabel
+                            : `${model.billingMultiplier} 倍率 · ${model.discountLabel}`}
+                        </span>
                       </div>
                     </div>
                   </div>

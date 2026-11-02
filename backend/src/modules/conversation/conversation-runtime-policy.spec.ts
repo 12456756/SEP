@@ -52,7 +52,14 @@ describe('Web model runtime policy lifecycle', () => {
       { resolve: jest.fn().mockResolvedValue({ enterpriseId: 'enterprise', memberId: 'member' }) } as never,
       knowledge, { resolveEffectiveModel: jest.fn().mockResolvedValue({ chatModel: 'model' }) } as never,
       {} as never, {} as never,
-      { checkBalanceBeforeConversation: jest.fn().mockResolvedValue({ allowed: true, enterpriseFundsAllowed: true }), chargeUsage: jest.fn().mockResolvedValue({ alreadyCharged: true }) } as never,
+      {
+        getBillingSnapshot: jest.fn().mockResolvedValue({
+          modelId: 'model', isFree: false, billingMultiplier: 1, rate: 7,
+          inputPriceUsdPerMillion: 0.15, outputPriceUsdPerMillion: 0.6, isFallback: false,
+        }),
+        checkBalanceBeforeConversation: jest.fn().mockResolvedValue({ allowed: true, enterpriseFundsAllowed: true }),
+        chargeUsage: jest.fn().mockResolvedValue({ alreadyCharged: true }),
+      } as never,
       policies, admission, new GatewayModelPolicyService({} as never, {} as never, {} as never));
     jest.spyOn(global, 'fetch').mockResolvedValue(new Response('{}'));
     mockStep('stop', [{ type: 'text-delta', text: 'reply' }]);

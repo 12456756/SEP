@@ -119,7 +119,7 @@ export class TaskPlanningService {
 
     // 先解析模型再请求：报错文案里要带上模型名，否则用户不知道该去改哪个设置
     const plannerModel = await this.resolvePlannerModel(context.enterpriseId);
-    const gate = await this.computeCredit.checkBalanceBeforeConversation(context.enterpriseId, undefined, userId);
+    const gate = await this.computeCredit.checkBalanceBeforeConversation(context.enterpriseId, undefined, userId, plannerModel);
     if (!gate.allowed) throw new ForbiddenException({ code: 'COMPUTE_BLOCKED', message: gate.reason ?? '算力余额不足' });
     signal?.throwIfAborted();
     const policy = await this.runtimePolicies.getSnapshot();

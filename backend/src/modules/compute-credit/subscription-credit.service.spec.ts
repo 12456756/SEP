@@ -73,6 +73,7 @@ describe("ComputeCreditService —— 赠送额度", () => {
       settings,
       allowance,
       { afterCharge: jest.fn() } as any,
+      {} as any,
     );
   });
 

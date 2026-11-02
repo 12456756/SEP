@@ -31,6 +31,7 @@ describe("ComputeCreditService.listUsageRecords 作用域", () => {
       {} as any,
       {} as any,
       {} as any,
+      {} as any,
     );
   });
 

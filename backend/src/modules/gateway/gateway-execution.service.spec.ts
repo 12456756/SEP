@@ -5,6 +5,10 @@ import { policySnapshot } from './gateway-policy.test-fixtures';
 describe('Gateway execution journal and recovery', () => {
   const claims = { sub: 'user', enterpriseId: 'enterprise', memberId: 'member', subscriptionId: 'subscription' } as never;
   const usage = { prompt_tokens: 12, completion_tokens: 8, total_tokens: 20 };
+  const billingSnapshot = {
+    modelId: 'model', isFree: false, billingMultiplier: 1, rate: 7,
+    inputPriceUsdPerMillion: 0.15, outputPriceUsdPerMillion: 0.6, isFallback: false,
+  };
   let service: GatewayExecutionService;
   let prisma: any;
   let credit: any;
@@ -13,7 +17,7 @@ describe('Gateway execution journal and recovery', () => {
   beforeEach(() => {
     execution = { id: 'server-execution', enterpriseId: 'enterprise', userId: 'user', subscriptionId: 'subscription',
       employeeId: 'employee', modelId: 'model', requestId: 'request', inputTokens: 12, outputTokens: 8,
-      status: 'USAGE_PENDING' };
+      status: 'USAGE_PENDING', billingSnapshot };
     prisma = { $queryRaw: jest.fn().mockResolvedValue([{ id: 'user', status: 'ACTIVE' }]), $transaction: jest.fn(async (fn: any) => fn(prisma)), gatewayExecution: {
       create: jest.fn().mockResolvedValue(execution), update: jest.fn().mockResolvedValue(execution),
       updateMany: jest.fn().mockImplementation(async ({ data }) => {
@@ -22,7 +26,11 @@ describe('Gateway execution journal and recovery', () => {
       }), findUniqueOrThrow: jest.fn().mockResolvedValue(execution),
       findMany: jest.fn().mockResolvedValue([{ id: execution.id }]),
     } };
-    credit = { chargeUsage: jest.fn().mockResolvedValue({ usageRecordId: 'bill', alreadyCharged: false }) };
+    credit = {
+      getBillingSnapshot: jest.fn().mockResolvedValue(billingSnapshot),
+      getLegacyBillingSnapshot: jest.fn().mockResolvedValue(billingSnapshot),
+      chargeUsage: jest.fn().mockResolvedValue({ usageRecordId: 'bill', alreadyCharged: false }),
+    };
     service = new GatewayExecutionService(prisma, credit, new ConfigService());
   });
 
@@ -48,6 +56,44 @@ describe('Gateway execution journal and recovery', () => {
     prisma.$queryRaw.mockResolvedValueOnce([{ status: 'ACTIVE' }]).mockResolvedValueOnce([{ status: 'CLOSED' }]);
     await expect(service.start(claims, 'employee', 'model', 'request')).rejects.toThrow('Enterprise is not active');
     expect(prisma.gatewayExecution.create).not.toHaveBeenCalled();
+  });
+
+  it('persists the authorized free snapshot without querying a newer price', async () => {
+    const free = { ...billingSnapshot, isFree: true, billingMultiplier: 0,
+      inputPriceUsdPerMillion: 0, outputPriceUsdPerMillion: 0 };
+    await service.start(claims, 'employee', 'model', 'request', undefined, free);
+    expect(prisma.gatewayExecution.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ billingSnapshot: free }),
+    });
+    expect(credit.getBillingSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('settles a durable free snapshot after restart even when current pricing is paid', async () => {
+    execution.billingSnapshot = { ...billingSnapshot, isFree: true, billingMultiplier: 0,
+      inputPriceUsdPerMillion: 0, outputPriceUsdPerMillion: 0 };
+    const restarted = new GatewayExecutionService(prisma, credit, new ConfigService());
+    await restarted.reconcile();
+    expect(credit.chargeUsage).toHaveBeenCalledWith(expect.objectContaining({
+      billingSnapshot: execution.billingSnapshot, inputTokens: 12, outputTokens: 8,
+    }));
+    expect(credit.getBillingSnapshot).not.toHaveBeenCalled();
+    expect(credit.getLegacyBillingSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('keeps the paid snapshot when current pricing becomes free', async () => {
+    credit.getBillingSnapshot.mockResolvedValue({ ...billingSnapshot, isFree: true, billingMultiplier: 0,
+      inputPriceUsdPerMillion: 0, outputPriceUsdPerMillion: 0 });
+    await service.settle(execution.id);
+    expect(credit.chargeUsage).toHaveBeenCalledWith(expect.objectContaining({ billingSnapshot }));
+    expect(credit.getBillingSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('uses legacy pricing for executions created before billing snapshots existed', async () => {
+    execution.billingSnapshot = null;
+    await service.settle(execution.id);
+    expect(credit.getLegacyBillingSnapshot).toHaveBeenCalledWith('model');
+    expect(credit.chargeUsage).toHaveBeenCalledWith(expect.objectContaining({ billingSnapshot }));
+    expect(credit.getBillingSnapshot).not.toHaveBeenCalled();
   });
 
   it('persists observed usage without making an active stream ready to settle', async () => {
@@ -99,6 +145,7 @@ describe('Gateway execution journal and recovery', () => {
     expect(credit.chargeUsage).toHaveBeenCalledWith({
       enterpriseId: 'enterprise', userId: 'user', subscriptionId: 'subscription', employeeId: 'employee',
       sessionId: 'gateway-execution', messageId: 'server-execution', modelId: 'model', inputTokens: 12, outputTokens: 8,
+      billingSnapshot,
     });
     expect(prisma.gatewayExecution.updateMany).toHaveBeenLastCalledWith({ where: {
       id: execution.id, status: 'USAGE_PENDING', settlementLeaseUntil: expect.any(Date),

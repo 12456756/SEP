@@ -156,7 +156,7 @@ describe('Gateway production guard chain over HTTP', () => {
     expect(releaseRequest).toHaveBeenCalledTimes(15);
     expect(policies.getSnapshot).toHaveBeenCalledTimes(15);
     expect(prepare).toHaveBeenCalledWith(expect.objectContaining(identity), expect.objectContaining({ model: body.model }), snapshot);
-    expect(executions.start).toHaveBeenCalledWith(expect.objectContaining(identity), 'employee-1', body.model, expect.any(String), snapshot);
+    expect(executions.start).toHaveBeenCalledWith(expect.objectContaining(identity), 'employee-1', body.model, expect.any(String), snapshot, undefined);
     expect(admission.acquire).toHaveBeenCalledWith(expect.objectContaining(identity), snapshot);
     expect(admission.reserve).toHaveBeenCalledTimes(15);
     expect(forward).toHaveBeenCalledWith(expect.objectContaining({ model: body.model }), snapshot, expect.any(String), expect.any(AbortSignal));

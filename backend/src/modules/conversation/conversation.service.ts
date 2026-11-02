@@ -69,11 +69,13 @@ export class ConversationService {
       },
       select: { id: true },
     });
+    const enterpriseConfig = await this.modelConfig.get(userId);
     const balanceCheck = await this.computeCredit.checkBalanceBeforeConversation(
       ctx.enterpriseId,
       subscription?.id,
       // 传 userId 才能过「这个人本月的算力额度」这道闸门
       userId,
+      enterpriseConfig.defaultChatModel,
     );
     if (!balanceCheck.allowed) {
       throw new BadRequestException(balanceCheck.reason);
@@ -82,8 +84,6 @@ export class ConversationService {
     // Snapshot the enterprise default at creation time. A null modelId would
     // silently fall back to the employee template, contradicting the setting
     // labelled "默认会话模型" in the enterprise console.
-    const enterpriseConfig = await this.modelConfig.get(userId);
-
     const session = await this.prisma.conversationSession.create({
       data: {
         userId,
