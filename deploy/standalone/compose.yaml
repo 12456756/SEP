@@ -1,0 +1,127 @@
+name: sep-migration
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+services:
+  postgres:
+    image: longdao-postgres-pgvector:18.4-v0.8.1-9a8afca54e78
+    container_name: sep-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sep_admin
+      POSTGRES_PASSWORD: ${SEP_POSTGRES_ADMIN_PASSWORD:?required}
+      POSTGRES_DB: postgres
+      PGDATA: /var/lib/postgresql/data
+      SEP_DB_PASSWORD: ${SEP_DB_PASSWORD:?required}
+    volumes:
+      - /www/sep/postgres:/var/lib/postgresql/data
+    networks:
+      sep:
+        aliases: [longdao-postgres]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U sep_admin -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *logging
+
+  redis:
+    image: redis:8-alpine
+    container_name: sep-redis
+    restart: unless-stopped
+    command: [redis-server, --appendonly, "yes"]
+    volumes:
+      - /www/sep/redis:/data
+    networks:
+      sep:
+        aliases: [longdao-redis]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *logging
+
+  backend:
+    image: sep-green-backend:42fc2644a38b
+    container_name: sep-green-backend
+    restart: unless-stopped
+    env_file:
+      - path: ./backend.env
+        format: raw
+    environment:
+      DATABASE_URL: ${SEP_DATABASE_URL:?required}
+      REDIS_URL: redis://longdao-redis:6379/1
+    volumes:
+      - /www/sep/uploads:/app/uploads
+      - /www/sep/packages:/app/storage/packages
+      - /www/sep/knowledge:/app/private/knowledge
+      - /www/sep/tokenizers:/app/tokenizers:ro
+    networks: [sep]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *logging
+
+  web:
+    image: sep-green-web:42fc2644a38b
+    container_name: sep-green-web
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      API_ORIGIN: http://sep-green-backend:3001
+      TZ: Asia/Shanghai
+    networks: [sep]
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD-SHELL, "wget -q -O /dev/null http://127.0.0.1:3000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *logging
+
+  migrator:
+    image: sep-migrator:42fc2644a38b
+    profiles: [tools]
+    restart: "no"
+    env_file:
+      - path: ./backend.env
+        format: raw
+    environment:
+      DATABASE_URL: ${SEP_DATABASE_URL:?required}
+    networks: [sep]
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: sep-caddy
+    profiles: [edge]
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - /www/sep/caddy/tls:/etc/caddy/tls:ro
+      - /www/sep/caddy/data:/data
+      - /www/sep/caddy/config:/config
+      - /www/sep/caddy/logs:/var/log/caddy
+    networks: [sep]
+    logging: *logging
+
+networks:
+  sep:
+    name: sep-migration-net
