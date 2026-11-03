@@ -2,6 +2,8 @@
 
 本目录保存 2026-11-03 迁移到 `121.37.128.126` 后的实际 Compose 和 Caddy 配置。首次迁移复用原生产版本 `42fc2644a38b0e21566d28cd1f528f6e91321044` 的镜像，没有发布本地后续业务改动。
 
+2026-11-03 后续将正式访问入口调整为 `https://sep.longdaoec.com`。Web 基于同一生产提交和既有依赖重新构建，更新构建时写入的 WebSocket 地址，镜像为 `sep-green-web:42fc2644a38b-domain-20261103`；后端保持原镜像。域名切换过程见 [域名切换记录](../../docs/deployment/2026-11-03-SEP域名切换记录.md)。
+
 服务器配置目录为 `/www/sep/deploy`，业务数据位于 1TB 数据盘 `/www`。旧的 `deploy/production/sep-deploy.sh` 和 GitHub 部署工作流仍针对旧服务器共享基础设施；后续发布前需要适配独立部署，不应直接改 `SERVER_HOST` 后运行旧脚本。
 
 ## 配置与数据
@@ -17,6 +19,7 @@
 | `/www/sep/uploads` | 上传文件 |
 | `/www/sep/packages` | 技能包文件 |
 | `/www/sep/knowledge` | 知识库原始文件 |
+| `/www/sep/downloads/sep-client/stable` | 客户端安装包和更新清单，下载入口与主站共用域名 |
 | `/www/sep/tokenizers` | 只读分词资源 |
 | `/www/sep/caddy/data` | Caddy 自动管理的站点证书和状态 |
 | `/www/sep/backups` | 镜像、源码、数据库、文件和校验记录 |
@@ -36,12 +39,20 @@ Docker 镜像、构建缓存和容器日志使用系统盘 `/var/lib/docker`。�
 cd /www/sep/deploy
 docker compose --env-file .env -f compose.yaml --profile edge ps
 docker compose --env-file .env -f compose.yaml logs --tail 100 backend web
-curl --fail --resolve longdaosep.cn:443:127.0.0.1 https://longdaosep.cn/api/health/ready
+curl --fail --resolve sep.longdaoec.com:443:127.0.0.1 https://sep.longdaoec.com/api/health/ready
 ```
 
 PostgreSQL、Redis、后端和前端均不向公网发布端口；Caddy 发布 80/443。不要把包含密码的 `docker compose config` 或环境变量完整输出粘贴到日志、聊天或 Git；检查配置语法使用 `docker compose --env-file .env -f compose.yaml --profile edge config -q`。
 
 生产停止/重启需要先完成 Gateway 排空、等待活动请求归零，再发送 TERM；迁移时使用原生产脚本的生命周期函数完成。直接重建应用容器可能中断长请求，后续自动发布适配需要保留该机制。
+
+## 客户端下载
+
+下载服务使用 `downloads` 容器，只在内部网络监听，通过主站的 `/sep-client/*` 路径代理。入口为 `https://sep.longdaoec.com/sep-client/stable/`，无需新增 DNS；实际文件位于数据盘 `/www/sep/downloads/sep-client/stable/<version>/`，更新清单位于 `stable/latest.yml` 和 `stable/latest-mac.yml`。
+
+只发布新版安装包，不迁移历史安装包。发布顺序为：干净源码快照构建、检查包内 API/Gateway/feed 和版本、上传到私有暂存目录、校验文件哈希、公开版本目录，最后原子替换两个更新清单。官网直链配置在 `web/src/config/client-releases.ts`；构建必须与已部署源码基线保持一致，不能随本次下载迁移发布工作区的其他业务修改。
+
+当前发布版本 `0.3.3`；官网 Web 镜像为 `sep-green-web:42fc2644a38b-download-0.3.3`。旧下载域名通过 HTTPS 代理兼容更新检查。实际发布路径、构建来源与验证结果见 [客户端下载迁移与 0.3.3 发布](../../docs/deployment/2026-11-03-SEP客户端下载迁移与0.3.3发布.md)。
 
 ## 证书与旧入口
 

@@ -1,0 +1,39 @@
+{
+    auto_https off
+}
+
+:80 {
+    root * /srv
+    header {
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+        Cache-Control "no-store"
+    }
+
+    @client_artifacts path *.dmg *.exe
+    header @client_artifacts {
+        Content-Type "application/octet-stream"
+        Content-Disposition "attachment"
+    }
+    @latest path /sep-client/stable/latest.yml /sep-client/stable/latest-mac.yml
+    header @latest Cache-Control "no-store"
+
+    @legacy_arm path /sep-client/stable/0.1.2/SEP-Client-0.1.2-mac-arm64.dmg
+    redir @legacy_arm /sep-client/stable/0.3.3/SEP-Client-0.3.3-mac-arm64.dmg 302
+    @legacy_x64 path /sep-client/stable/0.1.2/SEP-Client-0.1.2-mac-x64.dmg
+    redir @legacy_x64 /sep-client/stable/0.3.3/SEP-Client-0.3.3-mac-x64.dmg 302
+    @legacy_win path /sep-client/stable/0.1.2/SEP-Client-0.1.2-win-x64.exe
+    redir @legacy_win /sep-client/stable/0.3.3/SEP-Client-0.3.3-win-x64.exe 302
+    @legacy_sums path /sep-client/stable/0.1.2/SHA256SUMS.txt
+    redir @legacy_sums /sep-client/stable/0.3.3/SHA256SUMS.txt 302
+
+    @beta path_regexp beta ^/sep-client/beta/(.*)$
+    header @beta Cache-Control "no-store"
+    redir @beta /sep-client/stable/{re.beta.1} 302
+
+    file_server
+    log {
+        output stdout
+        format json
+    }
+}

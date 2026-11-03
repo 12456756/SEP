@@ -30,16 +30,16 @@ describe('HeroDownloadMenu', () => {
     fireEvent.click(screen.getByRole('button', { name: /下载客户端/ }));
 
     const expectedDownloads = [
-      { label: /macOS · Apple 芯片/, fileName: 'SEP-Client-0.1.2-mac-arm64.dmg' },
-      { label: /macOS · Intel 芯片/, fileName: 'SEP-Client-0.1.2-mac-x64.dmg' },
-      { label: /Windows · 64 位/, fileName: 'SEP-Client-0.1.2-win-x64.exe' },
+      { label: /macOS · Apple 芯片/, fileName: 'SEP-Client-0.3.3-mac-arm64.dmg' },
+      { label: /macOS · Intel 芯片/, fileName: 'SEP-Client-0.3.3-mac-x64.dmg' },
+      { label: /Windows · 64 位/, fileName: 'SEP-Client-0.3.3-win-x64.exe' },
     ];
     expect(screen.getAllByRole('menuitem')).toHaveLength(expectedDownloads.length);
     expect(screen.getByRole('button', { name: '下载客户端' })).toHaveTextContent(/^下载客户端$/);
     expect(screen.queryByText(/v0\.1\.2|M1\/M2\/M3\/M4/)).not.toBeInTheDocument();
     for (const { label, fileName } of expectedDownloads) {
       const item = screen.getByRole('menuitem', { name: label });
-      expect(item).toHaveAttribute('href', `https://download.longdaoSEP.cn/sep-client/stable/0.1.2/${fileName}`);
+      expect(item).toHaveAttribute('href', `https://sep.longdaoec.com/sep-client/stable/0.3.3/${fileName}`);
       expect(item).toHaveAttribute('download', fileName);
       expect(item).toHaveAttribute('aria-disabled', 'false');
     }

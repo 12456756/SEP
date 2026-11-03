@@ -17,7 +17,10 @@
     }
 }
 
-longdaosep.cn {
+sep.longdaoec.com, longdaosep.cn {
+
+    @sep_downloads path /sep-client/*
+    reverse_proxy @sep_downloads sep-downloads:80
 
     @skill_import path /api/skill-import /api/skill-import/*
     handle @skill_import {

@@ -1,0 +1,19 @@
+# Rebuild the migrated release with the new public WebSocket origin. The two
+# base images are preserved in /www/sep/backups/bootstrap-20261103.
+ARG SEP_WEB_BASE_IMAGE=sep-green-web:42fc2644a38b
+FROM ${SEP_WEB_BASE_IMAGE} AS builder
+USER root
+WORKDIR /app
+COPY --from=sep-migrator:42fc2644a38b /app/backend/node_modules /app/backend/node_modules
+COPY . .
+ENV NEXT_TELEMETRY_DISABLED=1
+ENV API_ORIGIN=http://sep-green-backend:3001
+ENV NEXT_PUBLIC_WS_URL=wss://sep.longdaoec.com
+RUN rm -rf /app/web/.next && pnpm --filter web run build
+
+FROM ${SEP_WEB_BASE_IMAGE} AS runner
+USER root
+RUN rm -rf /app/web/.next
+COPY --from=builder --chown=node:node /app/web/.next /app/web/.next
+WORKDIR /app/web
+USER node

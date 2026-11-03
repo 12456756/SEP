@@ -79,7 +79,7 @@ services:
     logging: *logging
 
   web:
-    image: sep-green-web:42fc2644a38b
+    image: sep-green-web:42fc2644a38b-download-0.3.3
     container_name: sep-green-web
     restart: unless-stopped
     environment:
@@ -107,6 +107,16 @@ services:
     environment:
       DATABASE_URL: ${SEP_DATABASE_URL:?required}
     networks: [sep]
+
+  downloads:
+    image: caddy:2-alpine
+    container_name: sep-downloads
+    restart: unless-stopped
+    volumes:
+      - ./Downloads.Caddyfile:/etc/caddy/Caddyfile:ro
+      - /www/sep/downloads:/srv:ro
+    networks: [sep]
+    logging: *logging
 
   caddy:
     image: caddy:2-alpine

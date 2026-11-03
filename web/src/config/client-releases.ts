@@ -21,29 +21,29 @@ export interface ClientRelease {
 }
 
 export const CLIENT_RELEASE: ClientRelease = {
-  version: '0.1.2',
+  version: '0.3.3',
   artifacts: [
     {
       platform: 'macos-arm64',
       label: 'macOS · Apple 芯片',
-      fileName: 'SEP-Client-0.1.2-mac-arm64.dmg',
-      url: 'https://download.longdaoSEP.cn/sep-client/stable/0.1.2/SEP-Client-0.1.2-mac-arm64.dmg',
+      fileName: 'SEP-Client-0.3.3-mac-arm64.dmg',
+      url: 'https://sep.longdaoec.com/sep-client/stable/0.3.3/SEP-Client-0.3.3-mac-arm64.dmg',
       architecture: 'ARM64',
       minimumOsVersion: 'macOS 12 或更高版本',
     },
     {
       platform: 'macos-x64',
       label: 'macOS · Intel 芯片',
-      fileName: 'SEP-Client-0.1.2-mac-x64.dmg',
-      url: 'https://download.longdaoSEP.cn/sep-client/stable/0.1.2/SEP-Client-0.1.2-mac-x64.dmg',
+      fileName: 'SEP-Client-0.3.3-mac-x64.dmg',
+      url: 'https://sep.longdaoec.com/sep-client/stable/0.3.3/SEP-Client-0.3.3-mac-x64.dmg',
       architecture: 'x64',
       minimumOsVersion: 'macOS 12 或更高版本',
     },
     {
       platform: 'windows-x64',
       label: 'Windows · 64 位',
-      fileName: 'SEP-Client-0.1.2-win-x64.exe',
-      url: 'https://download.longdaoSEP.cn/sep-client/stable/0.1.2/SEP-Client-0.1.2-win-x64.exe',
+      fileName: 'SEP-Client-0.3.3-win-x64.exe',
+      url: 'https://sep.longdaoec.com/sep-client/stable/0.3.3/SEP-Client-0.3.3-win-x64.exe',
       architecture: 'x64',
       minimumOsVersion: 'Windows 10 64 位或更高版本',
     },
