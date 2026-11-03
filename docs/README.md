@@ -17,6 +17,7 @@
 - [AI 集成实施计划](./plans/AI-Integration-Implementation-Plan.md) - sub2api + Coze 集成开发计划（8 阶段，18-24h）
 
 ### 🔬 技术调研
+- [Web 本机 Skills 扫描与开发者身份方案复核](./research/2026-11-03-Web本机Skills扫描与开发者身份方案复核.md) - 最少操作的生产方案、免登录连接器与云端导入会话、现有客户端企业登录限制和开发者账号边界；更新原连接建议
 - [本地 Agent Skills 扫描上传可行性调研](./research/2026-11-03-本地Agent-Skills扫描上传可行性调研.md) - 现有扫描器与权限核查、部署网页连接本机助手的方案、目录适配、工期与验收边界
 - [Agent Runtime 框架评估](./research/agent-runtime-framework-evaluation.md) - Vercel AI SDK vs LangChain 对比
 
