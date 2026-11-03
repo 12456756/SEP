@@ -1,6 +1,6 @@
 # 硅基人才平台 - 文档导航
 
-> 最后更新：2026-10-29
+> 最后更新：2026-11-03
 
 ## 📚 目录结构
 
@@ -12,15 +12,21 @@
 - [ADR 目录](./architecture/adr/) - 架构决策记录（Architecture Decision Records）
 
 ### 📋 实施计划
+- [Skills 本机扫描导入前端开发方案 v1](./plans/2026-11-03-Skills本机扫描导入前端开发方案-v1.md) - 已确认的页面设计、组件与状态、接口契约、异常处理、开发任务和验收计划；尚未实施
 - [模型驱动媒体规格协商与上游透传：SEP 开发调研](./plans/2026-10-29-模型驱动媒体规格协商与上游透传-SEP开发调研.md) - SEP V3 本地开发与审查修复完成，见[实施记录](./progress/2026-10-29-媒体规格协商V3实施记录.md)；客户端与真实上游联调单独验收
 - [AI 集成实施计划](./plans/AI-Integration-Implementation-Plan.md) - sub2api + Coze 集成开发计划（8 阶段，18-24h）
 
 ### 🔬 技术调研
+- [本地 Agent Skills 扫描上传可行性调研](./research/2026-11-03-本地Agent-Skills扫描上传可行性调研.md) - 现有扫描器与权限核查、部署网页连接本机助手的方案、目录适配、工期与验收边界
 - [Agent Runtime 框架评估](./research/agent-runtime-framework-evaluation.md) - Vercel AI SDK vs LangChain 对比
 
 ### 🔌 外部集成
 - [OpenCode 执行后端接口契约](./对接/OpenCode执行后端-协作与接口契约.md) - OpenCode Skills Service HTTP API 规范
 - [Agent Runtime 对比](./对接/agent-runtime-对比.md) - 不同 Agent 框架对比分析
+
+### 部署与迁移
+- [SEP 完整迁移部署手册](./deployment/2026-11-03-SEP完整迁移部署手册.md) - 从 `64.83.39.223` 迁移到 `121.37.128.126`，包括数据库、文件、独立部署配置、演练、切换、验收与回滚
+- [Embedding 服务部署指南](./deployment/embedding-service.md) - Ollama、固定模型与 tokenizer、向量检索验收
 
 ### 📅 开发进度
 - [2026-07-23 开发记录](./progress/2026-07-23.md) - Layer 5 对话系统 + 前端核心页面
