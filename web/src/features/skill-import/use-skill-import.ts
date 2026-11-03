@@ -154,9 +154,11 @@ export function useSkillImport(onArtifact: (artifact: SkillImportArtifact | null
     refetchInterval: (query) => ['ready', 'failed', 'superseded'].includes(query.state.data?.previewStatus ?? '') || unrecoverable(query.state.error) ? false : interval(query.state.errorUpdateCount, query.state.error),
   });
   const snapshot = preview.data?.preview;
+  const filesDeadline = snapshot && current ? Math.min(Date.parse(snapshot.expiresAt), Date.parse(current.expiresAt), Date.parse(current.idleExpiresAt)) : 0;
   const files = useInfiniteQuery({
     queryKey: [...prefix, session?.id, 'files', snapshot?.snapshotId],
     queryFn: async ({ pageParam, signal }) => {
+      if (!active || Date.now() >= filesDeadline) throw new ApiError(410, '文件预览已过期，请重新选择技能');
       const params = new URLSearchParams({ view: 'files', snapshotId: snapshot!.snapshotId, limit: '100', cursor: pageParam! });
       const result = SkillImportFilesResponseSchema.parse(await api.get(`/skill-import/sessions/${session!.id}?${params}`, { signal }));
       if (result.snapshotId !== snapshot!.snapshotId) throw new Error('文件清单与预览不匹配');
@@ -164,12 +166,28 @@ export function useSkillImport(onArtifact: (artifact: SkillImportArtifact | null
     },
     initialPageParam: snapshot?.nextFilesCursor ?? null,
     getNextPageParam: (page) => page.nextFilesCursor ?? undefined,
-    enabled: active && !!snapshot?.nextFilesCursor, retry: false, refetchOnWindowFocus: false,
+    enabled: active && !!snapshot?.nextFilesCursor && filesDeadline > now,
+    retry: (failures, error) => failures < 2 && !unrecoverable(error)
+      && (!(error instanceof ApiError) || error.status === 408 || error.status === 429 || error.status >= 500)
+      && Date.now() < filesDeadline,
+    retryDelay: (failures, error) => interval(failures, error),
+    refetchOnWindowFocus: false, refetchOnReconnect: false,
   });
   const { hasNextPage: hasMoreFiles, isFetching: fetchingFiles, isError: filesFailed, fetchNextPage: fetchMoreFiles } = files;
-  useEffect(() => { if (hasMoreFiles && !fetchingFiles && !filesFailed) void fetchMoreFiles(); }, [hasMoreFiles, fetchingFiles, filesFailed, fetchMoreFiles]);
+  useEffect(() => {
+    if (active && Date.now() < filesDeadline && hasMoreFiles && !fetchingFiles && !filesFailed) void fetchMoreFiles();
+  }, [active, filesDeadline, hasMoreFiles, fetchingFiles, filesFailed, fetchMoreFiles]);
   const allFiles = [...(snapshot?.files ?? []), ...(files.data?.pages.flatMap((page) => page.files) ?? [])];
   const filesReady = !!snapshot && allFiles.length === snapshot.fileCount && (!snapshot.nextFilesCursor || (!!files.data && !files.hasNextPage && !files.isFetching && !files.isError));
+  const canRetryFiles = active && filesDeadline > now && files.isError
+    && !files.isFetching && !unrecoverable(files.error)
+    && (!(files.error instanceof ApiError) || !files.error.retryAfterSeconds
+      || now >= files.errorUpdatedAt + files.error.retryAfterSeconds * 1000);
+  const retryFiles = () => {
+    if (!canRetryFiles || Date.now() >= filesDeadline) return;
+    if (files.data) void files.fetchNextPage();
+    else void files.refetch();
+  };
   const operation = useQuery({
     queryKey: [...prefix, session?.id, 'operation', operationId],
     queryFn: async ({ signal }) => {
@@ -190,7 +208,10 @@ export function useSkillImport(onArtifact: (artifact: SkillImportArtifact | null
       callback.current(result.artifact);
     }
   }, [operation.data, operationId, session]);
-  useEffect(() => { if (expired || ['cancelled', 'expired', 'failed'].includes(current?.status ?? '') || unrecoverable(status.error)) callback.current(null); }, [expired, current?.status, status.error]);
+  useEffect(() => {
+    if (unrecoverable(status.error) || ['cancelled', 'failed'].includes(current?.status ?? '')
+      || (!delivered.current && (expired || current?.status === 'expired'))) callback.current(null);
+  }, [expired, current?.status, status.error]);
 
   const create = useMutation({
     mutationFn: async (input: { requestId: string; scope: typeof scope }) => SkillImportSessionViewSchema.parse(await api.post('/skill-import/sessions', SkillImportSessionCreateSchema.parse({ ...input, protocolVersion: 1 }), { signal: mutationAbort.current.signal })), retry: false,
@@ -270,7 +291,7 @@ export function useSkillImport(onArtifact: (artifact: SkillImportArtifact | null
     catch (err) { if (generation === epoch.current) setError(message(err)); }
   };
   return { session: current, now, scope, setScope: (value: typeof scope) => { invalidate(); setScope(value); }, search, setSearch: (value: string) => { invalidate(); setSearch(value); }, source, setSource: (value: string) => { invalidate(); setSource(value); }, selected: current ? selected : null, preview: snapshot, allFiles, filesReady,
-    candidates, operation, operationId, selectionUnknown: selectionUnknown && !operation.data?.operation, start, cancel, choose, select, confirmDevice, confirm, create, selection, requestPreview, devices, revoke,
+    candidates, files, canRetryFiles, retryFiles, operation, operationId, selectionUnknown: selectionUnknown && !operation.data?.operation, start, cancel, choose, select, confirmDevice, confirm, create, selection, requestPreview, devices, revoke,
     revokeDevice: (deviceId: string) => revoke.mutate({ deviceId, owner }), showDevices, setShowDevices, config,
     expired, active, error: (selectionUnknown && operation.data?.operation ? null : error) ?? (status.error ? message(status.error) : preview.error ? message(preview.error) : candidates.error ? message(candidates.error) : operation.error ? message(operation.error) : files.error ? message(files.error) : preview.data?.errorCode ?? null),
     invalidate, previewFailed: ['failed', 'superseded'].includes(preview.data?.previewStatus ?? ''), snapshotExpired: !!snapshot && Date.parse(snapshot.expiresAt) <= now };

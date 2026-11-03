@@ -1,6 +1,8 @@
 import express from 'express';
 import request from 'supertest';
-import { createSkillImportIngressMiddleware } from './skill-import-ingress.middleware';
+import type { Request } from 'express';
+import { createSkillImportEventByteConsumer, createSkillImportIngressMiddleware } from './skill-import-ingress.middleware';
+import { skillImportSessionRoute } from './skill-import-route';
 
 describe('skill import ingress before body parsing', () => {
   const evalScript = jest.fn();
@@ -74,5 +76,47 @@ describe('skill import ingress before body parsing', () => {
     evalScript.mockImplementation(() => new Promise(() => {}));
     await request(start()).post('/api/skill-import/sessions').send({}).expect(503);
     expect(parsed).not.toHaveBeenCalled();
+  });
+
+  it('atomically charges per-session actual bytes with a fixed bounded lifetime', async () => {
+    const consume = createSkillImportEventByteConsumer(() => ({ eval: evalScript }), { instanceId: 'test' });
+    const req = { method: 'POST', path: '/api/skill-import/connector/sessions/Mixed-Case/events' } as Request;
+    evalScript.mockResolvedValue(128 * 1024 * 1024);
+    await expect(consume(req, 1024)).resolves.toBeUndefined();
+    expect(evalScript).toHaveBeenCalledWith(expect.stringContaining("redis.call('INCRBY'"), 1, 'skill-import:v1:test:event-bytes:Mixed-Case', 1024, 35 * 60_000);
+    evalScript.mockResolvedValue(128 * 1024 * 1024 + 1);
+    await expect(consume(req, 1)).rejects.toMatchObject({ status: 400, response: { code: 'EVENT_BUDGET_EXCEEDED' } });
+    expect(evalScript).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not charge unrelated requests and fails closed if byte accounting is unavailable', async () => {
+    const consume = createSkillImportEventByteConsumer(() => ({ eval: evalScript }), { instanceId: 'test', redisTimeoutMs: 20 });
+    await consume({ method: 'POST', path: '/api/capabilities' } as Request, 100);
+    expect(evalScript).not.toHaveBeenCalled();
+    const req = { method: 'POST', path: '/api/skill-import/connector/sessions/s-1/events' } as Request;
+    evalScript.mockRejectedValue(new Error('private redis connection'));
+    await expect(consume(req, 100)).rejects.toMatchObject({ status: 503, response: { code: 'IMPORT_UNAVAILABLE' } });
+    evalScript.mockImplementation(() => new Promise(() => {}));
+    await expect(consume(req, 100)).rejects.toMatchObject({ status: 503, response: { code: 'IMPORT_UNAVAILABLE' } });
+  });
+
+  it('charges canonical and encoded IDs to the same case-preserving session bucket', async () => {
+    evalScript.mockResolvedValue(1);
+    const consume = createSkillImportEventByteConsumer(() => ({ eval: evalScript }), { instanceId: 'test' });
+    for (const sessionId of ['Abc-_1', '%41bc%2D%5F%31']) {
+      await consume({ method: 'POST', path: `/api/skill-import/connector/sessions/${sessionId}/events` } as Request, 100);
+    }
+    expect(evalScript.mock.calls.map((call) => call[2])).toEqual(['skill-import:v1:test:event-bytes:Abc-_1', 'skill-import:v1:test:event-bytes:Abc-_1']);
+    for (const sessionId of ['%2FAbc', '%2541bc', '%broken']) {
+      await consume({ method: 'POST', path: `/api/skill-import/connector/sessions/${sessionId}/events` } as Request, 100);
+      expect(skillImportSessionRoute(`/api/skill-import/connector/sessions/${sessionId}/package`, 'package')).toBeNull();
+    }
+    expect(evalScript).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps encoded event routes in the event-specific ingress rate bucket', async () => {
+    await request(start()).post('/api/skill-import/connector/sessions/%61bc/events').send({}).expect(200);
+    expect(evalScript.mock.calls[0][2]).toContain(':ingress:events:');
+    expect(skillImportSessionRoute('/API/SKILL-IMPORT/CONNECTOR/SESSIONS/%41bc/package/', 'package')).toBe('Abc');
   });
 });

@@ -30,6 +30,7 @@ function commandFor(session: ImportSession, event: SkillImportEvent): ImportComm
 export function applyImportEvent(session: ImportSession, event: SkillImportEvent): boolean {
   const command = commandFor(session, event);
   if (command.type === 'preview' && session.preview?.commandId !== command.commandId) return true;
+  if (command.completed) return true;
   switch (event.type) {
     case 'command-started': {
       if (event.payload.type !== command.type) reject('COMMAND_INVALID', '事件命令类型不匹配');

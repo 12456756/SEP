@@ -270,6 +270,8 @@ cursor 必须绑定 session、轮次和筛选条件，拒绝跨范围使用；�
 
 快速切换候选时 preview 请求采用最新 requestId，替换旧请求与快照；旧 command 的迟到预览被 ack 为 ignored，不覆盖新预览，也不导致事件序号断档。服务端仅在完整预览及全部文件页已接收时标记 ready，Web 才能提交 selection。预览超过 60 秒返回本次预览错误并回 results，不自动把整个会话置 failed；CANDIDATE_CHANGED/SNAPSHOT_EXPIRED 同样回 results 并使旧快照失效，可重新预览。
 
+替换或超时的 preview 命令立即退出待领取队列，避免废弃命令占满 20 条领取窗口；已完成命令的迟到事件只 ack 为 ignored，不回退后续阶段。文件分页与状态轮询分别限流；文件请求临时失败遵守 Retry-After，自动重试至多两次，仍失败时允许手动继续失败页。
+
 ### 7.2 客户端内置模块 API
 
 两种 operation 查询共用 `status:'pending'|'processing'|'succeeded'|'failed'` 与 `retryable:boolean`。pending 可继续，processing 等待，failed 仅 retryable=true 可同包重试，succeeded 不再申请上传授权；retryable 不是第五种状态。Web 额外返回 artifact，客户端仅接收本节的安全摘要。
@@ -279,7 +281,7 @@ cursor 必须绑定 session、轮次和筛选条件，拒绝跨范围使用；�
 | 方法与路径 | 凭据/行为 |
 |---|---|
 | `POST /skill-import/connector/pairings` | requestId、sessionId、公钥、协议/客户端版本、设备元数据；同请求幂等创建 pairing，返回 pairingId、短码、发起者显示标签、请求范围与挑战，不发扫描授权 |
-| `POST /skill-import/connector/challenges` | purpose=session-grant 时 sessionId + deviceId 或 pairingId；purpose=device-revoke 时 deviceId、无 session。请求新一次性挑战，只返回任务确认必需信息 |
+| `POST /skill-import/connector/challenges` | purpose=session-grant 时 sessionId + deviceId 或 pairingId，客户端同时发送当前 clientVersion（正式 x.y.z）；purpose=device-revoke 时仅 deviceId，无 session/clientVersion。请求新一次性挑战，只返回任务确认必需信息 |
 | `POST /skill-import/connector/grants` | challengeId、签名和本机同意（rememberDevice/scope/rootIds）；按 6.2 节返回 202 等待或 200 session grant |
 | `GET /skill-import/connector/sessions/:id/commands?cursor=...` | session grant；固定命令页及 nextCursor，2 秒轮询，不提供跨会话列表 |
 | `POST /skill-import/connector/sessions/:id/events` | session grant；候选批次、preview、文件批次、进度、command-completed、受控错误；响应 ack cursor |
@@ -290,6 +292,8 @@ cursor 必须绑定 session、轮次和筛选条件，拒绝跨范围使用；�
 | `POST /skill-import/connector/devices/:deviceId/revoke` | purpose=device-revoke 的挑战签名；只撤销该公钥对应绑定并取消任务，不需要已有效 session grant，不能操作其他绑定 |
 
 固定命令仅 `scan`、`preview`、`package-selected`、`cancel`，共有 `sessionId/commandId/sequence/expiresAt/type/payload`。payload 不接受任意路径、URL、shell、代码或可调用方法。scope/rootId 仅引用客户端已授权范围。
+
+会话挑战和 grant 签发均校验当前最低客户端版本，记住设备也不豁免。共享 schema 暂保留可选 clientVersion 以兼容已创建的 pairing；缺省时使用该 pairing/设备记录版本，仍执行最低版本校验。客户端升级后发送当前版本，不能依赖绑定时保存的旧版本。版本字段不加入挑战响应或更改现有签名数组。
 
 scan payload 为本会话 scope/获准 rootIds；preview 为 requestId/candidateId/revision；package-selected 为 candidateId/snapshotId/operationId，**不含 upload grant**。打包后才申请授权，避免打包耗时消耗上传时限。命令读取是至少一次投递，只有 command-started/完成事件确认后推进服务端 ack；客户端不得仅因收到 nextCursor 就丢弃未执行命令，设备内按 commandId 去重。
 
@@ -389,6 +393,8 @@ Web 只从本人会话取回 artifact，再填现有表单并调用 `POST /capab
 `main.ts` 中新 ingress middleware 在 `createJsonBodyMiddleware()` 前执行，仅匹配 `/api/skill-import`。对匿名 pairing/challenge/grant 先做可信代理解析后的 IP 频率限制；鉴权后再做用户/设备/session 粒度限制。不要仅在 controller 执行完大 JSON 解析后才限流。
 
 建议初始配置：每用户最多 3 个活动会话，创建 5 次/分钟；新 pairing/challenge 每 IP 20 次/分钟、每 session 5 次/分钟；同 pairing 的 grants 确认轮询单独 40 次/分钟，不能复用新 pairing 的低频桶；设备命令读取 60 次/分钟；Web 状态 60 次/分钟；operation 查询 60 次/分钟；事件 120 次/分钟且单会话累计事件 JSON 最多 128 MiB（重传亦计入入口流量预算）；preview/selection 20 次/分钟；上传授权申请及上传启动每 operation 各 5 次/5 分钟。各桶分别计数，Redis 原子消费，429 返回 Retry-After；取消/撤销保留独立预算避免被轮询耗尽。部署按 NAT 和实际并发测试调整，不能把业务身份直接信任为请求自报值。
+
+Web 的 status/candidates/preview/operation 视图按用户、会话和 view 各自 60 次/分钟；files 独立 120 次/分钟，允许一次完整读取 10,000 文件（100 页）。事件累计预算使用 JSON parser 实际接收并解压后的 buffer 字节，包含转义、重传、语法错误与 DTO/状态校验失败，独立 Redis 原子计数，固定 35 分钟 TTL，不随业务状态回滚；超过单请求限制的请求仍由入口/parser 拒绝。
 
 在 `json-body.middleware.ts` 仅为 `POST /api/skill-import/connector/sessions/:id/events` 添加现有 16 MiB Skill parser 分支；共享 Zod 再按 event type 区分 1 MiB 摘要和 16 MiB 单正文事件。其他导入 JSON 保持普通预算。测试转义后的 2 MiB Markdown 可以进入事件路由，超过事件预算被拒绝，其他普通路由仍为原限额。
 

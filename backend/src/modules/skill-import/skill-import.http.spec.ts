@@ -14,6 +14,7 @@ import Redis from 'ioredis';
 import request from 'supertest';
 import { HttpExceptionFilter } from '../../common/filters/http-exception.filter';
 import { createJsonBodyMiddleware } from '../../common/middleware/json-body.middleware';
+import { createSkillImportEventByteConsumer } from '../../common/middleware/skill-import-ingress.middleware';
 import { PrismaService } from '../../prisma/prisma.service';
 import { RedisService } from '../../redis/redis.service';
 import { SkillImportArtifactSchema, SkillImportCandidatesResponseSchema, SkillImportDevicesResponseSchema, SkillImportFilesResponseSchema, SkillImportOperationResponseSchema, SkillImportPreviewResponseSchema } from 'shared';
@@ -46,6 +47,7 @@ integration('Skill import HTTP protocol with real Redis and ZIP pipeline', () =>
   let store: SkillImportStore;
   let packages: SkillPackageService;
   let enabled = true;
+  let minimumVersion = '1.0.0';
   let role: UserRole = UserRole.ADMIN;
   let accountStatus: UserStatus = UserStatus.ACTIVE;
   let webActive = true;
@@ -84,7 +86,7 @@ integration('Skill import HTTP protocol with real Redis and ZIP pipeline', () =>
     redis = new Redis(process.env.SKILL_IMPORT_TEST_REDIS_URL!, { enableOfflineQueue: false, commandTimeout: 1000, maxRetriesPerRequest: 0 });
     await new Promise<void>((resolve, reject) => { redis.once('ready', () => resolve()); redis.once('error', reject); });
     root = await mkdtemp(join(tmpdir(), 'sep-import-http-'));
-    const config = { get: (key: string) => ({ SKILL_IMPORT_ENABLED: enabled, SKILL_IMPORT_INSTANCE_ID: instanceId, SKILL_IMPORT_MIN_CLIENT_VERSION: '1.0.0', SKILL_IMPORT_UPLOAD_CONCURRENCY: 1, SKILL_PACKAGE_DIR: join(root, 'packages') }[key]) };
+    const config = { get: (key: string) => ({ SKILL_IMPORT_ENABLED: enabled, SKILL_IMPORT_INSTANCE_ID: instanceId, SKILL_IMPORT_MIN_CLIENT_VERSION: minimumVersion, SKILL_IMPORT_UPLOAD_CONCURRENCY: 1, SKILL_PACKAGE_DIR: join(root, 'packages') }[key]) };
     const moduleRef = await Test.createTestingModule({
       controllers: [SkillImportController, SkillImportConnectorController],
       providers: [SkillImportService, SkillImportStore, SkillImportUploadGuard, SkillImportUploadInterceptor, SkillPackageService, PackageSecurityService, CapabilityValidatorService,
@@ -95,12 +97,12 @@ integration('Skill import HTTP protocol with real Redis and ZIP pipeline', () =>
       const req = context.switchToHttp().getRequest();
       req.user = { id: 'admin', role: 'ADMIN', sid: req.headers['x-web-sid'] === 'missing' ? undefined : req.headers['x-web-sid'] || 'web-session' }; return true;
     } }).compile();
-    app = moduleRef.createNestApplication({ bodyParser: false }); app.setGlobalPrefix('api'); app.use(createJsonBodyMiddleware()); app.useGlobalFilters(new HttpExceptionFilter()); await app.listen(0, '127.0.0.1');
+    app = moduleRef.createNestApplication({ bodyParser: false }); app.setGlobalPrefix('api'); app.use(createJsonBodyMiddleware({}, createSkillImportEventByteConsumer(() => redis, { instanceId }))); app.useGlobalFilters(new HttpExceptionFilter()); await app.listen(0, '127.0.0.1');
     service = app.get(SkillImportService); store = app.get(SkillImportStore); packages = app.get(SkillPackageService);
   });
 
   const cleanup = async () => { const keys = await redis.keys(`skill-import:v1:${instanceId}:*`); if (keys.length) await redis.del(...keys); };
-  beforeEach(async () => { enabled = true; role = UserRole.ADMIN; accountStatus = UserStatus.ACTIVE; webActive = true; devices.clear(); audit.record.mockClear(); await cleanup(); });
+  beforeEach(async () => { enabled = true; minimumVersion = '1.0.0'; role = UserRole.ADMIN; accountStatus = UserStatus.ACTIVE; webActive = true; devices.clear(); audit.record.mockClear(); await cleanup(); });
   afterEach(() => jest.restoreAllMocks());
   afterAll(async () => { await app?.close(); if (redis) { await cleanup(); await redis.quit(); } if (root) await rm(root, { recursive: true, force: true }); });
 
@@ -254,6 +256,98 @@ integration('Skill import HTTP protocol with real Redis and ZIP pipeline', () =>
     const response = await request(app.getHttpServer()).get(`/api/skill-import/sessions/${id}?view=preview&requestId=later&candidateId=candidate-2`).expect(200);
     expect(response.body.preview.content).toBe('# New');
     expect(response.body.preview.snapshotId).toBe('new-snapshot');
+  });
+
+  it('retires superseded previews so the current command is delivered after more than 20 selections', async () => {
+    const { id, event, scan, grant } = await prepared(false, false);
+    await event('command-completed', scan.commandId, { type: 'scan' }).expect(200);
+    let latestCommand = '';
+    for (let index = 0; index < 22; index += 1) {
+      if (index === 18) await redis.del(`skill-import:v1:${instanceId}:rate:preview:${id}`);
+      const response = await request(app.getHttpServer()).post(`/api/skill-import/sessions/${id}/preview`).send({ requestId: `rapid-${index}`, candidateId: 'candidate', revision: 1 }).expect(202);
+      latestCommand = response.body.commandId;
+    }
+    const state = await store.read<ImportSession>(`session:${id}`);
+    const commands = await request(app.getHttpServer()).get(`/api/skill-import/connector/sessions/${id}/commands?cursor=${state.commandSequence}`).auth(grant.sessionGrant, { type: 'bearer' }).expect(200);
+    expect(commands.body.items.map((command: { commandId: string }) => command.commandId)).toEqual([latestCommand]);
+  });
+
+  it('retires timed-out preview commands while acknowledging their late completion', async () => {
+    const { id, event, grant, previewRequest } = await prepared(false, false);
+    const state = await store.read<ImportSession>(`session:${id}`);
+    state.preview.status = 'pending'; state.preview.deadline = Date.now() - 1;
+    await store.put(`session:${id}`, state);
+    const commands = await request(app.getHttpServer()).get(`/api/skill-import/connector/sessions/${id}/commands`).auth(grant.sessionGrant, { type: 'bearer' }).expect(200);
+    expect(commands.body.items.some((command: { commandId: string }) => command.commandId === previewRequest.body.commandId)).toBe(false);
+    expect((await event('command-completed', previewRequest.body.commandId, { type: 'preview' }).expect(200)).body.ignored).toBe(true);
+  });
+
+  it('enforces the current minimum version on remembered-device grants and accepts an upgraded client', async () => {
+    const context = await paired(true);
+    minimumVersion = '1.1.0';
+    const target = { purpose: 'session-grant', sessionId: context.id, pairingId: context.pairing.pairingId };
+    expect((await request(app.getHttpServer()).post('/api/skill-import/connector/challenges').send(target).expect(400)).body.code).toBe('CLIENT_UPGRADE_REQUIRED');
+    const created = await request(app.getHttpServer()).post('/api/skill-import/sessions').send({ requestId: 'upgraded-device', protocolVersion: 1 }).expect(201);
+    const remembered = { purpose: 'session-grant', sessionId: created.body.id, deviceId: context.grant.deviceId };
+    expect((await request(app.getHttpServer()).post('/api/skill-import/connector/challenges').send(remembered).expect(400)).body.code).toBe('CLIENT_UPGRADE_REQUIRED');
+    const challenge = await request(app.getHttpServer()).post('/api/skill-import/connector/challenges').send({ ...remembered, clientVersion: '1.1.0' }).expect(200);
+    await request(app.getHttpServer()).post('/api/skill-import/connector/grants').send(proof(challenge.body, context.keys.privateKey, true)).expect(200);
+    expect(devices.get(context.grant.deviceId).clientVersion).toBe('1.1.0');
+    const renewal = await request(app.getHttpServer()).post('/api/skill-import/connector/challenges').send({ ...remembered, clientVersion: '1.1.0' }).expect(200);
+    minimumVersion = '1.2.0';
+    expect((await request(app.getHttpServer()).post('/api/skill-import/connector/grants').send(proof(renewal.body, context.keys.privateKey, true)).expect(400)).body.code).toBe('CLIENT_UPGRADE_REQUIRED');
+  });
+
+  it.each(['malformed-json', 'invalid-dto', 'invalid-sequence'])('charges the raw bytes of %s independently of failed event state updates', async (failure) => {
+    const { id, grant, scan } = await paired();
+    const body = failure === 'malformed-json' ? '{' : failure === 'invalid-dto' ? ' {}\n' : ` ${JSON.stringify({ eventId: 'bad-sequence', commandId: scan.commandId, sequence: 99, type: 'progress', payload: { phase: 'scanning', completed: 1 } })}\n`;
+    const key = `skill-import:v1:${instanceId}:event-bytes:${id}`;
+    const limit = 128 * 1024 * 1024;
+    await redis.set(key, limit - Buffer.byteLength(body), 'PX', 35 * MINUTE);
+    await request(app.getHttpServer()).post(`/api/skill-import/connector/sessions/${id}/events`).auth(grant.sessionGrant, { type: 'bearer' }).set('Content-Type', 'application/json').send(body).expect(failure === 'invalid-sequence' ? 409 : 400);
+    expect(await redis.get(key)).toBe(String(limit));
+    const retry = await request(app.getHttpServer()).post(`/api/skill-import/connector/sessions/${id}/events`).auth(grant.sessionGrant, { type: 'bearer' }).set('Content-Type', 'application/json').send(body).expect(400);
+    expect(retry.body.code).toBe('EVENT_BUDGET_EXCEEDED');
+    expect((await store.read<ImportSession>(`session:${id}`)).eventBytes).toBe(0);
+  });
+
+  it('renews with the current pairing version when a temporary grant leaves the older device record unchanged', async () => {
+    const context = await paired(true);
+    minimumVersion = '1.1.0';
+    const created = await request(app.getHttpServer()).post('/api/skill-import/sessions').send({ requestId: 'temporary-upgrade', protocolVersion: 1 }).expect(201);
+    const target = { purpose: 'session-grant', sessionId: created.body.id, deviceId: context.grant.deviceId };
+    const challenge = await request(app.getHttpServer()).post('/api/skill-import/connector/challenges').send({ ...target, clientVersion: '1.1.0' }).expect(200);
+    await request(app.getHttpServer()).post('/api/skill-import/connector/grants').send(proof(challenge.body, context.keys.privateKey, false)).expect(200);
+    expect(devices.get(context.grant.deviceId).clientVersion).toBe('1.0.0');
+    const renewal = await request(app.getHttpServer()).post('/api/skill-import/connector/challenges').send(target).expect(200);
+    await request(app.getHttpServer()).post('/api/skill-import/connector/grants').send(proof(renewal.body, context.keys.privateKey, false)).expect(200);
+  });
+
+  it('delivers all 10000 file entries without consuming the Web status polling budget', async () => {
+    const { id } = await prepared(false, false);
+    const state = await store.read<ImportSession>(`session:${id}`);
+    state.preview.files = Array.from({ length: 10000 }, (_value, index) => ({ relativePath: `${index}.md`, bytes: 1 }));
+    state.preview.result.fileCount = 10000; state.preview.result.totalUncompressedBytes = 10000;
+    await store.put(`session:${id}`, state);
+    await redis.set(`skill-import:v1:${instanceId}:rate:status:${id}:admin`, 60, 'PX', MINUTE);
+    const preview = await request(app.getHttpServer()).get(`/api/skill-import/sessions/${id}?view=preview`).expect(200);
+    let cursor: string | null = preview.body.preview.nextFilesCursor;
+    const paths = preview.body.preview.files.map((file: { relativePath: string }) => file.relativePath);
+    let pages = 1;
+    while (cursor) {
+      const page = SkillImportFilesResponseSchema.parse((await request(app.getHttpServer()).get(`/api/skill-import/sessions/${id}?view=files&snapshotId=snapshot&cursor=${cursor}`).expect(200)).body);
+      paths.push(...page.files.map((file) => file.relativePath)); cursor = page.nextFilesCursor; pages += 1;
+    }
+    expect(pages).toBe(100); expect(new Set(paths).size).toBe(10000);
+    expect(await redis.get(`skill-import:v1:${instanceId}:rate:status:${id}:admin`)).toBe('60');
+  });
+
+  it('ignores new event IDs for a completed command without regressing a later phase', async () => {
+    const { id, event, scan } = await prepared();
+    await event('command-completed', scan.commandId, { type: 'scan' }).expect(200);
+    const late = await event('error', scan.commandId, { code: 'SCAN_FAILED', message: 'late retry', retryable: false }).expect(200);
+    expect(late.body.ignored).toBe(true);
+    expect((await store.read<ImportSession>(`session:${id}`)).status).toBe('uploading');
   });
 
   it('locks package bytes and rejects unauthorized multipart before package processing', async () => {

@@ -41,6 +41,9 @@ describe('skill import schemas', () => {
     expect(SkillImportChallengeSchema.safeParse({ purpose: 'session-grant', sessionId: 's', pairingId: 'p', deviceId: 'd' }).success).toBe(false);
     expect(SkillImportChallengeSchema.safeParse({ purpose: 'device-revoke', sessionId: 's', deviceId: 'd' }).success).toBe(false);
     expect(SkillImportChallengeSchema.safeParse({ purpose: 'device-revoke', deviceId: 'd' }).success).toBe(true);
+    expect(SkillImportChallengeSchema.safeParse({ purpose: 'session-grant', sessionId: 's', deviceId: 'd', clientVersion: '1.1.0' }).success).toBe(true);
+    expect(SkillImportChallengeSchema.safeParse({ purpose: 'session-grant', sessionId: 's', deviceId: 'd', clientVersion: 'latest' }).success).toBe(false);
+    expect(SkillImportChallengeSchema.safeParse({ purpose: 'device-revoke', deviceId: 'd', clientVersion: '1.1.0' }).success).toBe(false);
   });
 
   it('validates bounded device pagination and requires an explicit next cursor', () => {

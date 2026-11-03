@@ -2,7 +2,7 @@ import { Body, Controller, INestApplication, Post, Put } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { HttpExceptionFilter } from '../filters/http-exception.filter';
-import { createJsonBodyMiddleware } from './json-body.middleware';
+import { createJsonBodyMiddleware, SkillImportEventByteConsumer } from './json-body.middleware';
 import { requestContextMiddleware } from './request-context.middleware';
 
 const endpoint = '/api/gateway/v1/chat/completions';
@@ -23,12 +23,12 @@ class BodyTestController {
 describe('JSON request body policies', () => {
   let app: INestApplication;
 
-  async function start(env: NodeJS.ProcessEnv = {}) {
+  async function start(env: NodeJS.ProcessEnv = {}, consumeEventBytes?: SkillImportEventByteConsumer) {
     const module = await Test.createTestingModule({ controllers: [BodyTestController] }).compile();
     app = module.createNestApplication({ bodyParser: false });
     app.setGlobalPrefix('api');
     app.use(requestContextMiddleware);
-    app.use(createJsonBodyMiddleware(env));
+    app.use(createJsonBodyMiddleware(env, consumeEventBytes));
     app.useGlobalFilters(new HttpExceptionFilter());
     await app.init();
   }
@@ -102,5 +102,58 @@ describe('JSON request body policies', () => {
       .send({ value: 'a'.repeat(1024 * 1024) }).expect(413);
     expect(tooLarge.body.code).toBe('REQUEST_BODY_TOO_LARGE');
     expect(tooLarge.body).not.toHaveProperty('error');
+  });
+
+  it('charges actual escaped JSON bytes on every delivery, including malformed JSON', async () => {
+    const consume = jest.fn().mockResolvedValue(undefined);
+    await start({}, consume);
+    const body = '{"content":"\\u0061\\t"}';
+    const event = '/api/skill-import/connector/sessions/Mixed-Case/events';
+    await request(app.getHttpServer()).post(event).set('Content-Type', 'application/json').send(body).expect(201);
+    await request(app.getHttpServer()).post(event).set('Content-Type', 'application/json').send(body).expect(201);
+    await request(app.getHttpServer()).post(event).set('Content-Type', 'application/json').send('{').expect(400);
+    expect(consume.mock.calls.map((call) => call[1])).toEqual([Buffer.byteLength(body), Buffer.byteLength(body), 1]);
+    await request(app.getHttpServer()).post('/api/ordinary').send({ content: 'unrelated' }).expect(201);
+    expect(consume).toHaveBeenCalledTimes(3);
+  });
+
+  it('charges chunked JSON without relying on the declared content length', async () => {
+    const consume = jest.fn().mockResolvedValue(undefined);
+    await start({}, consume);
+    const body = '{"content":"chunked"}';
+    await new Promise<void>((resolve, reject) => {
+      const pending = request(app.getHttpServer()).post('/api/skill-import/connector/sessions/s-1/events')
+        .set('Content-Type', 'application/json');
+      pending.write(body.slice(0, 8));
+      pending.write(body.slice(8));
+      pending.end((error, response) => {
+        if (error) return reject(error);
+        try { expect(response.status).toBe(201); resolve(); } catch (failure) { reject(failure); }
+      });
+    });
+    expect(consume).toHaveBeenCalledTimes(1);
+    expect(consume.mock.calls[0][0].headers['content-length']).toBeUndefined();
+    expect(consume.mock.calls[0][1]).toBe(Buffer.byteLength(body));
+  });
+
+  it('uses the event parser for percent-encoded session IDs decoded by Express', async () => {
+    const consume = jest.fn().mockResolvedValue(undefined);
+    await start({ REQUEST_JSON_LIMIT: '32' }, consume);
+    const body = { value: 'a'.repeat(100) };
+    await request(app.getHttpServer()).post('/api/skill-import/connector/sessions/%61bc/events').send(body).expect(201);
+    expect(consume.mock.calls[0][1]).toBe(Buffer.byteLength(JSON.stringify(body)));
+    for (const sessionId of ['%2Fabc', '%2561bc', '%broken']) {
+      await request(app.getHttpServer()).post(`/api/skill-import/connector/sessions/${sessionId}/events`).send(body).expect(413);
+    }
+    expect(consume).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed before controllers when event accounting rejects received JSON', async () => {
+    const { ServiceUnavailableException } = await import('@nestjs/common');
+    const consume = jest.fn().mockRejectedValue(new ServiceUnavailableException({ code: 'IMPORT_UNAVAILABLE', message: 'unavailable' }));
+    await start({}, consume);
+    const response = await request(app.getHttpServer()).post('/api/skill-import/connector/sessions/s-1/events').send({ value: 'test' }).expect(503);
+    expect(response.body.code).toBe('IMPORT_UNAVAILABLE');
+    expect(response.body).not.toHaveProperty('bytes');
   });
 });

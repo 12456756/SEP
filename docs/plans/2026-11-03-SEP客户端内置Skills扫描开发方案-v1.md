@@ -300,7 +300,7 @@ interface SkillImportSelection {
 | 方法与路径 | 凭据与行为 |
 |---|---|
 | `POST /skill-import/connector/pairings` | 首次提交 requestId/sessionId、公钥与版本，幂等创建 pairing；返回 pairingId/短码/挑战及最少确认上下文，不发扫描授权 |
-| `POST /skill-import/connector/challenges` | purpose=session-grant 时 sessionId + deviceId 或 pairingId；purpose=device-revoke 时仅 deviceId，领取一次性挑战 |
+| `POST /skill-import/connector/challenges` | purpose=session-grant 时 sessionId + deviceId 或 pairingId，并发送当前 clientVersion（正式 x.y.z）；purpose=device-revoke 时仅 deviceId，不携带 clientVersion，领取一次性挑战 |
 | `POST /skill-import/connector/grants` | 提交签名和 rememberDevice/scope/rootIds；202 等待 Web，200 换 session grant；已消费挑战 409，不重发旧 token |
 | `GET /skill-import/connector/sessions/:id/commands?cursor=...` | session grant；拉取本会话序号命令，不提供全用户任务列表 |
 | `POST /skill-import/connector/sessions/:id/events` | session grant；回传候选批次、预览、进度或错误，event ID/序号防重放 |
@@ -313,6 +313,8 @@ interface SkillImportSelection {
 仅允许固定命令集合 `scan`、`preview`、`package-selected`、`cancel`；每条包含 sessionId、commandId、sequence、expiresAt 和受限 payload。scan 携带已批准 scope/rootIds，preview 携带 requestId/candidateId/revision，package-selected 携带 candidateId/snapshotId/operationId；命令中无 token。客户端记录 commandId 并用 started/completed 事件确认，收到 nextCursor 不等于命令已执行，重复拉取不重复执行；候选批次按 ID 去重。
 
 ZIP 完成后才申请 upload grant，返回主进程内存，服务器只存 token hash。未知上传结果先 GET operations/:operationId：succeeded 完成、processing 等待、pending/retryable 才以同 ZIP 申请新 upload grant 后重传。新 grant 不改变 operation/snapshot/hash/大小，旧 grant 不启动新请求；已开始的 processing lease 不因换发被并发替代。session grant 提前 60 秒通过新挑战续期，GRANT_EXPIRED 可尝试一次恢复；SESSION_CANCELLED/SESSION_EXPIRED/DEVICE_REVOKED 等直接停止，不循环续期。
+
+记住设备的会话挑战及授权续期同样校验最低客户端版本。每次 session-grant 挑战均发送实际运行的 clientVersion，避免升级后仍使用旧绑定版本；CLIENT_UPGRADE_REQUIRED 停止任务并提示更新。为兼容既有 pairing，服务端允许缺省版本并按记录版本校验，客户端新实现不应省略。此字段不改变现有挑战响应和签名规范。
 
 服务端包接收入口在新模块中调用现有 `SkillPackageService.store` 与 `PackageSecurityService.scanSkill`，返回当前字段 `zipPath/sha256/fileCount/totalSize/filename/content/suggested/warnings`，并绑定为本人会话的结果。Web 取结果后仍用 `POST /capabilities` 创建，ZIP 页签仍用现有 `POST /admin/capabilities/upload-skill`；两条路径共享校验服务，不共享不恰当的访问凭据。
 

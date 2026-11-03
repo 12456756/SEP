@@ -82,6 +82,8 @@ export class SkillImportService {
       session.status = 'expired'; session.epoch += 1; session.closed = true;
     }
     if (session.preview?.status === 'pending' && now >= session.preview.deadline) {
+      const command = session.commands.find((item) => item.commandId === session.preview!.commandId);
+      if (command) command.completed = true;
       session.preview.status = 'failed'; session.preview.errorCode = 'PREVIEW_TIMEOUT'; session.preview.result = null;
       session.preview.files = []; session.preview.nextClientCursor = null;
       if (session.status === 'previewing') session.status = 'results';
@@ -165,7 +167,7 @@ export class SkillImportService {
   }
 
   async getSession(user: ImportUser, id: string, query: z.infer<typeof SkillImportQuerySchema>) {
-    await this.store.rate(`status:${id}:${user.id}`, 60, MINUTE);
+    await this.store.rate(`${query.view}:${id}:${user.id}`, query.view === 'files' ? 120 : 60, MINUTE);
     return this.mutate(id, async (session) => {
       await this.assertWeb(user, session);
       const view = this.view(session);
@@ -238,6 +240,7 @@ export class SkillImportService {
       const candidate = session.candidates.find((item) => item.candidateId === input.candidateId && item.revision === input.revision);
       if (!session.scanComplete || !candidate || candidate.availability !== 'previewable') throw new ConflictException({ code: 'CANDIDATE_CHANGED', message: '候选尚未就绪或已变化' });
       if (Object.keys(session.previewRequests).length >= 600) throw new ConflictException({ code: 'SESSION_LIMIT_REACHED', message: '本会话预览次数已达上限' });
+      for (const previousCommand of session.commands) if (previousCommand.type === 'preview') previousCommand.completed = true;
       const command = this.enqueue(session, 'preview', input);
       session.previewRequests[input.requestId] = { hash: requestHash, commandId: command.commandId };
       session.preview = { requestId: input.requestId!, candidateId: input.candidateId!, revision: input.revision!, commandId: command.commandId, status: 'pending', deadline: Math.min(Date.now() + MINUTE, Date.parse(session.expiresAt)), errorCode: null, result: null, files: [], nextClientCursor: null, usedCursors: [] };
@@ -381,6 +384,7 @@ export class SkillImportService {
       } else {
         const device = await this.device(input.deviceId!, session.ownerUserId);
         const existing = Object.values(session.pairings).find((value) => value.deviceId === device.id);
+        this.assertClientVersion(input.clientVersion ?? existing?.clientVersion ?? device.clientVersion);
         if (session.activePairingId && session.activePairingId !== existing?.pairingId) throw new ConflictException({ code: 'CLIENT_BUSY', message: '该导入会话已连接其他设备' });
         if (existing) pairing = existing;
         else {
@@ -396,6 +400,9 @@ export class SkillImportService {
           session.pairings[pairingId] = pairing;
         }
       }
+      const clientVersion = input.clientVersion ?? pairing.clientVersion;
+      this.assertClientVersion(clientVersion);
+      pairing.clientVersion = clientVersion;
       const challenge = this.challenge(session.id, input.pairingId ? pairing.pairingId : null, pairing.deviceId, pairing.keyFingerprint, 'session-grant', Date.parse(session.expiresAt));
       pairing.challenge = challenge;
       if (!session.activePairingId) { pairing.expiresAt = challenge.expiresAt; session.status = 'pairing'; }
@@ -412,6 +419,7 @@ export class SkillImportService {
     return this.mutate(index.sessionId, async (session) => {
       this.live(session, true); await this.assertAccount(session.ownerUserId, session.ownerWebSessionId);
       const pairing = this.pairing(session, index.pairingId); const challenge = pairing.challenge;
+      this.assertClientVersion(pairing.clientVersion);
       if (challenge.challengeId !== input.challengeId || challenge.used) throw new ConflictException({ code: 'CHALLENGE_USED', message: '挑战已被使用或替换' });
       if (Date.now() >= Date.parse(challenge.expiresAt)) throw new UnauthorizedException({ code: 'GRANT_EXPIRED', message: '挑战已过期' });
       if (pairing.deviceId) await this.device(pairing.deviceId, session.ownerUserId);

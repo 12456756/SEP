@@ -18,7 +18,7 @@ import { installGatewayShutdown } from './common/lifecycle/gateway-shutdown';
 import { configureTrustedProxy } from './common/trusted-proxy';
 import { businessTracker } from './modules/security/rate-limit-policy';
 import { RedisService } from './redis/redis.service';
-import { createSkillImportIngressMiddleware } from './common/middleware/skill-import-ingress.middleware';
+import { createSkillImportEventByteConsumer, createSkillImportIngressMiddleware } from './common/middleware/skill-import-ingress.middleware';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bodyParser: false });
@@ -56,11 +56,12 @@ async function bootstrap() {
     businessTracker(app.get(ConfigService), app.get(JwtService)),
   ));
   const importConfig = app.get(ConfigService);
-  app.use(createSkillImportIngressMiddleware(() => app.get(RedisService).redis, {
+  const importIngressSettings = {
     enabled: importConfig.get('SKILL_IMPORT_ENABLED') === 'true',
     instanceId: importConfig.get('SKILL_IMPORT_INSTANCE_ID') || 'disabled',
-  }));
-  app.use(createJsonBodyMiddleware());
+  };
+  app.use(createSkillImportIngressMiddleware(() => app.get(RedisService).redis, importIngressSettings));
+  app.use(createJsonBodyMiddleware(process.env, createSkillImportEventByteConsumer(() => app.get(RedisService).redis, importIngressSettings)));
   app.use(express.urlencoded({ limit: process.env.REQUEST_URLENCODED_LIMIT || '2mb', extended: true }));
   app.useGlobalFilters(new HttpExceptionFilter());
   app.use((req, res, next) => {

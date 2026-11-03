@@ -1,6 +1,9 @@
+import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import type { RequestHandler } from 'express';
 import type Redis from 'ioredis';
+import type { SkillImportEventByteConsumer } from './json-body.middleware';
+import { skillImportSessionRoute } from './skill-import-route';
 
 type Settings = { enabled: boolean; instanceId: string; redisTimeoutMs?: number };
 
@@ -11,6 +14,37 @@ local count = redis.call('INCR', KEYS[1])
 if count == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
 return {count, redis.call('PTTL', KEYS[1])}
 `;
+
+const CONSUME_EVENT_BYTES = `
+local total = redis.call('INCRBY', KEYS[1], ARGV[1])
+if total == tonumber(ARGV[1]) then redis.call('PEXPIRE', KEYS[1], ARGV[2]) end
+return total
+`;
+
+export function createSkillImportEventByteConsumer(
+  getRedis: () => Pick<Redis, 'eval'>,
+  settings: Pick<Settings, 'instanceId' | 'redisTimeoutMs'>,
+): SkillImportEventByteConsumer {
+  return async (req, bytes) => {
+    const sessionId = skillImportSessionRoute(req.path, 'events');
+    if (req.method !== 'POST' || sessionId === null || bytes === 0) return;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let total: number;
+    try {
+      total = Number(await Promise.race([
+        getRedis().eval(CONSUME_EVENT_BYTES, 1, `skill-import:v1:${settings.instanceId}:event-bytes:${sessionId}`, bytes, 35 * 60_000),
+        new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(() => reject(new Error('Redis event budget timeout')), settings.redisTimeoutMs ?? 1000);
+        }),
+      ]));
+    } catch {
+      throw new ServiceUnavailableException({ code: 'IMPORT_UNAVAILABLE', message: '导入流量预算服务暂不可用', retryable: true });
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+    if (total > 128 * 1024 * 1024) throw new BadRequestException({ code: 'EVENT_BUDGET_EXCEEDED', message: '本次导入事件流量已达上限' });
+  };
+}
 
 export function createSkillImportIngressMiddleware(
   getRedis: () => Pick<Redis, 'eval'>,
@@ -30,8 +64,8 @@ export function createSkillImportIngressMiddleware(
     }
     if (configRequest) return next();
 
-    const isEvent = req.method === 'POST' && /^\/api\/skill-import\/connector\/sessions\/[a-z0-9_-]{1,160}\/events\/?$/.test(path);
-    const isPackage = req.method === 'POST' && /^\/api\/skill-import\/connector\/sessions\/[a-z0-9_-]{1,160}\/package\/?$/.test(path);
+    const isEvent = req.method === 'POST' && skillImportSessionRoute(req.path, 'events') !== null;
+    const isPackage = req.method === 'POST' && skillImportSessionRoute(req.path, 'package') !== null;
     const byteLimit = (isEvent ? 16 : isPackage ? 101 : 2) * 1024 * 1024;
     const contentLength = req.headers['content-length'];
     if (contentLength && (!/^\d+$/.test(contentLength) || Number(contentLength) > byteLimit)) {

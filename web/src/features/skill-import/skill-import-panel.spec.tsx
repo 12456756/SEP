@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { api } from '@/lib/api-client';
+import { api, ApiError } from '@/lib/api-client';
 import { useAuthStore } from '@/lib/auth-store';
 import { SkillImportPanel } from './skill-import-panel';
 import { safeClientDeepLink, skillImportIdentity } from './use-skill-import';
@@ -28,14 +28,128 @@ async function startScan() {
   await waitFor(() => expect(screen.getByRole('button', { name: '扫描本机' })).toBeEnabled());
   fireEvent.click(screen.getByRole('button', { name: '扫描本机' }));
 }
+function readyImport(options: { fileError?: (cursor: string | null) => Error | null; fileWait?: (cursor: string | null) => Promise<void>; pageCount?: number } = {}) {
+  let requestId = '';
+  let operationId = '';
+  const results = { ...base, status: 'results', candidateCount: 1 };
+  post.mockImplementation(async (path, body) => {
+    if (path === '/skill-import/sessions') return base;
+    if (path.endsWith('/preview')) { requestId = (body as { requestId: string }).requestId; return {}; }
+    if (path.endsWith('/selection')) { operationId = (body as { operationId: string }).operationId; return {}; }
+    throw new Error(`Unexpected POST ${path}`);
+  });
+  get.mockImplementation(async (path) => {
+    if (path.endsWith('/config')) return { enabled: true, instanceId: base.instanceId, protocolVersion: 1, minClientVersion: '1.0.0' };
+    if (path.startsWith('/skill-import/devices')) return { items: [{ deviceId: 'device_1', label: '我的电脑', keyFingerprint: pairing.keyFingerprint, platform: 'macOS', clientVersion: '1.0.0', lastSeenAt: null, createdAt: new Date().toISOString() }], nextCursor: null };
+    const params = new URL(path, 'https://example.com').searchParams;
+    if (params.get('view') === 'status') return results;
+    if (params.get('view') === 'candidates') return { ...results, items: [candidate], nextCursor: null };
+    if (params.get('view') === 'preview') return { ...results, previewStatus: 'ready', errorCode: null, preview: { requestId, candidateId: candidate.candidateId, snapshotId: 'snapshot_retry', expiresAt: new Date(Date.now() + 120000).toISOString(), content: '# test', treeHash: candidate.treeHash, fileCount: options.pageCount ?? 2, totalUncompressedBytes: 6 + ((options.pageCount ?? 2) - 1) * 18, estimatedPackageBytes: 32, files: [{ relativePath: 'SKILL.md', bytes: 6 }], nextFilesCursor: options.pageCount === 1 ? null : 'page_2', warnings: [] } };
+    if (params.get('view') === 'files') {
+      const cursor = params.get('cursor');
+      await options.fileWait?.(cursor);
+      const error = options.fileError?.(cursor);
+      if (error) throw error;
+      return { snapshotId: 'snapshot_retry', files: [{ relativePath: cursor === 'page_3' ? 'scripts/second.js' : 'scripts/test.js', bytes: 18 }], nextFilesCursor: options.pageCount === 3 && cursor === 'page_2' ? 'page_3' : null };
+    }
+    if (params.get('view') === 'operation') return { ...results, status: 'uploaded', operation: { operationId, status: 'succeeded', retryable: false, sha256: artifact.sha256, errorCode: null, expiresAt: base.expiresAt }, artifact };
+    throw new Error(`Unexpected GET ${path}`);
+  });
+}
 beforeEach(() => {
   vi.clearAllMocks();
   useAuthStore.getState().setAuth({ token: 'token', user: { id: 'admin', email: 'admin@example.com', name: null, avatar: null, role: 'ADMIN' }, enterprise: null, roleInEnterprise: null });
   remove.mockResolvedValue(undefined);
 });
-afterEach(() => { useAuthStore.getState().clear(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); useAuthStore.getState().clear(); });
 
 describe('本机 Skills 导入', () => {
+  it.each(['取消', '切换身份', '撤销设备'])('已交付结果自然过期后保留，%s仍会清空', async (action) => {
+    readyImport({ pageCount: 1 });
+    const { onArtifact } = mount();
+    await startScan();
+    fireEvent.click(await screen.findByRole('button', { name: /测试技能/ }));
+    fireEvent.click(await screen.findByRole('button', { name: '导入所选技能' }));
+    await waitFor(() => expect(onArtifact).toHaveBeenLastCalledWith(artifact));
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse(base.expiresAt) + 1000);
+    await waitFor(() => expect(screen.getByText('会话已过期')).toBeInTheDocument(), { timeout: 2500 });
+    expect(onArtifact).toHaveBeenLastCalledWith(artifact);
+    if (action === '取消') fireEvent.click(screen.getByRole('button', { name: '取消扫描' }));
+    if (action === '切换身份') act(() => { useAuthStore.setState({ token: `header.${btoa(JSON.stringify({ sid: 'new-session' }))}.signature` }); });
+    if (action === '撤销设备') {
+      fireEvent.click(screen.getByText('已授权设备'));
+      fireEvent.click(await screen.findByRole('button', { name: '撤销 我的电脑' }));
+    }
+    await waitFor(() => expect(onArtifact).toHaveBeenLastCalledWith(null));
+  });
+
+  it('文件分页遇到429后遵守Retry-After重试并恢复导入', async () => {
+    const attempts: number[] = [];
+    readyImport({ fileError: () => { attempts.push(Date.now()); return attempts.length === 1 ? new ApiError(429, '限流', undefined, 3) : null; } });
+    mount(); await startScan();
+    fireEvent.click(await screen.findByRole('button', { name: /测试技能/ }));
+    await waitFor(() => expect(attempts).toHaveLength(1));
+    expect(screen.getByRole('button', { name: '导入所选技能' })).toBeDisabled();
+    await waitFor(() => expect(screen.getByRole('button', { name: '导入所选技能' })).toBeEnabled(), { timeout: 5000 });
+    expect(attempts).toHaveLength(2);
+    expect(attempts[1] - attempts[0]).toBeGreaterThanOrEqual(3000);
+    expect(screen.getByText('scripts/test.js · 18 B')).toBeInTheDocument();
+  }, 10000);
+
+  it('文件分页失败可以手动恢复；授权错误不自动或手动重试', async () => {
+    let failed = true;
+    readyImport({ pageCount: 3, fileError: (cursor) => cursor === 'page_3' && failed ? new ApiError(400, '文件页暂不可用') : null });
+    const { client } = mount(); await startScan();
+    fireEvent.click(await screen.findByRole('button', { name: /测试技能/ }));
+    const retry = await screen.findByRole('button', { name: '重试文件清单' });
+    expect(retry).toBeEnabled();
+    failed = false;
+    fireEvent.click(retry);
+    await waitFor(() => expect(screen.getByRole('button', { name: '导入所选技能' })).toBeEnabled());
+    expect(screen.getByText('scripts/test.js · 18 B')).toBeInTheDocument();
+    expect(screen.getByText('scripts/second.js · 18 B')).toBeInTheDocument();
+    readyImport({ fileError: () => new ApiError(403, '授权已撤销') });
+    await act(async () => { await client.invalidateQueries({ queryKey: ['skill-import', 'admin', 'session_1', 'files'] }); });
+    expect(await screen.findByRole('button', { name: '重试文件清单' })).toBeDisabled();
+    const requests = get.mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: '重试文件清单' }));
+    expect(get.mock.calls).toHaveLength(requests);
+  });
+
+  it('文件分页自动重试次数有界，耗尽后可手动继续同一页', async () => {
+    let attempts = 0;
+    let unavailable = true;
+    readyImport({ fileError: () => { attempts += 1; return unavailable ? new ApiError(503, '服务暂不可用') : null; } });
+    mount(); await startScan();
+    fireEvent.click(await screen.findByRole('button', { name: /测试技能/ }));
+    const retry = await screen.findByRole('button', { name: '重试文件清单' }, { timeout: 9000 });
+    expect(attempts).toBe(3);
+    expect(retry).toBeEnabled();
+    unavailable = false;
+    fireEvent.click(retry);
+    await waitFor(() => expect(screen.getByRole('button', { name: '导入所选技能' })).toBeEnabled());
+    expect(attempts).toBe(4);
+  }, 12000);
+
+  it.each(['快照过期', '会话过期', '会话终态'])('文件页迟到时%s不再自动请求后续页', async (reason) => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    readyImport({ pageCount: 3, fileWait: (cursor) => cursor === 'page_2' ? pending : Promise.resolve() });
+    const { client } = mount(); await startScan();
+    fireEvent.click(await screen.findByRole('button', { name: /测试技能/ }));
+    await waitFor(() => expect(get.mock.calls.some(([path]) => path.includes('view=files'))).toBe(true));
+    if (reason === '会话终态') {
+      act(() => { client.setQueryData(['skill-import', 'admin', 'session_1', 'status'], { ...base, status: 'uploaded' }); });
+      await screen.findByText('已上传，待创建');
+    } else {
+      vi.spyOn(Date, 'now').mockReturnValue(reason === '快照过期' ? Date.now() + 121000 : Date.parse(base.expiresAt) + 1000);
+      await screen.findByText(reason === '快照过期' ? '预览已过期，请重新选择技能' : '会话已过期', {}, { timeout: 2500 });
+    }
+    await act(async () => { release(); await pending; });
+    await screen.findByText('scripts/test.js · 18 B');
+    expect(get.mock.calls.filter(([path]) => path.includes('view=files'))).toHaveLength(1);
+  });
+
   it('确认指纹配对，轮询异步预览并读取全部文件页，按 operationId 交付一次完整包', async () => {
     let confirmed = false;
     let requestId = '';
