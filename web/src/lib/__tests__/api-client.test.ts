@@ -127,6 +127,16 @@ describe('api.get', () => {
 
     await expect(api.get('/error')).rejects.toThrow('Internal Server Error');
   });
+
+  it.each(['12', new Date(Date.now() + 12000).toUTCString()])('preserves Retry-After %s for polling backoff', async (retryAfter) => {
+    mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({ message: 'Too many requests' }), { status: 429, headers: { 'Retry-After': retryAfter } }));
+    await expect(api.get('/limited')).rejects.toMatchObject({ status: 429, retryAfterSeconds: expect.any(Number) });
+  });
+
+  it('ignores invalid Retry-After values', async () => {
+    mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({ message: 'Unavailable' }), { status: 503, headers: { 'Retry-After': 'invalid' } }));
+    await expect(api.get('/limited')).rejects.toMatchObject({ retryAfterSeconds: undefined });
+  });
 });
 
 describe('api.post', () => {

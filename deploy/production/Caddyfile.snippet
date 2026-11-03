@@ -4,10 +4,53 @@
 # 追加后执行：docker exec longdao-caddy caddy reload --config /etc/caddy/Caddyfile
 # ═══════════════════════════════════════════════════════════════════════════════
 
+(sep_skill_import_proxy) {
+    reverse_proxy sep-backend:3001 {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+        transport http {
+            response_header_timeout 300s
+            read_timeout 300s
+            write_timeout 300s
+        }
+    }
+}
+
 # SEP 硅基人才平台
 your-sep-domain.com {
 
     # TLS 由 Caddy 自动向 Let's Encrypt 申请（域名 DNS 必须已指向本服务器）
+
+    @skill_import path /api/skill-import /api/skill-import/*
+    handle @skill_import {
+        @package {
+            method POST
+            path_regexp skill_package ^/api/skill-import/connector/sessions/[A-Za-z0-9_-]{1,160}/package/?$
+        }
+        handle @package {
+            request_body {
+                max_size 105906176
+            }
+            import sep_skill_import_proxy
+        }
+        @events {
+            method POST
+            path_regexp skill_events ^/api/skill-import/connector/sessions/[A-Za-z0-9_-]{1,160}/events/?$
+        }
+        handle @events {
+            request_body {
+                max_size 16777216
+            }
+            import sep_skill_import_proxy
+        }
+        handle {
+            request_body {
+                max_size 2097152
+            }
+            import sep_skill_import_proxy
+        }
+    }
 
     # WebSocket 直接转发后端；JWT 在连接首条 auth 消息中传递，不经过 Next.js。
     @sep_ws path /ws/*

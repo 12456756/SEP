@@ -49,6 +49,8 @@ import { validateAuthEnvironment } from './auth-environment';
 import { GatewayLifecycleModule } from './common/lifecycle/gateway-lifecycle.module';
 import { MediaConfigModule } from './modules/media-config/media-config.module';
 import { MediaGatewayModule } from './modules/media-gateway/media-gateway.module';
+import { SkillImportModule } from './modules/skill-import/skill-import.module';
+import { validateSkillImportEnvironment } from './skill-import-environment';
 
 @Module({
   imports: [
@@ -57,7 +59,7 @@ import { MediaGatewayModule } from './modules/media-gateway/media-gateway.module
       envFilePath: ['../.env', '.env'],
       validate: (env) => {
         employeeAssetBaseUrl(env);
-        return validateAuthEnvironment(env);
+        return validateSkillImportEnvironment(validateAuthEnvironment(env));
       },
     }),
     GatewayLifecycleModule,
@@ -86,6 +88,7 @@ import { MediaGatewayModule } from './modules/media-gateway/media-gateway.module
     EnterpriseModelConfigModule,
     MediaConfigModule,
     MediaGatewayModule,
+    SkillImportModule,
     CostAnalyticsModule,
     EnterpriseSettingsModule,
     CartModule,

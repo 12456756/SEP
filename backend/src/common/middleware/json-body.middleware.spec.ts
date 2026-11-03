@@ -9,7 +9,7 @@ const endpoint = '/api/gateway/v1/chat/completions';
 
 @Controller()
 class BodyTestController {
-  @Post(['gateway/v1/chat/completions', 'ordinary', 'capabilities', 'contributions'])
+  @Post(['gateway/v1/chat/completions', 'ordinary', 'capabilities', 'contributions', 'skill-import/connector/sessions/:id/events'])
   parse(@Body() body: Record<string, unknown>) {
     return { bytes: Buffer.byteLength(JSON.stringify(body), 'utf8') };
   }
@@ -90,5 +90,17 @@ describe('JSON request body policies', () => {
     await request(app.getHttpServer()).post('/api/capabilities').send(body).expect(201);
     await request(app.getHttpServer()).post('/api/contributions').send(body).expect(201);
     await request(app.getHttpServer()).post('/api/ordinary').send(body).expect(413);
+  });
+
+  it('uses the skill JSON budget only for connector event posts', async () => {
+    await start({ SKILL_REQUEST_JSON_LIMIT: '1mb', REQUEST_JSON_LIMIT: '512' });
+    const body = { value: 'a'.repeat(700 * 1024) };
+    await request(app.getHttpServer()).post('/api/skill-import/connector/sessions/s-1/events').send(body).expect(201);
+    await request(app.getHttpServer()).post('/api/skill-import/connector/sessions/s-1/other').send(body).expect(413);
+    const tooLarge = await request(app.getHttpServer())
+      .post('/api/skill-import/connector/sessions/s-1/events')
+      .send({ value: 'a'.repeat(1024 * 1024) }).expect(413);
+    expect(tooLarge.body.code).toBe('REQUEST_BODY_TOO_LARGE');
+    expect(tooLarge.body).not.toHaveProperty('error');
   });
 });

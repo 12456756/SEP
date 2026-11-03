@@ -1,6 +1,6 @@
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus, PayloadTooLargeException } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { SkillArtifactBlockedReasonSchema } from 'shared';
+import { SkillArtifactBlockedReasonSchema, SkillImportErrorCodeSchema } from 'shared';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -18,6 +18,15 @@ function isSkillArtifactRoute(originalUrl: string): boolean {
     // Match the URL forms Express accepts; reserved separators stay encoded.
     const path = decodeURI(originalUrl.split('?')[0]);
     return /^\/api\/client\/subscriptions\/[a-zA-Z0-9_-]{1,128}\/skills\/[a-zA-Z0-9_-]{1,128}\/versions\/[a-zA-Z0-9_-]{1,128}\/artifact\/?$/i.test(path);
+  } catch {
+    return false;
+  }
+}
+
+function isSkillImportRoute(originalUrl: string): boolean {
+  try {
+    const path = decodeURI(originalUrl.split('?')[0]);
+    return /^\/api\/skill-import(?:\/|$)/i.test(path);
   } catch {
     return false;
   }
@@ -83,6 +92,12 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const message = typeof raw === 'object' && raw !== null && 'message' in raw ? (raw as { message: unknown }).message : raw;
     const requestId = request.requestId || response.getHeader('x-request-id');
     const rawBody = isRecord(raw) ? raw : undefined;
+    const skillImportRoute = isSkillImportRoute(request.originalUrl);
+    const importCode = rawBody?.code ?? (isRecord(rawBody?.error) ? rawBody.error.code : undefined);
+    const parsedImportCode = skillImportRoute ? SkillImportErrorCodeSchema.safeParse(importCode) : undefined;
+    const skillImportCode = parsedImportCode?.success ? parsedImportCode.data : undefined;
+    const skillImportRetryable = skillImportRoute && typeof rawBody?.retryable === 'boolean'
+      ? rawBody.retryable : undefined;
 
     if (status === HttpStatus.TOO_MANY_REQUESTS && response.getHeader('Retry-After') === undefined) {
       let retryAfterSeconds = waitingSeconds(rawBody?.retryAfterSeconds);
@@ -126,7 +141,12 @@ export class HttpExceptionFilter implements ExceptionFilter {
       const knowledgeCode = /^\/api\/(?:knowledge-bases|admin\/knowledge)(?:\/|$)/.test(path) &&
         typeof rawBody?.code === 'string' && (/^KNOWLEDGE_[A-Z0-9_]{1,96}$/.test(rawBody.code) || KNOWLEDGE_BUSINESS_CODES.has(rawBody.code))
         ? { code: rawBody.code } : {};
-      response.status(status).json({ ...body, ...knowledgeCode });
+      response.status(status).json({
+        ...body,
+        ...knowledgeCode,
+        ...(skillImportCode ? { code: skillImportCode } : {}),
+        ...(skillImportRetryable !== undefined ? { retryable: skillImportRetryable } : {}),
+      });
       return;
     }
 
@@ -157,6 +177,8 @@ export class HttpExceptionFilter implements ExceptionFilter {
 
     response.status(status).json({
       ...body,
+      ...(skillImportCode ? { code: skillImportCode } : {}),
+      ...(skillImportRetryable !== undefined ? { retryable: skillImportRetryable } : {}),
       // Never use the whole upstream response as a message: it can contain private metadata.
       message: outerMessage ?? errorMessage,
       ...(errors !== undefined ? { errors } : {}),

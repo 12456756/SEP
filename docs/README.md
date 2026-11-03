@@ -12,13 +12,16 @@
 - [ADR 目录](./architecture/adr/) - 架构决策记录（Architecture Decision Records）
 
 ### 📋 实施计划
-- [Skills 本机扫描导入前端开发方案 v1](./plans/2026-11-03-Skills本机扫描导入前端开发方案-v1.md) - 已确认的页面设计、组件与状态、接口契约、异常处理、开发任务和验收计划；尚未实施
+- [SEP 本机 Skills 扫描导入全栈开发方案 v1](./plans/2026-11-03-SEP本机Skills扫描导入全栈开发方案-v1.md) - SEP 后端、Web 与部署配置已实施；真实客户端与生产联调待完成
+- [本机 Skills 扫描导入开发验收记录](./progress/2026-11-03-本机Skills扫描导入开发验收记录.md) - 实际代码、配置、测试证据及上线边界
+- [SEP 客户端内置 Skills 扫描开发方案 v1](./plans/2026-11-03-SEP客户端内置Skills扫描开发方案-v1.md) - 同一客户端安装包中的免登录扫描模式、系统唤起、设备配对、扫描打包、云端协议与实施验收；尚未实施
+- [Skills 本机扫描导入前端开发方案 v1](./plans/2026-11-03-Skills本机扫描导入前端开发方案-v1.md) - Web 工作区已实施；页面、候选预览、上传状态与能力创建的详细设计
 - [模型驱动媒体规格协商与上游透传：SEP 开发调研](./plans/2026-10-29-模型驱动媒体规格协商与上游透传-SEP开发调研.md) - SEP V3 本地开发与审查修复完成，见[实施记录](./progress/2026-10-29-媒体规格协商V3实施记录.md)；客户端与真实上游联调单独验收
 - [AI 集成实施计划](./plans/AI-Integration-Implementation-Plan.md) - sub2api + Coze 集成开发计划（8 阶段，18-24h）
 
 ### 🔬 技术调研
-- [Web 本机 Skills 扫描与开发者身份方案复核](./research/2026-11-03-Web本机Skills扫描与开发者身份方案复核.md) - 最少操作的生产方案、免登录连接器与云端导入会话、现有客户端企业登录限制和开发者账号边界；更新原连接建议
-- [本地 Agent Skills 扫描上传可行性调研](./research/2026-11-03-本地Agent-Skills扫描上传可行性调研.md) - 现有扫描器与权限核查、部署网页连接本机助手的方案、目录适配、工期与验收边界
+- [Web 本机 Skills 扫描与开发者身份方案复核](./research/2026-11-03-Web本机Skills扫描与开发者身份方案复核.md) - 已选定 Web + 客户端内置免登录扫描 + 云端会话，说明安装、账号边界及其他方案取舍
+- [本地 Agent Skills 扫描上传可行性调研](./research/2026-11-03-本地Agent-Skills扫描上传可行性调研.md) - 现有扫描器与权限核查、Agent 官方目录、扫描核心差距及客户端集成依据
 - [Agent Runtime 框架评估](./research/agent-runtime-framework-evaluation.md) - Vercel AI SDK vs LangChain 对比
 
 ### 🔌 外部集成

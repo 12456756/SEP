@@ -1,4 +1,4 @@
-import { INestApplication } from '@nestjs/common';
+import { INestApplication, UnauthorizedException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { CapabilityController } from './capability.controller';
@@ -8,9 +8,11 @@ import { SkillPackageService } from '../skill-package/skill-package.service';
 import { SkillVersionService } from '../skill-version/skill-version.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AdapterFactory } from './adapters/adapter.factory';
+import { SessionService } from '../auth/session.service';
 
 describe('Capability write HTTP validation', () => {
   let app: INestApplication;
+  const sessions = { assertActiveSession: jest.fn().mockResolvedValue(undefined) };
   const prisma = {
     capability: {
       create: jest.fn().mockResolvedValue({ id: 'cap-1' }),
@@ -31,6 +33,7 @@ describe('Capability write HTTP validation', () => {
       controllers: [CapabilityController],
       providers: [
         CapabilityService,
+        { provide: SessionService, useValue: sessions },
         { provide: PrismaService, useValue: prisma },
         { provide: AdapterFactory, useValue: {} },
         { provide: SkillVersionService, useValue: {} },
@@ -42,7 +45,8 @@ describe('Capability write HTTP validation', () => {
     }).overrideGuard(JwtAuthGuard).useValue({
       canActivate: (context: any) => {
         const req = context.switchToHttp().getRequest();
-        req.user = { id: 'user-1', role: req.headers['x-test-role'] ?? 'USER' };
+        req.user = { id: 'user-1', role: req.headers['x-test-role'] ?? 'USER',
+          sid: req.headers['x-test-sid'] === 'missing' ? undefined : 'web-session-1' };
         return true;
       },
     }).compile();
@@ -50,7 +54,10 @@ describe('Capability write HTTP validation', () => {
     await app.init();
   });
 
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+    sessions.assertActiveSession.mockResolvedValue(undefined);
+  });
   afterAll(async () => { await app?.close(); });
 
   it('passes the authenticated admin role and preserves package metadata through the body pipe', async () => {
@@ -65,6 +72,19 @@ describe('Capability write HTTP validation', () => {
     });
     expect(data).not.toHaveProperty('enterpriseId');
     expect(data).not.toHaveProperty('status', 'APPROVED');
+    expect(sessions.assertActiveSession).toHaveBeenCalledWith('web-session-1', 'user-1', 'WEB');
+  });
+
+  it('rejects an admin skill creation without a Web session', async () => {
+    await request(app.getHttpServer()).post('/capabilities').set('x-test-role', 'ADMIN')
+      .set('x-test-sid', 'missing').send(skill).expect(403);
+    expect(prisma.capability.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects revoked or non-Web login sessions before package creation', async () => {
+    sessions.assertActiveSession.mockRejectedValueOnce(new UnauthorizedException('登录会话已撤销'));
+    await request(app.getHttpServer()).post('/capabilities').set('x-test-role', 'ADMIN').send(skill).expect(401);
+    expect(prisma.capability.create).not.toHaveBeenCalled();
   });
 
   it('forbids non-admin creation even for a valid payload', async () => {

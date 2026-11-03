@@ -48,6 +48,10 @@ for (const [file, services] of [
       const key = `GATEWAY_${suffix}`;
       assert.equal(environment[key], '${' + key + ':-' + value + '}', `${file}/${name}/${key}`);
     }
+    for (const [suffix, value] of Object.entries({ ENABLED: 'false', INSTANCE_ID: '', MIN_CLIENT_VERSION: '1.0.0', UPLOAD_CONCURRENCY: '1' })) {
+      const key = `SKILL_IMPORT_${suffix}`;
+      assert.equal(environment[key], '${' + key + ':-' + value + '}', `${file}/${name}/${key}`);
+    }
     for (const key of ['WEB_DEFAULT_MAX_OUTPUT_TOKENS', 'PLANNER_MAX_OUTPUT_TOKENS', 'MODEL_MAX_OUTPUT_TOKENS']) {
       assert.equal(environment[key], '${' + key + ':-0}', `${file}/${name}/${key}`);
     }

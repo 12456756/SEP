@@ -1,7 +1,50 @@
 # SEP shared client integration environment
+(sep_dev_skill_import_proxy) {
+    reverse_proxy sep-dev-backend:3001 {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+        transport http {
+            response_header_timeout 300s
+            read_timeout 300s
+            write_timeout 300s
+        }
+    }
+}
+
 sep-dev.longdaoSEP.cn {
     tls {$LONGDAO_ACME_EMAIL} {
         protocols tls1.2 tls1.3
+    }
+
+    @skill_import path /api/skill-import /api/skill-import/*
+    handle @skill_import {
+        @package {
+            method POST
+            path_regexp dev_skill_package ^/api/skill-import/connector/sessions/[A-Za-z0-9_-]{1,160}/package/?$
+        }
+        handle @package {
+            request_body {
+                max_size 105906176
+            }
+            import sep_dev_skill_import_proxy
+        }
+        @events {
+            method POST
+            path_regexp dev_skill_events ^/api/skill-import/connector/sessions/[A-Za-z0-9_-]{1,160}/events/?$
+        }
+        handle @events {
+            request_body {
+                max_size 16777216
+            }
+            import sep_dev_skill_import_proxy
+        }
+        handle {
+            request_body {
+                max_size 2097152
+            }
+            import sep_dev_skill_import_proxy
+        }
     }
 
     @sep_dev_ws path /ws/*
@@ -29,7 +72,8 @@ sep-dev.longdaoSEP.cn {
         }
     }
 
-    request_body {
+    @ordinary_body not path /api/skill-import /api/skill-import/*
+    request_body @ordinary_body {
         max_size 100MB
     }
 

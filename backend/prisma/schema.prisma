@@ -36,6 +36,7 @@ model User {
   /// 但用关联表保留结构能力，将来放开多企业无需数据迁移。
   memberships                       EnterpriseMember[]
   devices                           Device[]
+  skillImportDevices                SkillImportDevice[]
   authSessions                      AuthSession[]
   authCredentials                   AuthCredential[]
   authOneTimeTokens                 AuthOneTimeToken[]
@@ -85,6 +86,28 @@ model User {
 enum AuthSessionType {
   WEB
   DESKTOP
+}
+
+/// Device keys authorize only local Skill import, never desktop/business login.
+model SkillImportDevice {
+  id             String    @id @default(cuid())
+  userId         String
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  instanceId     String
+  publicKey      String
+  keyFingerprint String
+  label          String
+  platform       String
+  clientVersion  String
+  scopeSummary   Json
+  lastSeenAt     DateTime?
+  revokedAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([instanceId, userId, keyFingerprint])
+  @@index([userId, revokedAt])
+  @@map("skill_import_devices")
 }
 
 enum CredentialType {

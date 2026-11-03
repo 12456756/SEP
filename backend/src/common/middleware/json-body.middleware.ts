@@ -9,7 +9,8 @@ export function createJsonBodyMiddleware(env: NodeJS.ProcessEnv = process.env): 
   return (req, res, next) => {
     const parser = req.method === 'POST' && /^\/api\/gateway\/v1\/chat\/completions\/?$/i.test(req.path)
       ? gateway : /^\/api\/(?:capabilities|contributions|admin\/skill-versions|enterprise\/(?:skill-versions|capabilities))(?:\/|$)/i.test(req.path)
-        ? skill : ordinary;
+        ? skill : req.method === 'POST' && /^\/api\/skill-import\/connector\/sessions\/[A-Za-z0-9_-]{1,160}\/events\/?$/i.test(req.path)
+          ? skill : ordinary;
     parser(req, res, next);
   };
 }

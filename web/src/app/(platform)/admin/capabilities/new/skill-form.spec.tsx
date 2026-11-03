@@ -12,6 +12,7 @@ const fetchMock = vi.fn();
 function response(body: unknown, status = 200) { return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } }); }
 function mount() {
   render(<QueryClientProvider client={new QueryClient({ defaultOptions: { mutations: { retry: false } } })}><SkillForm onCancel={vi.fn()} /></QueryClientProvider>);
+  fireEvent.mouseDown(screen.getByRole('tab', { name: 'ZIP 上传' }), { button: 0, ctrlKey: false });
 }
 async function upload() {
   fireEvent.change(screen.getByLabelText('Zip 文件（必须包含 SKILL.md）'), { target: { files: [new File(['zip'], metadata.filename, { type: 'application/zip' })] } });
@@ -22,7 +23,9 @@ function fill() {
   fireEvent.change(screen.getByLabelText('能力描述'), { target: { value: '完整上传包并保留正文的测试技能说明' } });
 }
 beforeEach(() => {
-  vi.clearAllMocks(); vi.stubGlobal('fetch', fetchMock);
+  vi.clearAllMocks(); vi.stubGlobal('fetch', (path: string, options?: RequestInit) => path === '/api/skill-import/config'
+    ? Promise.resolve(response({ enabled: false, instanceId: 'test', protocolVersion: 1, minClientVersion: '1.0.0' }))
+    : fetchMock(path, options));
   useAuthStore.getState().setAuth({ token: 'ops-memory-token', user: { id: 'ops', name: '运营', email: 'ops@example.com', avatar: null, role: 'ADMIN' }, enterprise: null, roleInEnterprise: null });
   fetchMock.mockImplementation(async (path: string) => response(path.endsWith('upload-skill') ? metadata : { id: 'created-cap' }));
 });
@@ -135,5 +138,18 @@ describe('ops SKILL 首次创建认证契约', () => {
     expect(screen.getByText(`文件: ${metadata.filename}`)).toBeInTheDocument();
     expect(push).not.toHaveBeenCalled();
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+  it('创建响应未知时保留包、禁止重复提交，提示先去列表核对', async () => {
+    fetchMock.mockImplementation(async (path: string) => {
+      if (path.endsWith('upload-skill')) return response(metadata);
+      throw new TypeError('Failed to fetch');
+    });
+    mount(); fill(); await upload();
+    fireEvent.click(screen.getByRole('button', { name: '创建并进入平台待审' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('创建结果尚未确认');
+    expect(screen.getByRole('button', { name: '创建并进入平台待审' })).toBeDisabled();
+    expect(screen.getByText(`文件: ${metadata.filename}`)).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(push).not.toHaveBeenCalled();
   });
 });

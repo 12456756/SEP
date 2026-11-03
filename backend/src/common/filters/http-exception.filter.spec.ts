@@ -22,6 +22,22 @@ describe('HttpExceptionFilter', () => {
     expect(unrelatedBody.code).toBeUndefined();
   });
 
+  it('preserves only allowlisted skill-import error codes on skill-import routes', () => {
+    const { body } = catchException(new HttpException({
+      message: '授权已过期', code: 'GRANT_EXPIRED', retryable: true,
+      secret: 'must-not-leak',
+    }, 401), '/api/skill-import/connector/sessions/s-1/commands');
+    expect(body.code).toBe('GRANT_EXPIRED');
+    expect(body.retryable).toBe(true);
+    expect(JSON.stringify(body)).not.toContain('must-not-leak');
+
+    const { body: unrelated } = catchException(new HttpException({
+      message: 'bad', code: 'GRANT_EXPIRED', retryable: true,
+    }, 401), '/api/employees');
+    expect(unrelated.code).toBeUndefined();
+    expect(unrelated.retryable).toBeUndefined();
+  });
+
   it.each([
     '/api/client/subscriptions/sub-1/skills/cap-1/versions/sv-1/artifact/extra',
     '/api/client/subscriptions/sub-1/skills/cap-1/versions/sv%2F1/artifact',

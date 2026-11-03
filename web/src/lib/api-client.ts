@@ -12,6 +12,7 @@ export class ApiError extends Error {
     public status: number,
     message: string,
     public body?: unknown,
+    public readonly retryAfterSeconds?: number,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -61,7 +62,7 @@ async function rawRequest<T>(path: string, opts: RequestOptions = {}): Promise<T
           ? (data as any).message.join('; ')
           : String((data as any).message)
         : res.statusText) || '请求失败';
-    throw new ApiError(res.status, message, data);
+    throw new ApiError(res.status, message, data, readRetryAfter(res.headers?.get('Retry-After') ?? null));
   }
 
   return data as T;
@@ -73,6 +74,12 @@ function safeJson(text: string): unknown {
   } catch {
     return text;
   }
+}
+
+function readRetryAfter(value: string | null): number | undefined {
+  if (value === null) return undefined;
+  const seconds = /^\d+$/.test(value.trim()) ? Number(value) : (Date.parse(value) - Date.now()) / 1000;
+  return Number.isFinite(seconds) ? Math.max(0, seconds) : undefined;
 }
 
 let refreshInFlight: Promise<boolean> | null = null;
@@ -137,7 +144,7 @@ export async function downloadBlob(
       data && typeof data === 'object' && 'message' in data
         ? String((data as { message: unknown }).message)
         : '下载失败';
-    throw new ApiError(res.status, message, data);
+    throw new ApiError(res.status, message, data, readRetryAfter(res.headers?.get('Retry-After') ?? null));
   }
 
   return {
@@ -220,7 +227,7 @@ export async function uploadForm<T>(
           ? (data as { message: string[] }).message.join('; ')
           : String((data as { message: unknown }).message)
         : '上传失败';
-    throw new ApiError(res.status, message, data);
+    throw new ApiError(res.status, message, data, readRetryAfter(res.headers?.get('Retry-After') ?? null));
   }
   return data as T;
 }

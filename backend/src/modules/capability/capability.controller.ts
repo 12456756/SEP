@@ -1,7 +1,7 @@
 import {
   Controller, Get, Post, Patch, Delete, Body, Param,
   Request, UseGuards, Query, HttpCode, HttpStatus,
-  Res, NotFoundException,
+  Res, NotFoundException, ForbiddenException,
 } from '@nestjs/common';
 import {
   ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiQuery,
@@ -13,6 +13,7 @@ import { CapabilityUploadDto, CapabilityUploadDtoSchema } from 'shared';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { existsSync, statSync } from 'fs';
 import { SkillPackageService } from '../skill-package/skill-package.service';
+import { SessionService } from '../auth/session.service';
 
 @ApiTags('Capabilities')
 @Controller('capabilities')
@@ -20,6 +21,7 @@ export class CapabilityController {
   constructor(
     private capabilityService: CapabilityService,
     private skillPackage: SkillPackageService,
+    private sessionService: SessionService,
   ) {}
 
   // ────────────── Public / User browsing ──────────────
@@ -95,8 +97,14 @@ export class CapabilityController {
   @ApiResponse({ status: 403, description: 'SKILL creation requires Admin role' })
   async create(
     @Body(new ZodValidationPipe(CapabilityCreateDtoSchema)) dto: CapabilityCreateDto,
-    @Request() req: { user: { id: string; role: string } },
+    @Request() req: { user: { id: string; role: string; sid?: string } },
   ) {
+    if (dto.type === 'skill' && req.user.role === 'ADMIN') {
+      if (!req.user.sid) {
+        throw new ForbiddenException('Active Web session required for Skill creation');
+      }
+      await this.sessionService.assertActiveSession(req.user.sid, req.user.id, 'WEB');
+    }
     return this.capabilityService.create(req.user.id, dto, req.user.role);
   }
 

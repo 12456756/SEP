@@ -4,8 +4,50 @@
         trusted_proxies_strict
     }
 }
+(skill_import_proxy) {
+    reverse_proxy sep-green-backend:3001 {
+        header_up X-Real-IP {client_ip}
+        header_up X-Forwarded-For {client_ip}
+        header_up X-Forwarded-Proto {scheme}
+        transport http {
+            response_header_timeout 300s
+            read_timeout 300s
+            write_timeout 300s
+        }
+    }
+}
 
 longdaosep.cn {
+
+    @skill_import path /api/skill-import /api/skill-import/*
+    handle @skill_import {
+        @package {
+            method POST
+            path_regexp skill_package ^/api/skill-import/connector/sessions/[A-Za-z0-9_-]{1,160}/package/?$
+        }
+        handle @package {
+            request_body {
+                max_size 105906176
+            }
+            import skill_import_proxy
+        }
+        @events {
+            method POST
+            path_regexp skill_events ^/api/skill-import/connector/sessions/[A-Za-z0-9_-]{1,160}/events/?$
+        }
+        handle @events {
+            request_body {
+                max_size 16777216
+            }
+            import skill_import_proxy
+        }
+        handle {
+            request_body {
+                max_size 2097152
+            }
+            import skill_import_proxy
+        }
+    }
 
     @sep_ws path /ws/*
     reverse_proxy @sep_ws sep-green-backend:3001 {
@@ -34,7 +76,8 @@ longdaosep.cn {
             header Content-Type image/svg+xml*
         }
     }
-    request_body {
+    @ordinary_body not path /api/skill-import /api/skill-import/*
+    request_body @ordinary_body {
         max_size 100MB
     }
     log {

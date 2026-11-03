@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useForm, useWatch } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -11,10 +11,12 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { toast } from '@/components/ui/toast';
-import { Loader2, CheckCircle, XCircle } from 'lucide-react';
-import { api, uploadForm } from '@/lib/api-client';
+import { Loader2 } from 'lucide-react';
+import { api, ApiError, uploadForm } from '@/lib/api-client';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { CapabilityUploadDtoSchema } from '../../../../../../../backend/src/shared';
+import { SkillImportPanel } from '@/features/skill-import/skill-import-panel';
+import type { SkillImportArtifact } from '@/features/skill-import/types';
 
 const INDUSTRIES = ['电商', '跨境电商', '金融', '教育', '医疗', '通用'];
 const POSITIONS = ['客服', '销售', '市场', '运营', '技术', '通用'];
@@ -43,7 +45,8 @@ export function SkillForm({ onCancel }: { onCancel: () => void }) {
   const qc = useQueryClient();
   const [uploadMetadata, setUploadMetadata] = useState<UploadMetadata | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const [isUploading, setIsUploading] = useState(false);
+  const [createOutcomeUnknown, setCreateOutcomeUnknown] = useState(false);
+  const uploadGeneration = useRef(0);
 
   const {
     register,
@@ -57,7 +60,21 @@ export function SkillForm({ onCancel }: { onCancel: () => void }) {
     defaultValues: { name: '', description: '', industry: [], position: [] },
   });
 
+  const applyArtifact = useCallback((artifact: SkillImportArtifact | null) => {
+    uploadGeneration.current += 1;
+    setUploadMetadata(artifact);
+    setUploadError(null);
+    if (!artifact) return;
+    if (!getValues('name').trim() && artifact.suggested?.name) {
+      setValue('name', artifact.suggested.name, { shouldValidate: true });
+    }
+    if (!getValues('description').trim() && artifact.suggested?.description) {
+      setValue('description', artifact.suggested.description, { shouldValidate: true });
+    }
+  }, [getValues, setValue]);
+
   const createMutation = useMutation({
+    retry: false,
     mutationFn: async (data: SkillFormValues & UploadMetadata) => {
       return api.post<{ id: string }>('/capabilities', {
           type: 'skill',
@@ -84,44 +101,42 @@ export function SkillForm({ onCancel }: { onCancel: () => void }) {
       router.push('/admin/skills');
     },
     onError: (err) => {
+      if (!(err instanceof ApiError) || err.status >= 500) setCreateOutcomeUnknown(true);
       toast.error('创建失败', err instanceof Error ? err.message : '请稍后重试');
     },
   });
 
-  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = e.target.files?.[0];
-    if (!selectedFile) return;
-
+  const uploadMutation = useMutation({
+    retry: false,
+    mutationFn: async (file: File) => {
+      const formData = new FormData();
+      formData.append('file', file);
+      return uploadForm<UploadMetadata>('/admin/capabilities/upload-skill', formData);
+    },
+  });
+  const handleFile = async (selectedFile: File) => {
+    const generation = ++uploadGeneration.current;
     setUploadError(null);
     setUploadMetadata(null);
-
-    // 自动上传
-    setIsUploading(true);
     try {
-      const formData = new FormData();
-      formData.append('file', selectedFile);
-
-      const metadata = await uploadForm<UploadMetadata>('/admin/capabilities/upload-skill', formData);
+      const metadata = await uploadMutation.mutateAsync(selectedFile);
+      if (generation !== uploadGeneration.current) return;
       setUploadMetadata(metadata);
-      if (!getValues('name').trim() && metadata.suggested?.name) {
-        setValue('name', metadata.suggested.name, { shouldValidate: true });
-      }
-      if (!getValues('description').trim() && metadata.suggested?.description) {
-        setValue('description', metadata.suggested.description, { shouldValidate: true });
-      }
+      if (!getValues('name').trim() && metadata.suggested?.name) setValue('name', metadata.suggested.name, { shouldValidate: true });
+      if (!getValues('description').trim() && metadata.suggested?.description) setValue('description', metadata.suggested.description, { shouldValidate: true });
       toast.success('上传成功', `已读取技能包，文件数: ${metadata.fileCount}`);
     } catch (err) {
+      if (generation !== uploadGeneration.current) return;
       const message = err instanceof Error ? err.message : '请稍后重试';
       setUploadError(message);
       toast.error('上传失败', message);
-    } finally {
-      setIsUploading(false);
     }
   };
 
   const onSubmit = (data: SkillFormValues) => {
+    if (createOutcomeUnknown || createMutation.isPending) return;
     if (!uploadMetadata) {
-      toast.error('请先上传 zip 文件');
+      toast.error('请先导入技能包');
       return;
     }
     createMutation.mutate({
@@ -150,44 +165,15 @@ export function SkillForm({ onCancel }: { onCancel: () => void }) {
 
   return (
     <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
-      <Card>
-        <CardHeader>
-          <CardTitle>2. 上传 SKILL.md 包</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="file">Zip 文件（必须包含 SKILL.md）</Label>
-            <div className="flex items-center gap-3">
-              <Input
-                id="file"
-                type="file"
-                onChange={handleFileChange}
-                disabled={isUploading || createMutation.isPending}
-                className="min-w-0 flex-1"
-              />
-              {isUploading && <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />}
-              {uploadMetadata && <CheckCircle className="h-5 w-5 text-green-600" />}
-              {uploadError && <XCircle className="h-5 w-5 text-red-600" />}
-            </div>
-            {uploadError && <p className="text-sm text-red-600">{uploadError}</p>}
-            {uploadMetadata && (
-              <div className="break-all text-sm text-muted-foreground space-y-1 bg-muted/30 p-3 rounded">
-                <p>文件: {uploadMetadata.filename}</p>
-                <p>文件数: {uploadMetadata.fileCount}</p>
-                <p>大小: {(uploadMetadata.totalSize / 1024).toFixed(2)} KB</p>
-                <p>SHA256: {uploadMetadata.sha256.slice(0, 16)}...</p>
-              </div>
-            )}
-            {!!uploadMetadata?.warnings?.length && (
-              <ul aria-label="导入提示" className="list-inside list-disc space-y-1 break-words text-sm text-muted-foreground">
-                {Array.from(new Set(uploadMetadata.warnings.map((warning) => warning.message))).map((message) => (
-                  <li key={message}>{message}</li>
-                ))}
-              </ul>
-            )}
-          </div>
-        </CardContent>
-      </Card>
+      <SkillImportPanel
+        onArtifact={applyArtifact}
+        onZipFile={(file) => void handleFile(file)}
+        zipBusy={uploadMutation.isPending || createMutation.isPending}
+        zipError={uploadError}
+        zipArtifact={uploadMetadata}
+      />
+
+      {createOutcomeUnknown && <p role="alert" className="text-sm text-amber-700">创建结果尚未确认，请先到技能列表核对，避免重复创建。</p>}
 
       <Card>
         <CardHeader>
@@ -258,7 +244,7 @@ export function SkillForm({ onCancel }: { onCancel: () => void }) {
         <Button type="button" variant="outline" onClick={onCancel} disabled={isSubmitting || createMutation.isPending}>
           取消
         </Button>
-        <Button type="submit" disabled={isSubmitting || isUploading || createMutation.isPending || !uploadMetadata}>
+        <Button type="submit" disabled={isSubmitting || uploadMutation.isPending || createMutation.isPending || createOutcomeUnknown || !uploadMetadata}>
           {createMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
           创建并进入平台待审
         </Button>
