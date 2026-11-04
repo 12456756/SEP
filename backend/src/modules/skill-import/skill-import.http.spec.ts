@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { request as httpRequest } from 'node:http';
 import { AddressInfo } from 'node:net';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import { Reflector } from '@nestjs/core';
 import Redis from 'ioredis';
 import request from 'supertest';
 import { HttpExceptionFilter } from '../../common/filters/http-exception.filter';
@@ -21,6 +22,7 @@ import { SkillImportArtifactSchema, SkillImportCandidatesResponseSchema, SkillIm
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { SessionService } from '../auth/session.service';
 import { AuditService } from '../audit/audit.service';
+import { CsrfGuard } from '../security/guards/csrf.guard';
 import { CapabilityValidatorService } from '../capability-contribution/capability-validator.service';
 import { PackageSecurityService } from '../capability-contribution/package-security.service';
 import { SkillPackageService } from '../skill-package/skill-package.service';
@@ -111,6 +113,44 @@ integration('Skill import HTTP protocol with real Redis and ZIP pipeline', () =>
     const message = JSON.stringify(['SEP-SKILL-IMPORT', 1, challenge.purpose, challenge.instanceId, challenge.sessionId ?? null, challenge.pairingId ?? null, challenge.deviceId ?? null, challenge.keyFingerprint, challenge.challengeId, challenge.nonce, challenge.expiresAt, consentHash]);
     return { challengeId: challenge.challengeId, signature: sign(null, Buffer.from(message, 'utf8'), privateKey).toString('base64url'), rememberDevice, scope: 'user', rootIds };
   }
+
+  it('allows native pairing through production CSRF and still requires a valid grant for commands', async () => {
+    const original = { NODE_ENV: process.env.NODE_ENV, CORS_ORIGIN: process.env.CORS_ORIGIN };
+    let nativeApp: INestApplication;
+    try {
+      process.env.NODE_ENV = 'production';
+      process.env.CORS_ORIGIN = 'https://sep.example';
+      const csrf = new CsrfGuard(new Reflector());
+      const module = await Test.createTestingModule({
+        controllers: [SkillImportConnectorController],
+        providers: [
+          { provide: SkillImportService, useValue: service },
+          { provide: SkillImportUploadGuard, useValue: app.get(SkillImportUploadGuard) },
+          { provide: SkillImportUploadInterceptor, useValue: app.get(SkillImportUploadInterceptor) },
+        ],
+      }).compile();
+      nativeApp = module.createNestApplication();
+      nativeApp.setGlobalPrefix('api');
+      nativeApp.useGlobalGuards(csrf);
+      await nativeApp.init();
+      const session = await request(app.getHttpServer()).post('/api/skill-import/sessions')
+        .send({ requestId: 'native-csrf', protocolVersion: 1, scope: 'user' }).expect(201);
+      const publicKey = generateKeyPairSync('ed25519').publicKey.export({ type: 'spki', format: 'der' });
+      const body = { requestId: 'native-pairing', sessionId: session.body.id, publicKey: publicKey.toString('base64url'),
+        keyFingerprint: hash(publicKey), protocolVersion: 1, clientVersion: '1.0.0', platform: 'darwin' };
+      const pairing = await request(nativeApp.getHttpServer()).post('/api/skill-import/connector/pairings').send(body).expect(200);
+      expect(pairing.body.challenge.instanceId).toBe(instanceId);
+      await request(nativeApp.getHttpServer()).post('/api/skill-import/connector/pairings')
+        .set('Origin', 'https://evil.example').send(body).expect(403);
+      await request(nativeApp.getHttpServer()).get(`/api/skill-import/connector/sessions/${session.body.id}/commands?cursor=0`).expect(401);
+    } finally {
+      await nativeApp?.close();
+      for (const [key, value] of Object.entries(original)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
 
   async function paired(rememberDevice = false) {
     const created = await request(app.getHttpServer()).post('/api/skill-import/sessions').send({ requestId: randomBytes(8).toString('hex'), protocolVersion: 1, scope: 'user' }).expect(201);

@@ -20,6 +20,21 @@ type Props = {
   zipArtifact: { filename: string; fileCount: number; totalSize: number; sha256: string; warnings?: Array<{ code: string; message: string }> } | null;
 };
 const labels = { 'waiting-client': '等待客户端', pairing: '等待设备确认', ready: '等待扫描', scanning: '正在扫描', results: '扫描完成', previewing: '正在读取预览', packaging: '正在打包', uploading: '正在上传', uploaded: '已上传，待创建', cancelled: '已取消', expired: '会话已过期', failed: '导入失败' };
+const agentOptions = [
+  { value: 'agents', label: '共享 Skills' },
+  { value: 'claude-code', label: 'Claude Code' },
+  { value: 'codex', label: 'Codex' },
+  { value: 'gemini-cli', label: 'Gemini CLI' },
+  { value: 'opencode', label: 'OpenCode' },
+  { value: 'workbuddy', label: 'WorkBuddy' },
+  { value: 'doubao-work', label: '豆包办公' },
+  { value: 'codebuddy', label: 'CodeBuddy' },
+  { value: 'qoder', label: 'Qoder' },
+  { value: 'qwen-code', label: 'Qwen Code' },
+  { value: 'kimi-code', label: 'Kimi Code' },
+  { value: 'project', label: '项目通用 Skills' },
+];
+const sourceLabel = (source: string) => agentOptions.find((option) => option.value === source)?.label ?? source;
 
 export function SkillImportPanel({ onArtifact, onZipFile, zipBusy, zipError, zipArtifact }: Props) {
   const [source, setSource] = useState('client');
@@ -44,11 +59,22 @@ export function SkillImportPanel({ onArtifact, onZipFile, zipBusy, zipError, zip
           </TabsList>
           <TabsContent value="client" className="space-y-4">
             <div className="flex flex-wrap items-end justify-between gap-3 border-b pb-4">
-              <div className="space-y-2">
-                <Label htmlFor="scan-scope">扫描范围</Label>
-                <select id="scan-scope" className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={flow.scope} disabled={zipBusy || flow.active || flow.create.isPending} onChange={(event) => flow.setScope(event.target.value as typeof flow.scope)}>
-                  <option value="user">用户级 Skills</option><option value="project">项目级 Skills</option><option value="all">用户级和项目级</option>
-                </select>
+              <div className="w-full min-w-0 space-y-2 sm:w-auto">
+                <div className="flex flex-wrap gap-3">
+                  <div className="min-w-0 flex-1 basis-40 space-y-2">
+                    <Label htmlFor="scan-scope">扫描范围</Label>
+                    <select id="scan-scope" className="h-10 w-full rounded-md border bg-background px-3 text-sm" value={flow.scope} disabled={zipBusy || flow.active || flow.create.isPending} onChange={(event) => flow.setScope(event.target.value as typeof flow.scope)}>
+                      <option value="user">用户级 Skills</option><option value="project">项目级 Skills</option><option value="all">用户级和项目级</option>
+                    </select>
+                  </div>
+                  <div className="min-w-0 flex-1 basis-40 space-y-2">
+                    <Label htmlFor="scan-agent">Agent 来源</Label>
+                    <select id="scan-agent" className="h-10 w-full min-w-0 rounded-md border bg-background px-3 text-sm" value={flow.source} disabled={zipBusy || importing} onChange={(event) => flow.setSource(event.target.value)}>
+                      <option value="">全部 Agent</option>
+                      {agentOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                  </div>
+                </div>
                 <p role="status" className="text-sm text-muted-foreground">{session ? labels[flow.expired ? 'expired' : session.status] : '等待开始扫描'}</p>
                 {session?.progress && <p className="text-xs text-muted-foreground">{session.progress.completed}{session.progress.total ? ` / ${session.progress.total}` : ''}</p>}
               </div>
@@ -70,10 +96,10 @@ export function SkillImportPanel({ onArtifact, onZipFile, zipBusy, zipError, zip
             {flow.error && <p role="alert" className="break-words text-sm text-red-600">{flow.error}</p>}
             {(flow.candidates.data || flow.candidates.isFetching) && <div className="grid min-w-0 gap-4 lg:grid-cols-2">
               <div className="min-w-0 space-y-3">
-                <div className="flex gap-2"><Input aria-label="搜索技能" maxLength={160} placeholder="搜索名称或描述" value={flow.search} disabled={importing} onChange={(event) => flow.setSearch(event.target.value)} /><Input aria-label="筛选 Agent" maxLength={96} placeholder="Agent 来源" value={flow.source} disabled={importing} onChange={(event) => flow.setSource(event.target.value)} /></div>
+                <Input aria-label="搜索技能" maxLength={160} placeholder="搜索名称或描述" value={flow.search} disabled={importing} onChange={(event) => flow.setSearch(event.target.value)} />
                 <div className="max-h-96 space-y-2 overflow-auto">
                   {candidates.map((candidate) => <button type="button" key={candidate.candidateId} disabled={zipBusy || candidate.availability === 'blocked' || importing || !flow.active} onClick={() => void flow.choose(candidate)} className={`w-full rounded-md border p-3 text-left disabled:opacity-50 ${selected?.candidateId === candidate.candidateId ? 'border-primary bg-primary/5' : 'hover:bg-muted/50'}`}>
-                    <p className="break-words font-medium">{candidate.name}</p><p className="text-xs text-muted-foreground">{candidate.sources.join(' / ')} · {candidate.scope === 'user' ? '用户级' : '项目级'}</p>
+                    <p className="break-words font-medium">{candidate.name}</p><p className="break-words text-xs text-muted-foreground">{candidate.sources.map(sourceLabel).join(' / ')} · {candidate.scope === 'user' ? '用户级' : '项目级'}</p>
                     {candidate.description && <p className="mt-1 line-clamp-2 break-words text-sm text-muted-foreground">{candidate.description}</p>}
                     {candidate.locations.map((location) => <p key={`${location.rootId}:${location.relativePath}`} className="mt-1 break-all text-xs text-muted-foreground">{location.rootLabel}/{location.relativePath}</p>)}
                     {candidate.warnings.map((warning) => <p key={warning.code} className="mt-1 break-words text-xs text-amber-700">{warning.message}</p>)}

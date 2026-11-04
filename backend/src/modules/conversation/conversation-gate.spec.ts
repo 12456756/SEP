@@ -9,6 +9,7 @@
  * 只是这一轮由成员自己付（方案 §5.7 ④ 改道语义）。
  */
 import { ConversationStreamService } from "./conversation-stream.service";
+import { ServiceUnavailableException } from '@nestjs/common';
 import type { SseEvent } from "./conversation.types";
 
 /** acquireLock 抛这个哨兵：拿到它就说明执行流已经越过闸门。 */
@@ -18,6 +19,7 @@ describe("ConversationStreamService —— 逐条消息的额度闸门", () => {
   let prisma: any;
   let computeCredit: any;
   let sessionLock: any;
+  let modelConfig: any;
   let svc: ConversationStreamService;
 
   const session = {
@@ -42,6 +44,7 @@ describe("ConversationStreamService —— 逐条消息的额度闸门", () => {
       checkBalanceBeforeConversation: jest.fn(),
     };
     sessionLock = { acquireLock: jest.fn().mockRejectedValue(REACHED_LOCK) };
+    modelConfig = { resolveEffectiveModel: jest.fn().mockResolvedValue({ chatModel: 'model' }) };
 
     svc = new ConversationStreamService(
       prisma,
@@ -52,7 +55,7 @@ describe("ConversationStreamService —— 逐条消息的额度闸门", () => {
       {} as any, // settingService
       { resolve: jest.fn().mockResolvedValue({ enterpriseId: "ent-1" }) } as any,
       {} as any, // knowledgeSearch
-      { resolveEffectiveModel: jest.fn().mockResolvedValue({ chatModel: 'model' }) } as any,
+      modelConfig,
       {} as any, // uploadService
       {} as any, // attachmentContext
       computeCredit,
@@ -74,6 +77,18 @@ describe("ConversationStreamService —— 逐条消息的额度闸门", () => {
     }
     return { events };
   }
+
+  it('requires an available model within the resolved enterprise before billing or writing', async () => {
+    modelConfig.resolveEffectiveModel.mockRejectedValue(new ServiceUnavailableException('No permitted model'));
+    const { error } = await collect();
+    expect(error).toBeInstanceOf(ServiceUnavailableException);
+    expect(modelConfig.resolveEffectiveModel).toHaveBeenCalledWith(expect.objectContaining({
+      userId: 'user-1', enterpriseId: 'ent-1', requireAvailableModel: true,
+    }));
+    expect(computeCredit.getBillingSnapshot).not.toHaveBeenCalled();
+    expect(sessionLock.acquireLock).not.toHaveBeenCalled();
+    expect(prisma.message.create).not.toHaveBeenCalled();
+  });
 
   it("❗额度与个人余额双空时拦下本条消息，不加锁、不落库", async () => {
     computeCredit.checkBalanceBeforeConversation.mockResolvedValue({

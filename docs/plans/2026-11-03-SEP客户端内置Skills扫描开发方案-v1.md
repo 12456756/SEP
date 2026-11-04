@@ -219,7 +219,15 @@ scope/rootIds 在本地界面回显后提交，主进程必须与当前会话请
 
 ### 7.1 根目录与授权
 
-目录适配表以[现有官方目录核查](../research/2026-11-03-本地Agent-Skills扫描上传可行性调研.md#agent-技能目录官方核查)为依据；在本机解析 home、XDG 和已支持工具配置，不能用服务器 home、进程 cwd 或 Web 输入当用户项目路径。共享来源允许多个 Agent 标签，选择 Codex 时不能漏 `.agents/skills`。
+目录适配表以[现有官方目录核查](../research/2026-11-03-本地Agent-Skills扫描上传可行性调研.md#agent-技能目录官方核查)为依据；在本机解析 home、XDG 和已支持工具配置，不能用服务器 home、进程 cwd 或 Web 输入当用户项目路径。
+
+2026-11-04 来源分类修订：`sources` 表示实际扫描目录来源，不表示技能作者或工具兼容性。`.agents/skills` 单独归为 `agents`（共享 Skills），不再自动附加所有 Agent；`.claude/skills`、`.codex/skills`、`.gemini/skills` 和 OpenCode 目录分别标记对应 Agent。项目候选按所在 Agent 子目录分类，其余归为 `project`（项目通用 Skills）。只有真实目录别名或重叠授权确实发现同一候选时合并来源。同一真实目录合并，不按技能名称合并不同目录的副本。
+
+Web 在“扫描范围”右侧提供“Agent 来源”下拉，复用候选查询 `source` 参数，筛选扫描结果而不改变本机授权范围。默认“全部 Agent”包含共享目录；选择某个 Agent 时只展示已标记的该来源，共享目录可单独选择。旧客户端上报的多来源标签仍可查询，准确分类需要更新客户端后重新扫描。
+
+OpenCode 默认同时列出 XDG `opencode/skills`、兼容 `opencode/skill`，macOS 另列 `~/Library/Application Support/opencode/skills`（Windows 对应 Roaming 路径）；这些是目录入口，不代表多个安装实例，也不代表目录一定存在或包含技能。客户端标签区分 XDG skills、XDG skill 和平台目录。
+
+国产 Agent 补充适配见[目录核查与导入适配](../research/2026-11-04-国产Agent-Skills目录核查与导入适配.md)：新增 WorkBuddy、豆包办公、CodeBuddy、Qoder、Qwen Code、Kimi Code 来源。新增预设根仅在实际存在时显示；豆包办公应用数据路径只启用已验证的 macOS 路径，不扩展到整个应用目录。授权仍由用户在客户端确认，旧设备授权不自动新增目录。
 
 保存 root ID 与本机 realpath 映射；Web 只传 root ID/作用域，不能传绝对路径。默认个人路径一次确认，新增项目/自定义路径在本机选择并确认，不能把整个主目录自动变成授权范围。项目祖先发现最多到获准工作区/仓库边界，禁止一直追到文件系统根。
 

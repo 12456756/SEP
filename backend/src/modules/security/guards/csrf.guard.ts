@@ -75,6 +75,16 @@ export class CsrfGuard implements CanActivate {
       return true;
     }
 
+    // Connector routes never authenticate with browser cookies. Native requests
+    // use signed challenges or scoped grants; browser requests still validate Origin.
+    const connectorRoute = method === 'POST' && (
+      /^\/api\/skill-import\/connector\/(?:pairings|challenges|grants)$/.test(path)
+      || /^\/api\/skill-import\/connector\/sessions\/[a-z0-9_-]{1,160}\/(?:events|package)$/.test(path)
+      || /^\/api\/skill-import\/connector\/sessions\/[a-z0-9_-]{1,160}\/operations\/[a-z0-9_-]{1,160}\/upload-grant$/.test(path)
+      || /^\/api\/skill-import\/connector\/devices\/[a-z0-9_-]{1,160}\/revoke$/.test(path)
+    ) || method === 'DELETE' && /^\/api\/skill-import\/connector\/sessions\/[a-z0-9_-]{1,160}$/.test(path);
+    if (connectorRoute && !request.headers.origin && !request.headers.referer) return true;
+
     // 验证来源
     const origin = request.headers.origin || request.headers.referer;
 

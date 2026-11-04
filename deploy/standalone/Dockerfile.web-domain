@@ -9,7 +9,7 @@ COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV API_ORIGIN=http://sep-green-backend:3001
 ENV NEXT_PUBLIC_WS_URL=wss://sep.longdaoec.com
-RUN rm -rf /app/web/.next && pnpm --filter web run build
+RUN rm -rf /app/web/.next && npm --prefix web run build
 
 FROM ${SEP_WEB_BASE_IMAGE} AS runner
 USER root

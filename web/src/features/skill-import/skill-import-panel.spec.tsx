@@ -64,6 +64,37 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); useAuthStore.getState().clear(); });
 
 describe('本机 Skills 导入', () => {
+  it.each([['opencode', 'OpenCode'], ['workbuddy', 'WorkBuddy'], ['doubao-work', '豆包办公']])('扫描范围后提供 Agent 选项，切换 %s 从第一页查询并保留搜索词', async (agentSource, agentLabel) => {
+    readyImport();
+    const fallback = get.getMockImplementation()!;
+    get.mockImplementation(async (path, options) => {
+      const params = new URL(path, 'https://example.com').searchParams;
+      if (params.get('view') !== 'candidates') return fallback(path, options);
+      const source = params.get('source');
+      const cursor = params.get('cursor');
+      const item = { ...candidate, name: source ? `${agentLabel} 技能` : cursor ? '第二页技能' : '第一页技能', sources: [source || 'agents'] };
+      return { ...base, status: 'results', items: [item], nextCursor: !source && !cursor ? 'all-page-2' : null };
+    });
+    mount();
+    const scope = screen.getByRole('combobox', { name: '扫描范围' });
+    const agent = screen.getByRole('combobox', { name: 'Agent 来源' });
+    expect(scope.compareDocumentPosition(agent) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(Array.from((agent as HTMLSelectElement).options).map(option => option.text)).toEqual(['全部 Agent', '共享 Skills', 'Claude Code', 'Codex', 'Gemini CLI', 'OpenCode', 'WorkBuddy', '豆包办公', 'CodeBuddy', 'Qoder', 'Qwen Code', 'Kimi Code', '项目通用 Skills']);
+    await startScan();
+    await screen.findByRole('button', { name: /第一页技能/ });
+    fireEvent.change(screen.getByRole('textbox', { name: '搜索技能' }), { target: { value: '技能' } });
+    fireEvent.click(await screen.findByRole('button', { name: '加载更多' }));
+    await screen.findByRole('button', { name: /第二页技能/ });
+    fireEvent.change(agent, { target: { value: agentSource } });
+    await screen.findByRole('button', { name: new RegExp(`${agentLabel} 技能`) });
+    const queries = get.mock.calls.map(([path]) => new URL(path, 'https://example.com').searchParams).filter(params => params.get('view') === 'candidates' && params.get('source') === agentSource);
+    expect(queries.length).toBeGreaterThan(0);
+    expect(queries.every(params => !params.has('cursor') && params.get('q') === '技能')).toBe(true);
+    expect(screen.queryByRole('button', { name: /第二页技能/ })).not.toBeInTheDocument();
+    expect(screen.getByText(`${agentLabel} · 用户级`)).toBeInTheDocument();
+    expect(scope).toHaveValue('user');
+  });
+
   it.each(['取消', '切换身份', '撤销设备'])('已交付结果自然过期后保留，%s仍会清空', async (action) => {
     readyImport({ pageCount: 1 });
     const { onArtifact } = mount();

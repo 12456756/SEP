@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Injectable,
   Logger,
   NotFoundException,
@@ -8,6 +9,7 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { SettingService } from "../setting/setting.service";
 import { SETTING_KEYS, hasPricing, type UpdatePlatformModelDto } from "shared";
 import { ModelBillingService } from './model-billing.service';
+import { z } from 'zod';
 
 /** 上游返回的模型条目（标准化后）。 */
 export interface UpstreamModelEntry {
@@ -16,10 +18,12 @@ export interface UpstreamModelEntry {
 }
 
 /** sub2api /v1/models 单条返回结构（仅取需要的字段）。 */
-interface RawUpstreamModel {
-  id: string;
-  display_name?: string;
-}
+const upstreamModelsSchema = z.object({
+  data: z.array(z.object({
+    id: z.string().min(1).refine((id) => id === id.trim()),
+    display_name: z.string().optional(),
+  })).min(1),
+});
 
 /** 同步结果摘要。 */
 export interface SyncResult {
@@ -67,7 +71,7 @@ export class ModelService {
       );
     }
 
-    const url = `${baseURL.replace(/\/$/, "")}/models`;
+    const url = `${baseURL.replace(/\/+$/, "")}/models`;
 
     let res: Response;
     try {
@@ -89,8 +93,11 @@ export class ModelService {
       );
     }
 
-    const json = (await res.json()) as { data?: RawUpstreamModel[] };
-    return (json.data ?? [])
+    const parsed = upstreamModelsSchema.safeParse(await res.json().catch(() => null));
+    if (!parsed.success) {
+      throw new ServiceUnavailableException('上游模型列表格式无效或为空，本次未修改平台模型');
+    }
+    return [...new Map(parsed.data.data.map((model) => [model.id, model])).values()]
       .map((m) => ({ id: m.id, label: m.display_name || m.id }))
       .sort((a, b) => a.id.localeCompare(b.id));
   }
@@ -101,7 +108,7 @@ export class ModelService {
    * 同步上游模型到平台白名单表。
    * - 上游新增 → 入库，enabled=false（需管理员手动启用，避免误开放图像/preview 模型）
    * - 上游仍在 → 刷新 lastSeenAt，若曾标记 isStale 则恢复
-   * - 上游消失 → 标记 isStale（不物理删除，保留历史会话可读）
+   * - 上游消失 → 标记 isStale 并停用（不物理删除，保留历史会话可读）
    */
   async syncFromUpstream(): Promise<SyncResult> {
     const upstream = await this.listUpstream();
@@ -137,12 +144,12 @@ export class ModelService {
 
     // 上游已消失的：标记失效，不删除
     const staleTargets = existing.filter(
-      (m) => !upstreamIds.has(m.modelId) && !m.isStale,
+      (m) => !upstreamIds.has(m.modelId) && (!m.isStale || m.enabled),
     );
     if (staleTargets.length > 0) {
       await this.prisma.platformModel.updateMany({
         where: { id: { in: staleTargets.map((m) => m.id) } },
-        data: { isStale: true },
+        data: { isStale: true, enabled: false },
       });
     }
 
@@ -150,7 +157,7 @@ export class ModelService {
       upstreamTotal: upstream.length,
       added,
       restored,
-      staled: staleTargets.length,
+      staled: staleTargets.filter((model) => !model.isStale).length,
     };
     this.logger.log(`Model sync done: ${JSON.stringify(result)}`);
     return result;
@@ -228,6 +235,9 @@ export class ModelService {
   ) {
     const found = await this.prisma.platformModel.findUnique({ where: { id } });
     if (!found) throw new NotFoundException(`Model ${id} not found`);
+    if (data.enabled === true && found.isStale) {
+      throw new BadRequestException('该模型已从上游下架，请先同步上游确认可用后再启用');
+    }
 
     const updated = await this.prisma.platformModel.update({
       where: { id },

@@ -208,6 +208,37 @@ describe('CsrfGuard', () => {
     });
   });
 
+  describe('原生 Skills connector', () => {
+    it.each([
+      ['POST', '/api/skill-import/connector/pairings'],
+      ['POST', '/api/skill-import/connector/challenges/'],
+      ['POST', '/api/skill-import/connector/grants'],
+      ['POST', '/api/skill-import/connector/sessions/Session_1/events'],
+      ['POST', '/api/skill-import/connector/sessions/Session_1/package/'],
+      ['POST', '/api/skill-import/connector/sessions/Session_1/operations/Op_1/upload-grant'],
+      ['POST', '/api/skill-import/connector/devices/Device_1/revoke'],
+      ['DELETE', '/api/skill-import/connector/sessions/Session_1'],
+    ])('无 Cookie 来源的 %s %s 交给独立协议鉴权', (method, path) => {
+      expect(guard.canActivate(createMockContext(method, path))).toBe(true);
+      expect(() => guard.canActivate(createMockContext(method, path, { origin: 'https://evil.com' })))
+        .toThrow(ForbiddenException);
+      expect(guard.canActivate(createMockContext(method, path, { origin: 'https://example.com' }))).toBe(true);
+    });
+
+    it.each([
+      ['POST', '/api/skill-import/sessions'],
+      ['POST', '/api/skill-import/sessions/session_1/confirm-device'],
+      ['DELETE', '/api/skill-import/devices/device_1'],
+      ['POST', '/api/skill-import/connector/pairings-extra'],
+      ['POST', '/api/skill-import/connector/pairings//'],
+      ['POST', '/api/skill-import/connector/sessions/session_1/unknown'],
+      ['PATCH', '/api/skill-import/connector/grants'],
+      ['DELETE', '/api/skill-import/connector/devices/device_1'],
+    ])('未扩大来源豁免到 %s %s', (method, path) => {
+      expect(() => guard.canActivate(createMockContext(method, path))).toThrow(ForbiddenException);
+    });
+  });
+
   describe('开发环境', () => {
     beforeEach(() => {
       process.env.NODE_ENV = 'development';

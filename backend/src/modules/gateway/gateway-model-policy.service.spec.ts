@@ -173,6 +173,14 @@ describe('GatewayModelPolicyService', () => {
     expect((await service.resolvePolicy(identity)).defaultModel).toBe('model-a');
   });
 
+  it('skips stale implicit subscription and template models when advertising the client default', async () => {
+    prisma.platformModel.findMany.mockResolvedValue([{ modelId: 'model-a' }, { modelId: 'model-b' }]);
+    const policy = await service.resolvePolicy(identity);
+    expect(policy.defaultModel).toBe('model-a');
+    expect(policy.allowedModels).toContain(policy.defaultModel);
+    await expect(service.prepare(identity, request({ model: 'model-template' }))).rejects.toThrow(ForbiddenException);
+  });
+
   it('prepares a copy with default output tokens and never silently replaces the requested model', async () => {
     const dto = request({ model: 'model-b' });
     const prepared = await service.prepare(identity, dto);

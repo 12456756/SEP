@@ -10,6 +10,8 @@ import { EmbeddingService } from '../modules/knowledge/embedding.service';
 import { TaskQueueService } from '../modules/task-execution/task-queue.service';
 import { KnowledgeQueueService } from '../modules/knowledge/knowledge-queue.service';
 import { HttpExceptionFilter } from '../common/filters/http-exception.filter';
+import { SettingService } from '../modules/setting/setting.service';
+import { SETTING_KEYS } from 'shared';
 
 jest.mock('../modules/knowledge/embedding.service', () => ({ EmbeddingService: class {} }));
 jest.mock('../modules/task-execution/task-queue.service', () => ({ TaskQueueService: class {} }));
@@ -23,6 +25,7 @@ describe('Health HTTP lifecycle contract', () => {
   const ready = jest.fn();
   const embeddingAvailable = jest.fn();
   const configGet = jest.fn();
+  const getEffectiveValue = jest.fn();
   let fetchMock: jest.SpyInstance;
   const state = (gatewayState = 'ready', activeGatewayRequests = 0) => ({
     bootId: '11111111-1111-4111-8111-111111111111', gatewayState,
@@ -38,6 +41,7 @@ describe('Health HTTP lifecycle contract', () => {
         { provide: PrismaService, useValue: { $queryRaw: query } },
         { provide: RedisService, useValue: { redis: { ping } } },
         { provide: ConfigService, useValue: { get: configGet } },
+        { provide: SettingService, useValue: { getEffectiveValue } },
         { provide: EmbeddingService, useValue: { isAvailable: embeddingAvailable } },
         { provide: TaskQueueService, useValue: { isReady: ready } },
         { provide: KnowledgeQueueService, useValue: { isReady: ready } },
@@ -46,7 +50,7 @@ describe('Health HTTP lifecycle contract', () => {
     app = moduleRef.createNestApplication();
     app.setGlobalPrefix('api');
     app.useGlobalFilters(new HttpExceptionFilter());
-    await app.init();
+    await app.listen(0, '127.0.0.1');
   });
   beforeEach(() => {
     jest.clearAllMocks();
@@ -57,8 +61,14 @@ describe('Health HTTP lifecycle contract', () => {
     configGet.mockImplementation((key: string) => ({
       NODE_ENV: 'test', SUB2API_BASE_URL: 'https://relay.example/v1',
     }[key]));
+    getEffectiveValue.mockImplementation(async (key: string) => ({
+      [SETTING_KEYS.SUB2API_BASE_URL]: 'https://settings-relay.example/v1/',
+      [SETTING_KEYS.SUB2API_API_KEY]: 'settings-secret',
+    }[key]));
     embeddingAvailable.mockRejectedValue(new Error('embedding unavailable'));
-    fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValue({ ok: false, status: 401 } as Response);
+    fetchMock = jest.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true, status: 200, json: async () => ({ data: [{ id: 'model-a' }] }),
+    } as Response);
   });
   afterEach(() => fetchMock.mockRestore());
   afterAll(async () => app.close());
@@ -98,7 +108,7 @@ describe('Health HTTP lifecycle contract', () => {
     await request(app.getHttpServer()).post('/api/health/ready').expect(404);
   });
 
-  it('keeps production ready without executing an embedding model probe', async () => {
+  it('uses effective relay settings and authenticated model discovery without embedding inference', async () => {
     configGet.mockImplementation((key: string) => ({
       NODE_ENV: 'production', SUB2API_BASE_URL: 'https://relay.example/v1',
     }[key]));
@@ -107,14 +117,42 @@ describe('Health HTTP lifecycle contract', () => {
     expect(response.body.checks).not.toHaveProperty('embedding');
     expect(embeddingAvailable).not.toHaveBeenCalled();
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledWith('https://relay.example/v1/models', { signal: expect.any(AbortSignal) });
+    expect(fetchMock).toHaveBeenCalledWith('https://settings-relay.example/v1/models', {
+      headers: { Authorization: 'Bearer settings-secret' }, signal: expect.any(AbortSignal),
+    });
+    expect(getEffectiveValue).toHaveBeenCalledWith(SETTING_KEYS.SUB2API_BASE_URL);
+    expect(getEffectiveValue).toHaveBeenCalledWith(SETTING_KEYS.SUB2API_API_KEY);
   });
 
-  it('still rejects an unavailable production relay', async () => {
+  it.each([401, 403, 503])('rejects production relay HTTP %i', async (status) => {
     configGet.mockImplementation((key: string) => ({
       NODE_ENV: 'production', SUB2API_BASE_URL: 'https://relay.example/v1',
     }[key]));
-    fetchMock.mockResolvedValue({ ok: false, status: 503 } as Response);
+    fetchMock.mockResolvedValue({ ok: false, status } as Response);
+    const response = await request(app.getHttpServer()).get('/api/health/ready').expect(503);
+    expect(response.body).toMatchObject({ status: 'failed', checks: { sub2api: 'failed' } });
+  });
+
+  it.each([
+    ['missing URL', async (key: string) => key === SETTING_KEYS.SUB2API_API_KEY ? 'secret' : undefined],
+    ['missing key', async (key: string) => key === SETTING_KEYS.SUB2API_BASE_URL ? 'https://relay.example/v1' : ''],
+    ['setting lookup failure', async () => { throw new Error('private setting detail'); }],
+  ])('rejects production relay when configuration has %s', async (_case, lookup) => {
+    configGet.mockImplementation((key: string) => key === 'NODE_ENV' ? 'production' : undefined);
+    getEffectiveValue.mockImplementation(lookup);
+    const response = await request(app.getHttpServer()).get('/api/health/ready').expect(503);
+    expect(response.body).toMatchObject({ status: 'failed', checks: { sub2api: 'failed' } });
+    expect(JSON.stringify(response.body)).not.toContain('private setting detail');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['missing data', {}],
+    ['non-array data', { data: 'model-a' }],
+    ['malformed model entry', { data: [{ name: 'model-a' }] }],
+  ])('rejects malformed upstream model response: %s', async (_case, payload) => {
+    configGet.mockImplementation((key: string) => key === 'NODE_ENV' ? 'production' : undefined);
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => payload } as Response);
     const response = await request(app.getHttpServer()).get('/api/health/ready').expect(503);
     expect(response.body).toMatchObject({ status: 'failed', checks: { sub2api: 'failed' } });
   });

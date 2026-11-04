@@ -15,7 +15,8 @@ import type {
   AvailableModel,
 } from 'shared/model-config.dto';
 import { ModelBillingService } from '../model/model-billing.service';
-import { DEFAULT_MODEL_ID } from 'shared';
+import { DEFAULT_MODEL_ID, SETTING_KEYS } from 'shared';
+import { SettingService } from '../setting/setting.service';
 
 
 @Injectable()
@@ -25,6 +26,7 @@ export class EnterpriseModelConfigService {
     private readonly ctx: EnterpriseContextService,
     private readonly config?: ConfigService,
     private readonly billing?: ModelBillingService,
+    private readonly settings?: SettingService,
   ) {}
 
   private getEffectiveEmbeddingConfig() {
@@ -59,10 +61,11 @@ export class EnterpriseModelConfigService {
     });
 
     if (!config) {
+      const defaultChatModel = await this.resolveInitialChatModel();
       config = await this.prisma.enterpriseModelConfig.create({
         data: {
           enterpriseId,
-          defaultChatModel: DEFAULT_MODEL_ID,
+          defaultChatModel,
           allowedChatModels: [],
           allowUserSwitchModel: true,
           ...this.getEffectiveEmbeddingConfig(),
@@ -81,6 +84,21 @@ export class EnterpriseModelConfigService {
     }
 
     return this.serializeConfig(config);
+  }
+
+  private async resolveInitialChatModel(): Promise<string> {
+    const [configuredDefault, availableModels] = await Promise.all([
+      this.settings?.getEffectiveValue(SETTING_KEYS.SUB2API_DEFAULT_MODEL),
+      this.prisma.platformModel.findMany({
+        where: { enabled: true, isStale: false },
+        orderBy: [{ sortOrder: 'asc' }, { modelId: 'asc' }],
+        select: { modelId: true },
+      }),
+    ]);
+    const availableIds = availableModels.map((model: { modelId: string }) => model.modelId);
+    if (configuredDefault && availableIds.includes(configuredDefault)) return configuredDefault;
+    if (availableIds.length > 0) return availableIds[0];
+    throw new ServiceUnavailableException('平台没有已启用且有效的模型，无法初始化企业模型配置');
   }
 
   async update(userId: string, dto: UpdateEnterpriseModelConfigDto) {
@@ -206,6 +224,8 @@ export class EnterpriseModelConfigService {
     enterpriseId?: string;
     /** 网关必须得到实际可调用集合；空交集不能解释成不限制。 */
     restrictToAvailableModels?: boolean;
+    /** 对话请求要求最终模型处于当前平台和企业策略的可用交集中。 */
+    requireAvailableModel?: boolean;
     userSelectedModel?: string;
     /** 雇佣关系 id。收敛前是 employeeInstanceId。 */
     subscriptionId?: string;
@@ -238,9 +258,10 @@ export class EnterpriseModelConfigService {
 
     const enterpriseAllowed = config.allowedChatModels;
     const departmentAllowed = deptPolicy?.allowedChatModels ?? [];
-    // 旧调用把 [] 解释为不限制；严格集合仅由网关路径消费，避免空交集改变旧契约。
+    // 旧调用把 [] 解释为不限制；网关和对话显式要求当前可用交集。
     let allowed = departmentAllowed.length > 0 ? departmentAllowed : enterpriseAllowed;
-    if (opts.restrictToAvailableModels) {
+    const restrictModels = opts.restrictToAvailableModels || opts.requireAvailableModel;
+    if (restrictModels) {
       const models = await this.prisma.platformModel.findMany({
         where: { enabled: true, isStale: false },
         orderBy: [{ sortOrder: 'asc' }, { label: 'asc' }],
@@ -252,9 +273,27 @@ export class EnterpriseModelConfigService {
       );
     }
 
+    if (opts.requireAvailableModel && allowed.length === 0) {
+      throw new ServiceUnavailableException('企业模型白名单与当前平台可用模型没有交集');
+    }
+
+    const assertDefaultAvailable = (modelId: string, label: string) => {
+      if (opts.requireAvailableModel && !allowed.includes(modelId)) {
+        throw new ServiceUnavailableException(`${label}模型当前不可用，请联系管理员调整模型策略`);
+      }
+    };
+    const resolveAvailableSystemDefault = async (): Promise<string> => {
+      const configuredDefault = await this.settings?.getEffectiveValue(SETTING_KEYS.SUB2API_DEFAULT_MODEL);
+      const defaultModel = configuredDefault && allowed.includes(configuredDefault)
+        ? configuredDefault
+        : undefined;
+      if (!defaultModel) throw new ServiceUnavailableException('平台默认模型当前不可用，请联系平台管理员调整模型配置');
+      return defaultModel;
+    };
+
     // 1. 用户显式选择（需开关允许且落在白名单内）
     if (opts.userSelectedModel && canSwitch) {
-      const isAllowed = opts.restrictToAvailableModels
+      const isAllowed = restrictModels
         ? allowed.includes(opts.userSelectedModel)
         : allowed.length === 0 || allowed.includes(opts.userSelectedModel);
       if (isAllowed) {
@@ -271,6 +310,7 @@ export class EnterpriseModelConfigService {
     // 此时不能继续落到员工模板，否则界面虽已锁定，实际请求仍可能走模板里的模型。
     if (!config.allowUserSwitchModel) {
       if (deptPolicy?.defaultChatModel) {
+        assertDefaultAvailable(deptPolicy.defaultChatModel, '部门默认');
         return {
           ...base,
           chatModel: deptPolicy.defaultChatModel,
@@ -279,6 +319,10 @@ export class EnterpriseModelConfigService {
         };
       }
 
+      if (config.defaultChatModel) assertDefaultAvailable(config.defaultChatModel, '企业默认');
+      if (opts.requireAvailableModel && !config.defaultChatModel) {
+        return { ...base, chatModel: await resolveAvailableSystemDefault(), allowedChatModels: allowed, source: 'SYSTEM_DEFAULT' };
+      }
       return {
         ...base,
         chatModel: config.defaultChatModel || DEFAULT_MODEL_ID,
@@ -306,7 +350,7 @@ export class EnterpriseModelConfigService {
         modelId = opts.employeeTemplateModel;
       }
 
-      if (modelId) {
+      if (modelId && (!restrictModels || allowed.includes(modelId))) {
         return {
           ...base,
           chatModel: modelId,
@@ -317,6 +361,7 @@ export class EnterpriseModelConfigService {
     }
 
     if (config.employeeModelPolicy === 'FORCE_DEFAULT' && config.employeeDefaultModel) {
+      assertDefaultAvailable(config.employeeDefaultModel, '企业强制员工');
       return {
         ...base,
         chatModel: config.employeeDefaultModel,
@@ -327,6 +372,7 @@ export class EnterpriseModelConfigService {
 
     // 3. 部门默认模型
     if (deptPolicy?.defaultChatModel) {
+      assertDefaultAvailable(deptPolicy.defaultChatModel, '部门默认');
       return {
         ...base,
         chatModel: deptPolicy.defaultChatModel,
@@ -337,6 +383,7 @@ export class EnterpriseModelConfigService {
 
     // 4. 企业默认模型
     if (config.defaultChatModel) {
+      assertDefaultAvailable(config.defaultChatModel, '企业默认');
       return {
         ...base,
         chatModel: config.defaultChatModel,
@@ -346,6 +393,10 @@ export class EnterpriseModelConfigService {
     }
 
     // 5. 系统兜底
+    if (opts.requireAvailableModel) {
+      const defaultModel = await resolveAvailableSystemDefault();
+      return { ...base, chatModel: defaultModel, allowedChatModels: allowed, source: 'SYSTEM_DEFAULT' };
+    }
     return {
       ...base,
       chatModel: DEFAULT_MODEL_ID,

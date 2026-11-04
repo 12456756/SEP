@@ -175,7 +175,9 @@ export class ConversationStreamService {
     });
     const subscriptionId = subscription?.id;
     const effective = await this.modelConfig.resolveEffectiveModel({
-      userId, userSelectedModel: session.modelId ?? undefined, subscriptionId,
+      userId, enterpriseId: enterpriseCtx.enterpriseId,
+      requireAvailableModel: true,
+      userSelectedModel: session.modelId ?? undefined, subscriptionId,
       employeeTemplateModel: employee.modelId, departmentId: enterpriseCtx.departmentId ?? undefined,
     });
     const modelId = effective.chatModel;

@@ -7,6 +7,8 @@ import { RedisService } from '../redis/redis.service';
 import { TaskQueueService } from '../modules/task-execution/task-queue.service';
 import { KnowledgeQueueService } from '../modules/knowledge/knowledge-queue.service';
 import { GatewayLifecycleService } from '../common/lifecycle/gateway-lifecycle.service';
+import { SettingService } from '../modules/setting/setting.service';
+import { SETTING_KEYS } from 'shared';
 
 @Controller('health')
 @ApiTags('Health')
@@ -18,6 +20,7 @@ export class HealthController {
     private readonly taskQueue: TaskQueueService,
     private readonly knowledgeQueue: KnowledgeQueueService,
     private readonly gatewayLifecycle: GatewayLifecycleService,
+    private readonly settings: SettingService,
   ) {}
 
   @Get()
@@ -67,7 +70,7 @@ export class HealthController {
     
     // 生产环境额外检查
     if (this.config.get('NODE_ENV') === 'production') {
-      checks.sub2api = await this.checkHttp(this.config.get<string>('SUB2API_BASE_URL'), true) ? 'ok' : 'failed';
+      checks.sub2api = await this.checkSub2Api() ? 'ok' : 'failed';
       // Feature-specific model inference must not gate the whole application's deployment.
       
       // 检查 OpenCode Skills Service
@@ -91,12 +94,28 @@ export class HealthController {
     return body;
   }
 
-  private async checkHttp(baseUrl: string | undefined, models: boolean) {
-    if (!baseUrl) return false;
+  private async checkSub2Api(): Promise<boolean> {
     try {
-      const url = `${baseUrl.replace(/\/+$/, '')}/${models ? 'models' : ''}`;
-      const response = await fetch(url, { signal: AbortSignal.timeout(3000) });
-      return response.ok || response.status === 401;
+      const [baseUrl, apiKey] = await Promise.all([
+        this.settings.getEffectiveValue(SETTING_KEYS.SUB2API_BASE_URL),
+        this.settings.getEffectiveValue(SETTING_KEYS.SUB2API_API_KEY),
+      ]);
+      if (!baseUrl?.trim() || !apiKey?.trim()) return false;
+
+      const url = `${baseUrl.trim().replace(/\/+$/, '')}/models`;
+      const response = await fetch(url, {
+        headers: { Authorization: `Bearer ${apiKey.trim()}` },
+        signal: AbortSignal.timeout(3000),
+      });
+      if (!response.ok) return false;
+
+      const payload: unknown = await response.json();
+      if (!payload || typeof payload !== 'object' || !('data' in payload)) return false;
+      const models = (payload as { data?: unknown }).data;
+      return Array.isArray(models) && models.every(
+        (model) => !!model && typeof model === 'object' &&
+          'id' in model && typeof (model as { id?: unknown }).id === 'string',
+      );
     } catch {
       return false;
     }

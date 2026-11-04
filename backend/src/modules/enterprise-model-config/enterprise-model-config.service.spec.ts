@@ -13,6 +13,7 @@ import {
   BadRequestException,
   ForbiddenException,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { EnterpriseModelConfigService } from './enterprise-model-config.service';
@@ -49,6 +50,7 @@ describe('EnterpriseModelConfigService', () => {
   let prisma: any;
   let ctxSvc: any;
   let billing: any;
+  let settings: any;
   let svc: EnterpriseModelConfigService;
 
   beforeEach(() => {
@@ -81,18 +83,37 @@ describe('EnterpriseModelConfigService', () => {
         { isFree: false, billingMultiplier: '1', discountLabel: '按中转倍率计费' },
       ]),
     };
-    svc = new EnterpriseModelConfigService(prisma, ctxSvc, undefined, billing);
+    settings = { getEffectiveValue: jest.fn().mockResolvedValue('platform-default') };
+    svc = new EnterpriseModelConfigService(prisma, ctxSvc, undefined, billing, settings);
   });
 
   describe('get', () => {
-    it('配置不存在时按系统默认建一条，而不是返回 null', async () => {
+    it('配置不存在时使用有效的平台默认模型', async () => {
       prisma.enterpriseModelConfig.findUnique.mockResolvedValue(null);
-      prisma.enterpriseModelConfig.create.mockResolvedValue(makeConfig());
+      prisma.platformModel.findMany.mockResolvedValue([{ modelId: 'platform-default' }, { modelId: 'fallback-model' }]);
+      prisma.enterpriseModelConfig.create.mockImplementation(({ data }: { data: Record<string, unknown> }) => Promise.resolve(makeConfig(data)));
 
       const cfg = await svc.get('u1');
 
       expect(prisma.enterpriseModelConfig.create).toHaveBeenCalled();
-      expect(cfg.defaultChatModel).toBe('gemini-3.5-flash-high');
+      expect(cfg.defaultChatModel).toBe('platform-default');
+    });
+
+    it('平台默认不可用时选排序后的首个有效模型', async () => {
+      prisma.enterpriseModelConfig.findUnique.mockResolvedValue(null);
+      settings.getEffectiveValue.mockResolvedValue('missing-default');
+      prisma.platformModel.findMany.mockResolvedValue([{ modelId: 'fallback-model' }]);
+      prisma.enterpriseModelConfig.create.mockImplementation(({ data }: { data: Record<string, unknown> }) => Promise.resolve(makeConfig(data)));
+
+      expect((await svc.get('u1')).defaultChatModel).toBe('fallback-model');
+    });
+
+    it('没有有效平台模型时拒绝创建企业配置', async () => {
+      prisma.enterpriseModelConfig.findUnique.mockResolvedValue(null);
+      prisma.platformModel.findMany.mockResolvedValue([]);
+
+      await expect(svc.get('u1')).rejects.toBeInstanceOf(ServiceUnavailableException);
+      expect(prisma.enterpriseModelConfig.create).not.toHaveBeenCalled();
     });
 
     it('并发首次读取复用唯一键竞争中已创建的配置，不覆盖其策略', async () => {
@@ -108,6 +129,7 @@ describe('EnterpriseModelConfigService', () => {
         .mockResolvedValueOnce(null)
         .mockResolvedValueOnce(null)
         .mockResolvedValue(winner);
+      prisma.platformModel.findMany.mockResolvedValue([{ modelId: 'platform-default' }]);
       prisma.enterpriseModelConfig.create
         .mockResolvedValueOnce(winner)
         .mockRejectedValueOnce(conflict);
@@ -130,6 +152,7 @@ describe('EnterpriseModelConfigService', () => {
         code: 'P2002', clientVersion: '6', meta: { target: ['id'] },
       });
       prisma.enterpriseModelConfig.findUnique.mockResolvedValue(null);
+      prisma.platformModel.findMany.mockResolvedValue([{ modelId: 'platform-default' }]);
       prisma.enterpriseModelConfig.create.mockRejectedValue(conflict);
 
       await expect(svc.get('u1')).rejects.toBe(conflict);
@@ -141,6 +164,7 @@ describe('EnterpriseModelConfigService', () => {
         code: 'P2003', clientVersion: '6',
       });
       prisma.enterpriseModelConfig.findUnique.mockResolvedValue(null);
+      prisma.platformModel.findMany.mockResolvedValue([{ modelId: 'platform-default' }]);
       prisma.enterpriseModelConfig.create.mockRejectedValue(failure);
 
       await expect(svc.get('u1')).rejects.toBe(failure);
@@ -480,6 +504,69 @@ describe('EnterpriseModelConfigService', () => {
 
       expect(r.embeddingModel).toBe('bge-m3:latest');
       expect(r.embeddingBatchSize).toBe(32);
+    });
+
+    it('会话模式忽略已经下架的用户选择并回落到有效默认模型', async () => {
+      prisma.platformModel.findMany.mockResolvedValue([{ modelId: 'gemini-3.5-flash-high' }]);
+      const result = await svc.resolveEffectiveModel({
+        userId: 'u1', userSelectedModel: 'gpt-4o', requireAvailableModel: true,
+      });
+      expect(result).toMatchObject({
+        chatModel: 'gemini-3.5-flash-high', source: 'ENTERPRISE',
+        allowedChatModels: ['gemini-3.5-flash-high'],
+      });
+    });
+
+    it('会话模式跳过失效的员工模板模型', async () => {
+      prisma.platformModel.findMany.mockResolvedValue([{ modelId: 'gemini-3.5-flash-high' }]);
+      const result = await svc.resolveEffectiveModel({
+        userId: 'u1', employeeTemplateModel: 'gpt-4o', requireAvailableModel: true,
+      });
+      expect(result).toMatchObject({ chatModel: 'gemini-3.5-flash-high', source: 'ENTERPRISE' });
+    });
+
+    it('会话模式在显式部门默认不可用时拒绝放宽策略', async () => {
+      prisma.platformModel.findMany.mockResolvedValue([{ modelId: 'gemini-3.5-flash-high' }]);
+      prisma.departmentModelPolicy.findUnique.mockResolvedValue({
+        defaultChatModel: 'gpt-4o', allowedChatModels: [],
+      });
+      await expect(svc.resolveEffectiveModel({
+        userId: 'u1', departmentId: 'dept-tech', requireAvailableModel: true,
+      })).rejects.toThrow(ServiceUnavailableException);
+    });
+
+    it('会话模式拒绝空的可调用白名单交集', async () => {
+      prisma.enterpriseModelConfig.findUnique.mockResolvedValue(makeConfig({ allowedChatModels: ['gpt-4o'] }));
+      prisma.platformModel.findMany.mockResolvedValue([{ modelId: 'gemini-3.5-flash-high' }]);
+      await expect(svc.resolveEffectiveModel({
+        userId: 'u1', requireAvailableModel: true,
+      })).rejects.toThrow(ServiceUnavailableException);
+    });
+
+    it('部门默认在收窄白名单内时不受未使用的企业默认影响', async () => {
+      prisma.enterpriseModelConfig.findUnique.mockResolvedValue(makeConfig({
+        defaultChatModel: 'enterprise-a', allowedChatModels: ['enterprise-a', 'department-b'],
+      }));
+      prisma.departmentModelPolicy.findUnique.mockResolvedValue({
+        defaultChatModel: 'department-b', allowedChatModels: ['department-b'],
+      });
+      prisma.platformModel.findMany.mockResolvedValue([
+        { modelId: 'enterprise-a' }, { modelId: 'department-b' },
+      ]);
+      const result = await svc.resolveEffectiveModel({
+        userId: 'u1', departmentId: 'dept-tech', requireAvailableModel: true,
+      });
+      expect(result).toMatchObject({ chatModel: 'department-b', source: 'DEPARTMENT' });
+    });
+
+    it('强制员工默认失效时拒绝继续回落到旧模型', async () => {
+      prisma.enterpriseModelConfig.findUnique.mockResolvedValue(makeConfig({
+        employeeModelPolicy: 'FORCE_DEFAULT', employeeDefaultModel: 'missing-model',
+      }));
+      prisma.platformModel.findMany.mockResolvedValue([{ modelId: 'gemini-3.5-flash-high' }]);
+      await expect(svc.resolveEffectiveModel({
+        userId: 'u1', requireAvailableModel: true,
+      })).rejects.toThrow(ServiceUnavailableException);
     });
   });
 
