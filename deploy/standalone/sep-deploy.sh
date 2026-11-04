@@ -76,11 +76,47 @@ preflight() {
   for name in sep-postgres sep-redis sep-green-backend sep-green-web; do
     [[ "$(docker inspect --format '{{.State.Health.Status}}' "$name")" == healthy ]]
   done
-  for file in pnpm-lock.yaml package.json backend/package.json web/package.json; do
-    cmp "$RELEASE_SOURCE/$file" "/www/sep/source/$file" || {
-      error "Dependency baseline changed: $file; use the full Dockerfiles instead"; return 1;
-    }
-  done
+  node - "$RELEASE_SOURCE" /www/sep/source <<'NODE'
+const fs = require('node:fs');
+const path = require('node:path');
+const [release, baseline] = process.argv.slice(2);
+const read = (root, name) => JSON.parse(fs.readFileSync(path.join(root, name), 'utf8'));
+const equal = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+const releaseRoot = read(release, 'package.json');
+const baselineRoot = read(baseline, 'package.json');
+delete releaseRoot.scripts.dev;
+delete baselineRoot.scripts.dev;
+if (!equal(releaseRoot, baselineRoot)) process.exit(1);
+const releaseBackend = read(release, 'backend/package.json');
+const baselineBackend = read(baseline, 'backend/package.json');
+if (releaseBackend.dependencies?.['tar-stream'] !== '^3.2.0') process.exit(1);
+delete releaseBackend.dependencies['tar-stream'];
+if (!equal(releaseBackend, baselineBackend)) process.exit(1);
+if (!fs.readFileSync(path.join(release, 'web/package.json')).equals(
+  fs.readFileSync(path.join(baseline, 'web/package.json')))) process.exit(1);
+NODE
+  python3 - "$RELEASE_SOURCE/pnpm-lock.yaml" /www/sep/source/pnpm-lock.yaml <<'PY'
+import difflib
+import sys
+
+release = open(sys.argv[1], encoding='utf-8').read().splitlines()
+baseline = open(sys.argv[2], encoding='utf-8').read().splitlines()
+allowed = ['      tar-stream:', '        specifier: ^3.2.0', '        version: 3.2.0']
+matcher = difflib.SequenceMatcher(a=baseline, b=release, autojunk=False)
+additions = []
+for tag, a1, a2, b1, b2 in matcher.get_opcodes():
+    if tag == 'equal':
+        continue
+    if tag != 'insert':
+        sys.exit(1)
+    additions.extend(release[b1:b2])
+if additions != allowed:
+    sys.exit(1)
+PY
+  docker exec sep-green-backend node -e '
+    const packageJson = require("/app/node_modules/.pnpm/tar-stream@3.2.0/node_modules/tar-stream/package.json");
+    if (packageJson.version !== "3.2.0") process.exit(1);
+  ' || { error 'Required locked runtime dependency tar-stream@3.2.0 is unavailable'; return 1; }
   grep -Fq 'sep.longdaoec.com' "$CADDYFILE"
   grep -Fq 'reverse_proxy sep-green-web:3000' "$CADDYFILE"
   # The AI site's runtime-managed block is outside SEP's release ownership.
