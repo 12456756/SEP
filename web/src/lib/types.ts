@@ -567,6 +567,41 @@ export interface GrantRecord {
   createdAt: string;
 }
 
+export type MemberGrantStatus = 'all' | 'grantable' | 'granted' | 'history';
+
+export interface MemberEmployeeGrantCandidate {
+  subscriptionId: string;
+  name: string;
+  status: SubscriptionStatus;
+  endDate: string | null;
+  employee: {
+    id: string;
+    name: string;
+    avatar: string | null;
+    position: string;
+  };
+  directGrant: {
+    id: string;
+    expiresAt: string | null;
+    expired: boolean;
+  } | null;
+  coveredByDepartment: boolean;
+}
+
+export interface MemberEmployeeGrantCandidatesResponse {
+  items: MemberEmployeeGrantCandidate[];
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+export interface MemberGrantBatchResult {
+  memberId: string;
+  createdIds: string[];
+  renewedSubscriptionIds: string[];
+  skippedSubscriptionIds: string[];
+}
+
 export interface MyEmployee {
   subscriptionId: string;
   name: string;

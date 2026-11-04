@@ -1,6 +1,8 @@
 import {
   GrantBatchCreateDtoSchema,
   EMPLOYEE_GRANT_BATCH_LIMIT,
+  MemberGrantBatchCreateDtoSchema,
+  MemberGrantCandidateQuerySchema,
 } from "./employee-grant.dto";
 
 describe("GrantBatchCreateDtoSchema", () => {
@@ -68,5 +70,35 @@ describe("GrantBatchCreateDtoSchema", () => {
       GrantBatchCreateDtoSchema.safeParse({ memberIds: ["m-1", " m-1 "] })
         .success,
     ).toBe(false);
+  });
+});
+
+describe("MemberGrantBatchCreateDtoSchema", () => {
+  it("accepts subscription IDs and defaults renewal to false", () => {
+    expect(MemberGrantBatchCreateDtoSchema.parse({ subscriptionIds: ["s-1"] })).toEqual({
+      subscriptionIds: ["s-1"],
+      renewExpired: false,
+    });
+  });
+
+  it("rejects duplicates, empty IDs and unknown fields", () => {
+    expect(MemberGrantBatchCreateDtoSchema.safeParse({ subscriptionIds: [] }).success).toBe(false);
+    expect(MemberGrantBatchCreateDtoSchema.safeParse({ subscriptionIds: ["s-1", " s-1 "] }).success).toBe(false);
+    expect(MemberGrantBatchCreateDtoSchema.safeParse({ subscriptionIds: ["s-1"], memberId: "m-1" }).success).toBe(false);
+  });
+});
+
+describe("MemberGrantCandidateQuerySchema", () => {
+  it("applies defaults and coerces pagination", () => {
+    expect(MemberGrantCandidateQuerySchema.parse({})).toEqual({
+      status: "grantable",
+      page: 1,
+      pageSize: 20,
+    });
+    expect(MemberGrantCandidateQuerySchema.parse({ page: "2", pageSize: "50", status: "granted" })).toEqual({
+      status: "granted",
+      page: 2,
+      pageSize: 50,
+    });
   });
 });

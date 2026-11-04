@@ -44,10 +44,11 @@ describe("GrantService", () => {
         findUnique: jest.fn(),
         create: jest.fn(),
         createMany: jest.fn(),
+        findFirst: jest.fn(),
         update: jest.fn(),
         delete: jest.fn(),
       },
-      subscription: { findUnique: jest.fn() },
+      subscription: { findUnique: jest.fn(), findMany: jest.fn() },
       department: { findUnique: jest.fn() },
       enterpriseMember: { findUnique: jest.fn() },
       // myEmployees 会批量补上每个员工的赠送余额；默认「没有赠送记录」
@@ -488,6 +489,128 @@ describe("GrantService", () => {
         NotFoundException,
       );
       expect(prisma.employeeGrant.delete).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("listForMember", () => {
+    it("returns direct grant and department coverage separately", async () => {
+      prisma.enterpriseMember.findUnique.mockResolvedValue({
+        id: "m-1",
+        enterpriseId: "ent-a",
+        departmentId: "d-1",
+      });
+      prisma.subscription.findMany.mockResolvedValue([
+        {
+          id: "s-1",
+          name: null,
+          status: "ACTIVE",
+          endDate: null,
+          employee: { id: "e-1", name: "客服", avatar: null, position: "客服" },
+          grants: [
+            { id: "g-direct", memberId: "m-1", departmentId: null, expiresAt: null },
+            { id: "g-dept", memberId: null, departmentId: "d-1", expiresAt: null },
+          ],
+        },
+      ]);
+
+      const result = await service.listForMember("u1", "m-1", {
+        status: "all",
+        page: 1,
+        pageSize: 20,
+      });
+
+      expect(result.total).toBe(1);
+      expect(result.items[0]).toMatchObject({
+        subscriptionId: "s-1",
+        name: "客服",
+        coveredByDepartment: true,
+        directGrant: { id: "g-direct", expired: false },
+      });
+    });
+
+    it("filters grantable and rejects cross-enterprise member", async () => {
+      prisma.enterpriseMember.findUnique.mockResolvedValue({
+        id: "m-x",
+        enterpriseId: "ent-b",
+        departmentId: null,
+      });
+      await expect(
+        service.listForMember("u1", "m-x", { status: "grantable", page: 1, pageSize: 20 }),
+      ).rejects.toThrow(NotFoundException);
+
+      prisma.enterpriseMember.findUnique.mockResolvedValue({
+        id: "m-1",
+        enterpriseId: "ent-a",
+        departmentId: null,
+      });
+      prisma.subscription.findMany.mockResolvedValue([
+        {
+          id: "s-1",
+          name: "已授权",
+          status: "ACTIVE",
+          endDate: null,
+          employee: { id: "e-1", name: "客服", avatar: null, position: "客服" },
+          grants: [{ id: "g-1", memberId: "m-1", departmentId: null, expiresAt: new Date(Date.now() + 10000) }],
+        },
+      ]);
+      const result = await service.listForMember("u1", "m-1", { status: "grantable", page: 1, pageSize: 20 });
+      expect(result.items).toHaveLength(0);
+    });
+  });
+
+  describe("createBatchForMember", () => {
+    const setup = () => {
+      prisma.enterpriseMember.findUnique.mockResolvedValue({ id: "m-1", enterpriseId: "ent-a" });
+      prisma.subscription.findMany.mockResolvedValue([
+        { id: "s-1", status: "ACTIVE", endDate: null },
+        { id: "s-2", status: "PAUSED", endDate: null },
+      ]);
+      prisma.employeeGrant.findMany.mockResolvedValue([]);
+      prisma.employeeGrant.createMany.mockResolvedValue({ count: 1 });
+      prisma.employeeGrant.findFirst.mockImplementation(async ({ where }: any) => ({ id: `g-${where.subscriptionId}` }));
+      prisma.employeeGrant.update.mockResolvedValue({});
+    };
+
+    it("creates direct grants for one or more subscriptions", async () => {
+      setup();
+      await expect(
+        service.createBatchForMember("u1", "m-1", { subscriptionIds: ["s-1", "s-2"], renewExpired: false }),
+      ).resolves.toEqual({
+        memberId: "m-1",
+        createdIds: ["g-s-1", "g-s-2"],
+        renewedSubscriptionIds: [],
+        skippedSubscriptionIds: [],
+      });
+      expect(prisma.employeeGrant.createMany).toHaveBeenCalledTimes(2);
+    });
+
+    it("renews expired grants only when requested", async () => {
+      setup();
+      prisma.employeeGrant.findMany.mockResolvedValue([
+        { id: "g-s-1", subscriptionId: "s-1", expiresAt: new Date(Date.now() - 1000) },
+      ]);
+      await expect(
+        service.createBatchForMember("u1", "m-1", { subscriptionIds: ["s-1", "s-2"], renewExpired: false }),
+      ).resolves.toMatchObject({ skippedSubscriptionIds: ["s-1"], createdIds: ["g-s-2"] });
+      await expect(
+        service.createBatchForMember("u1", "m-1", { subscriptionIds: ["s-1", "s-2"], renewExpired: true }),
+      ).resolves.toMatchObject({ renewedSubscriptionIds: ["s-1"], createdIds: ["g-s-2"] });
+    });
+
+    it("rejects cross-enterprise or ended subscriptions before writing", async () => {
+      setup();
+      prisma.subscription.findMany.mockResolvedValue([{ id: "s-1", status: "ACTIVE", endDate: null }]);
+      await expect(
+        service.createBatchForMember("u1", "m-1", { subscriptionIds: ["s-1", "s-x"], renewExpired: false }),
+      ).rejects.toThrow(NotFoundException);
+      expect(prisma.employeeGrant.createMany).not.toHaveBeenCalled();
+
+      prisma.subscription.findMany.mockResolvedValue([
+        { id: "s-1", status: "TERMINATED", endDate: null },
+      ]);
+      await expect(
+        service.createBatchForMember("u1", "m-1", { subscriptionIds: ["s-1"], renewExpired: false }),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 

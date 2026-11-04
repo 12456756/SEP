@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Plus, Pencil, Trash2, Users, AlertTriangle } from 'lucide-react';
+import { KeyRound, Plus, Pencil, Trash2, Users, AlertTriangle } from 'lucide-react';
 import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -31,6 +31,7 @@ import {
 import { InvitationPanel } from '@/features/enterprise/invitation-panel';
 import { flattenDepts } from '@/features/enterprise/flatten-depts';
 import { MemberStats } from '@/features/enterprise/member-stats';
+import { MemberEmployeeGrantPanel } from '@/features/enterprise/member-employee-grant-panel';
 import type { EnterpriseMember, OffboardResult } from '@/lib/types';
 
 function Modal({
@@ -84,6 +85,7 @@ export default function MembersPage() {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<EnterpriseMember | null>(null);
   const [removing, setRemoving] = useState<EnterpriseMember | null>(null);
+  const [granting, setGranting] = useState<EnterpriseMember | null>(null);
   /**
    * 移出后的处置结果。单独留一份 state 而非只弹 toast：
    * vacatedDepartments 非空意味着有部门失去了负责人 ——
@@ -247,6 +249,14 @@ export default function MembersPage() {
                     {isAdmin && (
                       <TableCell>
                         <div className="flex items-center justify-end gap-1">
+                          <button
+                            title="授权硅基员工"
+                            aria-label={`为 ${m.user.name || m.user.email} 授权硅基员工`}
+                            onClick={() => setGranting(m)}
+                            className="rounded p-2 text-fg-muted transition-colors hover:bg-primary/10 hover:text-primary"
+                          >
+                            <KeyRound className="h-4 w-4" />
+                          </button>
                           <button
                             title="编辑"
                             onClick={() => {
@@ -471,6 +481,10 @@ export default function MembersPage() {
             </div>
           </div>
         </Modal>
+      )}
+
+      {granting && (
+        <MemberEmployeeGrantPanel member={granting} onClose={() => setGranting(null)} />
       )}
     </div>
   );

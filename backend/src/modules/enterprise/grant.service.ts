@@ -11,7 +11,18 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { EnterpriseContextService } from "./enterprise-context.service";
 import { EmployeeUsageService } from "./employee-usage.service";
 import { PackageService } from "../digital-employee/package.service";
-import { GrantBatchCreateDto, GrantBatchResult, GrantCreateDto, GrantView, MyEmployeeView } from "shared";
+import {
+  GrantBatchCreateDto,
+  GrantBatchResult,
+  GrantCreateDto,
+  GrantView,
+  MyEmployeeView,
+  MemberGrantBatchCreateDto,
+  MemberGrantBatchResult,
+  MemberGrantCandidateQuery,
+  MemberEmployeeGrantCandidate,
+  MemberEmployeeGrantCandidatesResponse,
+} from "shared";
 import { withEmployeeAvatar } from '../../common/employee-avatar';
 
 const employeeSummarySelect = {
@@ -271,6 +282,194 @@ export class GrantService {
         else skippedIds.push(id);
       }
       return { target, createdIds, renewedIds, skippedIds };
+    }, { isolationLevel: "ReadCommitted" });
+  }
+
+  /**
+   * 成员中心的授权候选列表：固定一个碳基员工，反向枚举本企业已雇佣的硅基员工。
+   * 直接授权与部门覆盖分别返回，避免前端把部门权限误认为个人授权。
+   */
+  async listForMember(
+    userId: string,
+    memberId: string,
+    query: MemberGrantCandidateQuery,
+  ): Promise<MemberEmployeeGrantCandidatesResponse> {
+    const context = await this.ctx.resolve(userId);
+    this.ctx.assertEnterpriseAdmin(context);
+
+    const member = await this.prisma.enterpriseMember.findUnique({
+      where: { id: memberId },
+      select: { id: true, enterpriseId: true, departmentId: true },
+    });
+    if (!member || member.enterpriseId !== context.enterpriseId) {
+      throw new NotFoundException(`成员 ${memberId} 不存在`);
+    }
+
+    const statusWhere: Prisma.SubscriptionWhereInput["status"] = query.status === "history"
+      ? { in: ["EXPIRED", "TERMINATED"] }
+      : query.status === "grantable" || query.status === "granted"
+        ? { in: ["ACTIVE", "PAUSED"] }
+        : undefined;
+    const keyword = query.keyword?.trim();
+    const subscriptions = await this.prisma.subscription.findMany({
+      where: {
+        enterpriseId: context.enterpriseId,
+        ...(statusWhere ? { status: statusWhere } : {}),
+        ...(keyword
+          ? {
+              OR: [
+                { name: { contains: keyword, mode: "insensitive" } },
+                { employee: { name: { contains: keyword, mode: "insensitive" } } },
+                { employee: { position: { contains: keyword, mode: "insensitive" } } },
+              ],
+            }
+          : {}),
+      },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      select: {
+        id: true,
+        name: true,
+        status: true,
+        endDate: true,
+        employee: { select: { id: true, name: true, avatar: true, position: true } },
+        grants: {
+          where: {
+            OR: [
+              { memberId },
+              ...(member.departmentId ? [{ departmentId: member.departmentId }] : []),
+            ],
+          },
+          select: { id: true, memberId: true, departmentId: true, expiresAt: true },
+        },
+      },
+    });
+
+    const now = new Date();
+    let items = subscriptions.map((subscription) => {
+      const direct = subscription.grants.find((grant) => grant.memberId === memberId) ?? null;
+      const department = member.departmentId
+        ? subscription.grants.find((grant) =>
+            grant.departmentId === member.departmentId &&
+            (grant.expiresAt === null || grant.expiresAt > now),
+          )
+        : null;
+      const item: MemberEmployeeGrantCandidate = {
+        subscriptionId: subscription.id,
+        name: subscription.name ?? subscription.employee.name,
+        status: subscription.status,
+        endDate: subscription.endDate?.toISOString() ?? null,
+        employee: subscription.employee,
+        directGrant: direct
+          ? {
+              id: direct.id,
+              expiresAt: direct.expiresAt?.toISOString() ?? null,
+              expired: direct.expiresAt !== null && direct.expiresAt <= now,
+            }
+          : null,
+        coveredByDepartment: Boolean(department),
+      };
+      return item;
+    });
+
+    if (query.status === "granted") {
+      items = items.filter((item) => item.directGrant !== null);
+    } else if (query.status === "grantable") {
+      items = items.filter((item) => item.directGrant === null || item.directGrant.expired);
+    }
+
+    const total = items.length;
+    const start = (query.page - 1) * query.pageSize;
+    return {
+      items: items.slice(start, start + query.pageSize),
+      page: query.page,
+      pageSize: query.pageSize,
+      total,
+    };
+  }
+
+  /** 一次为单个碳基员工授权多个硅基员工。 */
+  async createBatchForMember(
+    userId: string,
+    memberId: string,
+    dto: MemberGrantBatchCreateDto,
+  ): Promise<MemberGrantBatchResult> {
+    const context = await this.ctx.resolve(userId);
+    this.ctx.assertEnterpriseAdmin(context);
+    const expiresAt = dto.expiresAt ? new Date(dto.expiresAt) : null;
+    if (expiresAt && expiresAt <= new Date()) {
+      throw new BadRequestException("授权到期时间必须晚于当前时间");
+    }
+
+    return this.prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      await tx.$queryRaw`SELECT id FROM enterprise_members WHERE id = ${memberId} FOR UPDATE`;
+      const member = await tx.enterpriseMember.findUnique({
+        where: { id: memberId },
+        select: { id: true, enterpriseId: true },
+      });
+      if (!member || member.enterpriseId !== context.enterpriseId) {
+        throw new NotFoundException(`成员 ${memberId} 不存在`);
+      }
+
+      const sortedIds = [...dto.subscriptionIds].sort();
+      await tx.$queryRaw(
+        Prisma.sql`SELECT id FROM subscriptions WHERE id IN (${Prisma.join(sortedIds)}) ORDER BY id FOR NO KEY UPDATE`,
+      );
+      const subscriptions = await tx.subscription.findMany({
+        where: { id: { in: dto.subscriptionIds }, enterpriseId: context.enterpriseId },
+        select: { id: true, status: true, endDate: true },
+      });
+      if (subscriptions.length !== dto.subscriptionIds.length) {
+        throw new NotFoundException("存在不属于本企业的雇佣关系");
+      }
+      const now = new Date();
+      if (subscriptions.some((s) =>
+        !["ACTIVE", "PAUSED"].includes(s.status) ||
+        (s.endDate !== null && s.endDate <= now),
+      )) {
+        throw new BadRequestException("存在当前无法授权的雇佣关系");
+      }
+
+      await tx.$queryRaw(
+        Prisma.sql`SELECT id FROM employee_grants WHERE "memberId" = ${memberId} AND "subscriptionId" IN (${Prisma.join(sortedIds)}) ORDER BY id FOR UPDATE`,
+      );
+      const existing = await tx.employeeGrant.findMany({
+        where: { memberId, subscriptionId: { in: dto.subscriptionIds } },
+        select: { id: true, subscriptionId: true, expiresAt: true },
+      });
+      const bySubscription = new Map(existing.map((grant) => [grant.subscriptionId, grant]));
+      const createdIds: string[] = [];
+      const renewedSubscriptionIds: string[] = [];
+      const skippedSubscriptionIds: string[] = [];
+
+      for (const subscriptionId of dto.subscriptionIds) {
+        const current = bySubscription.get(subscriptionId);
+        if (current) {
+          const expired = current.expiresAt !== null && current.expiresAt <= now;
+          if (expired && dto.renewExpired) {
+            await tx.employeeGrant.update({ where: { id: current.id }, data: { expiresAt } });
+            renewedSubscriptionIds.push(subscriptionId);
+          } else {
+            skippedSubscriptionIds.push(subscriptionId);
+          }
+          continue;
+        }
+        // Use createMany(skipDuplicates) instead of catching P2002: in PostgreSQL
+        // a statement error aborts the transaction even when the exception is caught.
+        const inserted = await tx.employeeGrant.createMany({
+          data: { subscriptionId, memberId, departmentId: null, expiresAt },
+          skipDuplicates: true,
+        });
+        if (inserted.count === 0) {
+          skippedSubscriptionIds.push(subscriptionId);
+          continue;
+        }
+        const created = await tx.employeeGrant.findFirst({
+          where: { subscriptionId, memberId },
+          select: { id: true },
+        });
+        if (created) createdIds.push(created.id);
+      }
+      return { memberId, createdIds, renewedSubscriptionIds, skippedSubscriptionIds };
     }, { isolationLevel: "ReadCommitted" });
   }
 

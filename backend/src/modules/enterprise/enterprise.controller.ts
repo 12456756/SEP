@@ -44,6 +44,10 @@ import {
   GrantCreateDtoSchema,
   GrantBatchCreateDto,
   GrantBatchCreateDtoSchema,
+  MemberGrantBatchCreateDto,
+  MemberGrantBatchCreateDtoSchema,
+  MemberGrantCandidateQuery,
+  MemberGrantCandidateQuerySchema,
 } from "shared";
 import { EnterpriseService } from "./enterprise.service";
 import { DepartmentService } from "./department.service";
@@ -318,6 +322,40 @@ export class EnterpriseController {
   }
 
   // ── 员工授权 ──────────────────────────────────────────────────────────────
+
+  @Get("members/:memberId/employee-grants")
+  @ApiOperation({ summary: "查询成员可授权的硅基员工（仅企业管理员）" })
+  @ApiQuery({ name: "keyword", required: false })
+  @ApiQuery({ name: "status", required: false, enum: ["all", "grantable", "granted", "history"] })
+  @ApiQuery({ name: "page", required: false })
+  @ApiQuery({ name: "pageSize", required: false })
+  @ApiResponse({ status: 200, description: "硅基员工授权候选列表" })
+  @ApiResponse({ status: 403, description: "仅企业管理员可查看" })
+  @ApiResponse({ status: 404, description: "成员不存在或不属于本企业" })
+  async listMemberEmployeeGrants(
+    @Request() req: AuthedRequest,
+    @Param("memberId") memberId: string,
+    @Query(new ZodValidationPipe(MemberGrantCandidateQuerySchema))
+    query: MemberGrantCandidateQuery,
+  ) {
+    return this.grants.listForMember(req.user.id, memberId, query);
+  }
+
+  @Post("members/:memberId/employee-grants/batch")
+  @HttpCode(200)
+  @ApiOperation({ summary: "批量给成员授权硅基员工（仅企业管理员）" })
+  @ApiResponse({ status: 200, description: "返回新增、续期和跳过的授权结果" })
+  @ApiResponse({ status: 400, description: "雇佣关系无效或请求参数错误" })
+  @ApiResponse({ status: 403, description: "仅企业管理员可操作" })
+  @ApiResponse({ status: 404, description: "成员或雇佣关系不存在" })
+  async createMemberEmployeeGrants(
+    @Request() req: AuthedRequest,
+    @Param("memberId") memberId: string,
+    @Body(new ZodValidationPipe(MemberGrantBatchCreateDtoSchema))
+    dto: MemberGrantBatchCreateDto,
+  ) {
+    return this.grants.createBatchForMember(req.user.id, memberId, dto);
+  }
 
   @Get("my-employees")
   @ApiOperation({

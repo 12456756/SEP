@@ -13,6 +13,9 @@ import type {
   InvitationStatus,
   OffboardResult,
   GrantRecord,
+  MemberEmployeeGrantCandidatesResponse,
+  MemberGrantBatchResult,
+  MemberGrantStatus,
   MyEmployee,
 } from '@/lib/types';
 
@@ -246,6 +249,49 @@ export function useDeleteGrant() {
       qc.invalidateQueries({ queryKey: qk.subscriptionGrants(subscriptionId) });
       qc.invalidateQueries({ queryKey: qk.myEmployees });
       qc.invalidateQueries({ queryKey: qk.subscriptions });
+    },
+  });
+}
+
+export function useMemberEmployeeGrants(
+  memberId: string,
+  params?: { keyword?: string; status?: MemberGrantStatus; page?: number; pageSize?: number },
+) {
+  const search = new URLSearchParams();
+  if (params?.keyword) search.set('keyword', params.keyword);
+  if (params?.status) search.set('status', params.status);
+  if (params?.page) search.set('page', String(params.page));
+  if (params?.pageSize) search.set('pageSize', String(params.pageSize));
+  const query = search.toString();
+  return useQuery({
+    queryKey: qk.memberEmployeeGrants(memberId, params as Record<string, unknown>),
+    queryFn: () => api.get<MemberEmployeeGrantCandidatesResponse>(
+      `/enterprise/members/${memberId}/employee-grants${query ? `?${query}` : ''}`,
+    ),
+    enabled: Boolean(memberId),
+  });
+}
+
+export function useCreateMemberEmployeeGrants() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ memberId, ...body }: {
+      memberId: string;
+      subscriptionIds: string[];
+      expiresAt?: string;
+      renewExpired?: boolean;
+    }) => api.post<MemberGrantBatchResult>(
+      `/enterprise/members/${memberId}/employee-grants/batch`,
+      body,
+    ),
+    onSuccess: (_, { memberId, subscriptionIds }) => {
+      qc.invalidateQueries({ queryKey: qk.memberEmployeeGrants(memberId) });
+      qc.invalidateQueries({ queryKey: qk.members() });
+      qc.invalidateQueries({ queryKey: qk.myEmployees });
+      qc.invalidateQueries({ queryKey: qk.subscriptions });
+      for (const id of subscriptionIds) {
+        qc.invalidateQueries({ queryKey: qk.subscriptionGrants(id) });
+      }
     },
   });
 }

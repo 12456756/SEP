@@ -31,6 +31,8 @@ export const qk = {
     ['enterprise', 'departments', deptId, 'members', params ?? {}] as const,
   subscriptionGrants: (subscriptionId: string) =>
     ['enterprise', 'grants', subscriptionId] as const,
+  memberEmployeeGrants: (memberId: string, params?: Record<string, unknown>) =>
+    ['enterprise', 'member-grants', memberId, params ?? {}] as const,
   myEmployees: ['enterprise', 'my-employees'] as const,
   // Phase 1: 模型配置中心
   modelConfig: (enterpriseId: string) =>

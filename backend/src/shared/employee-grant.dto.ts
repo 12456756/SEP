@@ -29,3 +29,64 @@ export interface GrantBatchResult {
   renewedIds: string[];
   skippedIds: string[];
 }
+
+/** 成员中心按碳基员工维度批量授权的请求。 */
+export const MemberGrantBatchCreateDtoSchema = z
+  .object({
+    subscriptionIds: targetIds,
+    expiresAt: z.string().datetime().optional(),
+    renewExpired: z.boolean().default(false),
+  })
+  .strict();
+
+export type MemberGrantBatchCreateDto = z.infer<
+  typeof MemberGrantBatchCreateDtoSchema
+>;
+
+export const MemberGrantCandidateQuerySchema = z
+  .object({
+    keyword: z.string().trim().max(100).optional(),
+    status: z
+      .enum(["all", "grantable", "granted", "history"])
+      .default("grantable"),
+    page: z.coerce.number().int().min(1).default(1),
+    pageSize: z.coerce.number().int().min(1).max(100).default(20),
+  })
+  .strict();
+
+export type MemberGrantCandidateQuery = z.infer<
+  typeof MemberGrantCandidateQuerySchema
+>;
+
+export interface MemberGrantBatchResult {
+  memberId: string;
+  createdIds: string[];
+  renewedSubscriptionIds: string[];
+  skippedSubscriptionIds: string[];
+}
+
+export interface MemberEmployeeGrantCandidate {
+  subscriptionId: string;
+  name: string;
+  status: "ACTIVE" | "PAUSED" | "EXPIRED" | "TERMINATED";
+  endDate: string | null;
+  employee: {
+    id: string;
+    name: string;
+    avatar: string | null;
+    position: string;
+  };
+  directGrant: {
+    id: string;
+    expiresAt: string | null;
+    expired: boolean;
+  } | null;
+  coveredByDepartment: boolean;
+}
+
+export interface MemberEmployeeGrantCandidatesResponse {
+  items: MemberEmployeeGrantCandidate[];
+  page: number;
+  pageSize: number;
+  total: number;
+}
