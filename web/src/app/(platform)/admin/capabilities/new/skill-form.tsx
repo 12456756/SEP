@@ -11,7 +11,7 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { toast } from '@/components/ui/toast';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Trash2 } from 'lucide-react';
 import { api, ApiError, uploadForm } from '@/lib/api-client';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { CapabilityUploadDtoSchema } from '../../../../../../../backend/src/shared';
@@ -40,10 +40,22 @@ type UploadMetadata = {
   warnings?: Array<{ code: string; message: string; path?: string }>;
 };
 
+type ImportQueueItem = {
+  candidateId: string;
+  candidateName: string;
+  artifact: SkillImportArtifact;
+  name: string;
+  description: string;
+  status: 'pending' | 'creating' | 'succeeded' | 'failed';
+  error?: string;
+};
+type CreateSkillInput = SkillFormValues & Pick<UploadMetadata, 'zipPath' | 'sha256' | 'fileCount' | 'totalSize' | 'filename' | 'content'>;
+
 export function SkillForm({ onCancel }: { onCancel: () => void }) {
   const router = useRouter();
   const qc = useQueryClient();
   const [uploadMetadata, setUploadMetadata] = useState<UploadMetadata | null>(null);
+  const [importQueue, setImportQueue] = useState<ImportQueueItem[]>([]);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [createOutcomeUnknown, setCreateOutcomeUnknown] = useState(false);
   const uploadGeneration = useRef(0);
@@ -63,6 +75,7 @@ export function SkillForm({ onCancel }: { onCancel: () => void }) {
   const applyArtifact = useCallback((artifact: SkillImportArtifact | null) => {
     uploadGeneration.current += 1;
     setUploadMetadata(artifact);
+    setImportQueue([]);
     setUploadError(null);
     if (!artifact) return;
     if (!getValues('name').trim() && artifact.suggested?.name) {
@@ -73,9 +86,30 @@ export function SkillForm({ onCancel }: { onCancel: () => void }) {
     }
   }, [getValues, setValue]);
 
-  const createMutation = useMutation({
+  const applyArtifacts = useCallback((results: Array<{ candidateId: string; candidateName: string; artifact: SkillImportArtifact }>) => {
+    uploadGeneration.current += 1;
+    setUploadError(null);
+    setUploadMetadata(null);
+    setImportQueue((current) => {
+      const existing = new Map(current.map((item) => [item.candidateId, item]));
+      for (const { candidateId, candidateName, artifact } of results) {
+        const previous = existing.get(candidateId);
+        existing.set(candidateId, previous ?? {
+          candidateId,
+          candidateName,
+          artifact,
+          name: artifact.suggested?.name?.trim() || candidateName || artifact.filename.replace(/\.zip$/i, '') || '未命名技能',
+          description: artifact.suggested?.description?.trim() || '',
+          status: 'pending',
+        });
+      }
+      return [...existing.values()];
+    });
+  }, []);
+
+  const createMutation = useMutation<{ id: string }, unknown, CreateSkillInput>({
     retry: false,
-    mutationFn: async (data: SkillFormValues & UploadMetadata) => {
+    mutationFn: async (data: CreateSkillInput) => {
       return api.post<{ id: string }>('/capabilities', {
           type: 'skill',
           name: data.name,
@@ -93,16 +127,6 @@ export function SkillForm({ onCancel }: { onCancel: () => void }) {
           },
           skillConfig: { template: data.content, modelId: 'gpt-4o-mini', temperature: 0.7, maxTokens: 2000 },
       });
-    },
-    onSuccess: () => {
-      toast.success('创建成功', '技能已进入平台待审，审核通过后才会公开');
-      qc.invalidateQueries({ queryKey: ['capabilities'] });
-      void qc.invalidateQueries({ queryKey: ['skill-versions'] });
-      router.push('/admin/skills');
-    },
-    onError: (err) => {
-      if (!(err instanceof ApiError) || err.status >= 500) setCreateOutcomeUnknown(true);
-      toast.error('创建失败', err instanceof Error ? err.message : '请稍后重试');
     },
   });
 
@@ -133,20 +157,75 @@ export function SkillForm({ onCancel }: { onCancel: () => void }) {
     }
   };
 
-  const onSubmit = (data: SkillFormValues) => {
+  const createOne = async (data: SkillFormValues, artifact: Pick<SkillImportArtifact, 'zipPath' | 'sha256' | 'fileCount' | 'totalSize' | 'filename' | 'content'>) => createMutation.mutateAsync({
+    ...data,
+    zipPath: artifact.zipPath,
+    sha256: artifact.sha256,
+    fileCount: artifact.fileCount,
+    totalSize: artifact.totalSize,
+    filename: artifact.filename,
+    content: artifact.content,
+  });
+
+  const submitQueue = async () => {
+    if (createOutcomeUnknown || createMutation.isPending) return;
+    const base = getValues();
+    if (importQueue.length) {
+      const next = [...importQueue];
+      for (let index = 0; index < next.length; index += 1) {
+        const item = next[index];
+        if (item.status === 'succeeded') continue;
+        const parsed = skillFormSchema.safeParse({ ...base, name: item.name, description: item.description });
+        if (!parsed.success) {
+          next[index] = { ...item, status: 'failed', error: parsed.error.issues[0]?.message ?? '能力信息不完整' };
+          setImportQueue(next);
+          toast.error('创建失败', `${item.name}：${next[index].error}`);
+          return;
+        }
+        next[index] = { ...item, status: 'creating', error: undefined };
+        setImportQueue([...next]);
+        try {
+          await createOne(parsed.data, item.artifact);
+          next[index] = { ...next[index], status: 'succeeded' };
+          setImportQueue([...next]);
+        } catch (err) {
+          const unknown = !(err instanceof ApiError) || err.status >= 500;
+          if (unknown) setCreateOutcomeUnknown(true);
+          next[index] = { ...next[index], status: 'failed', error: err instanceof Error ? err.message : '请稍后重试' };
+          setImportQueue([...next]);
+          toast.error('创建失败', `${item.name}：${next[index].error}`);
+          return;
+        }
+      }
+      toast.success('创建成功', `已创建 ${next.length} 个技能，进入平台待审`);
+      qc.invalidateQueries({ queryKey: ['capabilities'] });
+      void qc.invalidateQueries({ queryKey: ['skill-versions'] });
+      router.push('/admin/skills');
+      return;
+    }
+  };
+
+  const onSubmit = async (data: SkillFormValues) => {
     if (createOutcomeUnknown || createMutation.isPending) return;
     if (!uploadMetadata) {
       toast.error('请先导入技能包');
       return;
     }
-    createMutation.mutate({
-      ...data,
+    createOne(data, {
       zipPath: uploadMetadata.zipPath,
       sha256: uploadMetadata.sha256,
       fileCount: uploadMetadata.fileCount,
       totalSize: uploadMetadata.totalSize,
       filename: uploadMetadata.filename,
       content: uploadMetadata.content,
+    }).then(() => {
+      toast.success('创建成功', '技能已进入平台待审，审核通过后才会公开');
+      qc.invalidateQueries({ queryKey: ['capabilities'] });
+      void qc.invalidateQueries({ queryKey: ['skill-versions'] });
+      router.push('/admin/skills');
+    }).catch((err: unknown) => {
+      if (!(err instanceof ApiError) || err.status >= 500) setCreateOutcomeUnknown(true);
+      toast.error('创建失败', err instanceof Error ? err.message : '请稍后重试');
     });
   };
 
@@ -164,9 +243,10 @@ export function SkillForm({ onCancel }: { onCancel: () => void }) {
   };
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+    <form onSubmit={importQueue.length ? (event) => { event.preventDefault(); void submitQueue(); } : handleSubmit(onSubmit)} className="space-y-4">
       <SkillImportPanel
         onArtifact={applyArtifact}
+        onArtifacts={applyArtifacts}
         onZipFile={(file) => void handleFile(file)}
         zipBusy={uploadMutation.isPending || createMutation.isPending}
         zipError={uploadError}
@@ -180,13 +260,21 @@ export function SkillForm({ onCancel }: { onCancel: () => void }) {
           <CardTitle>3. 能力信息</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="space-y-2">
+          {importQueue.length > 0 ? <div className="space-y-3">
+            <Label>待创建技能（{importQueue.length}）</Label>
+            {importQueue.map((item, index) => <div key={item.candidateId} className="space-y-3 rounded-md border p-3">
+              <div className="flex items-center justify-between gap-2 text-sm"><span className="font-medium">{index + 1}. {item.artifact.filename}</span><div className="flex items-center gap-2"><span className={item.status === 'failed' ? 'text-red-600' : item.status === 'succeeded' ? 'text-green-700' : 'text-muted-foreground'}>{item.status === 'creating' ? '创建中' : item.status === 'succeeded' ? '已创建' : item.status === 'failed' ? '失败' : '待创建'}</span>{item.status === 'pending' && <Button type="button" variant="ghost" size="icon" aria-label={`移除待创建 ${item.candidateName}`} onClick={() => setImportQueue((current) => current.filter((entry) => entry.candidateId !== item.candidateId))}><Trash2 className="h-4 w-4" /></Button>}</div></div>
+              <div className="space-y-2"><Label htmlFor={`queue-name-${index}`}>能力名称</Label><Input id={`queue-name-${index}`} maxLength={100} value={item.name} disabled={item.status === 'succeeded' || item.status === 'creating'} onChange={(event) => setImportQueue((current) => current.map((entry, entryIndex) => entryIndex === index ? { ...entry, name: event.target.value } : entry))} /></div>
+              <div className="space-y-2"><Label htmlFor={`queue-description-${index}`}>能力描述</Label><Textarea id={`queue-description-${index}`} maxLength={2000} rows={3} value={item.description} disabled={item.status === 'succeeded' || item.status === 'creating'} onChange={(event) => setImportQueue((current) => current.map((entry, entryIndex) => entryIndex === index ? { ...entry, description: event.target.value } : entry))} /></div>
+              {item.error && <p role="alert" className="text-sm text-red-600">{item.error}</p>}
+            </div>)}
+          </div> : <div className="space-y-2">
             <Label htmlFor="name">能力名称</Label>
             <Input id="name" maxLength={100} placeholder="例如：前端代码生成助手" {...register('name')} />
             {errors.name && <p className="text-sm text-red-600">{errors.name.message}</p>}
-          </div>
+          </div>}
 
-          <div className="space-y-2">
+          {importQueue.length === 0 && <div className="space-y-2">
             <Label htmlFor="description">能力描述</Label>
             <Textarea
               id="description"
@@ -196,7 +284,7 @@ export function SkillForm({ onCancel }: { onCancel: () => void }) {
               {...register('description')}
             />
             {errors.description && <p className="text-sm text-red-600">{errors.description.message}</p>}
-          </div>
+          </div>}
 
           <div className="space-y-2">
             <Label>适用行业（可多选）</Label>
@@ -244,7 +332,7 @@ export function SkillForm({ onCancel }: { onCancel: () => void }) {
         <Button type="button" variant="outline" onClick={onCancel} disabled={isSubmitting || createMutation.isPending}>
           取消
         </Button>
-        <Button type="submit" disabled={isSubmitting || uploadMutation.isPending || createMutation.isPending || createOutcomeUnknown || !uploadMetadata}>
+        <Button type="submit" disabled={isSubmitting || uploadMutation.isPending || createMutation.isPending || createOutcomeUnknown || (!uploadMetadata && !importQueue.length)}>
           {createMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
           创建并进入平台待审
         </Button>

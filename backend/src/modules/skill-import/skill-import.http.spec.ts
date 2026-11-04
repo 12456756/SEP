@@ -221,6 +221,49 @@ integration('Skill import HTTP protocol with real Redis and ZIP pipeline', () =>
     expect((await request(app.getHttpServer()).get(`/api/skill-import/sessions/${id}?view=operation`).expect(200)).body.artifact.sha256).toBe(artifact.sha256);
   });
 
+  it('reuses the temporary Web pairing when a remembered device claims the same session', async () => {
+    const remembered = await paired(true);
+    const created = await request(app.getHttpServer()).post('/api/skill-import/sessions')
+      .send({ requestId: 'reuse-temporary-pairing', protocolVersion: 1, scope: 'user' }).expect(201);
+    const publicKey = generateKeyPairSync('ed25519').publicKey.export({ type: 'spki', format: 'der' });
+    const temporary = await request(app.getHttpServer()).post('/api/skill-import/connector/pairings').send({
+      requestId: 'temporary-pairing', sessionId: created.body.id, publicKey: publicKey.toString('base64url'),
+      keyFingerprint: hash(publicKey), protocolVersion: 1, clientVersion: '1.0.0', platform: 'macos',
+    }).expect(200);
+    const challenge = await request(app.getHttpServer()).post('/api/skill-import/connector/challenges').send({
+      purpose: 'session-grant', sessionId: created.body.id, deviceId: remembered.grant.deviceId,
+    }).expect(200);
+    expect(challenge.body.pairingId).toBeNull();
+    const state = await store.read<ImportSession>(`session:${created.body.id}`);
+    expect(Object.keys(state.pairings)).toEqual([temporary.body.pairingId]);
+    expect(state.pairings[temporary.body.pairingId].deviceId).toBe(remembered.grant.deviceId);
+    expect(state.pairings[temporary.body.pairingId].shortCode).toBe(temporary.body.shortCode);
+    await request(app.getHttpServer()).post('/api/skill-import/connector/grants')
+      .send(proof(challenge.body, remembered.keys.privateKey, true)).expect(200);
+    const view = await request(app.getHttpServer()).get(`/api/skill-import/sessions/${created.body.id}`).expect(200);
+    expect(view.body.pairings).toHaveLength(1);
+    expect(view.body.pairings[0]).toMatchObject({ pairingId: temporary.body.pairingId, shortCode: temporary.body.shortCode, keyFingerprint: hash(remembered.keys.publicKey.export({ type: 'spki', format: 'der' })) });
+  });
+
+  it('releases a completed operation so the same session can import the next selected skill', async () => {
+    const context = await prepared(true);
+    await request(app.getHttpServer()).post(`/api/skill-import/connector/sessions/${context.id}/package`)
+      .auth(context.uploadGrant, { type: 'bearer' }).attach('file', context.bytes, 'demo.zip').expect(200);
+    const completed = await store.read<ImportSession>(`session:${context.id}`);
+    completed.commands.forEach((command) => { command.completed = true; });
+    await store.put(`session:${context.id}`, completed);
+    const commands = await request(app.getHttpServer()).get(`/api/skill-import/connector/sessions/${context.id}/commands?cursor=1`)
+      .auth(context.grant.sessionGrant, { type: 'bearer' }).expect(200);
+    expect(commands.body.items).toEqual([]);
+    const next = await request(app.getHttpServer()).post(`/api/skill-import/sessions/${context.id}/preview`)
+      .send({ requestId: 'next-preview', candidateId: 'candidate-2', revision: 1 }).expect(202);
+    expect(next.body.status).toBe('pending');
+    await context.event('command-started', next.body.commandId, { type: 'preview' }).expect(200);
+    const state = await store.read<ImportSession>(`session:${context.id}`);
+    expect(state.operation).toBeNull();
+    expect(state.artifact).toBeNull();
+  });
+
   it('requires matching Web sid and current owner ADMIN for every connector call', async () => {
     await request(app.getHttpServer()).post('/api/skill-import/sessions').set('x-web-sid', 'missing').send({ requestId: 'missing', protocolVersion: 1 }).expect(403);
     const { id, grant } = await paired();

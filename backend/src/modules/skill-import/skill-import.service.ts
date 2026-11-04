@@ -118,12 +118,22 @@ export class SkillImportService {
     return operation ? { operationId: operation.operationId, status: operation.status, retryable: operation.retryable, sha256: operation.sha256, errorCode: operation.errorCode, expiresAt: session.expiresAt } : null;
   }
 
+  private releaseCompletedOperation(session: ImportSession): void {
+    if (!session.operation || !['succeeded', 'failed'].includes(session.operation.status) || session.operation.processing) return;
+    session.operation = null;
+    session.artifact = null;
+    session.status = 'results';
+  }
+
   private view(session: ImportSession): SkillImportSessionView {
     return {
       id: session.id, status: session.status, version: session.version, protocolVersion: 1, instanceId: session.instanceId,
       expiresAt: session.expiresAt, idleExpiresAt: session.idleExpiresAt, deepLink: session.deepLink,
       artifactReady: Boolean(session.artifact), candidateCount: session.candidates.length, progress: session.progress,
-      pairings: Object.values(session.pairings).filter((pairing) => Date.now() < Date.parse(pairing.expiresAt)).map((pairing) => ({
+      pairings: Object.values(session.pairings).filter((pairing) =>
+        Date.now() < Date.parse(pairing.expiresAt)
+        && (!session.activePairingId || pairing.pairingId === session.activePairingId),
+      ).map((pairing) => ({
         pairingId: pairing.pairingId, keyFingerprint: pairing.keyFingerprint, shortCode: pairing.shortCode,
         label: pairing.label, platform: pairing.platform, clientVersion: pairing.clientVersion, expiresAt: pairing.expiresAt, webConfirmed: pairing.webConfirmed,
       })), operation: this.operationView(session),
@@ -230,7 +240,11 @@ export class SkillImportService {
   async requestPreview(user: ImportUser, id: string, input: z.infer<typeof SkillImportPreviewSchema>) {
     await this.store.rate(`preview:${id}`, 20, MINUTE);
     return this.mutate(id, async (session) => {
-      await this.assertWeb(user, session); this.live(session);
+      await this.assertWeb(user, session); this.live(session, true);
+      // A completed operation has already been delivered to Web. Release the
+      // single-operation slot so a multi-select queue can continue on the same
+      // session while keeping the existing one-operation wire contract.
+      this.releaseCompletedOperation(session);
       if (session.operation) throw new ConflictException({ code: 'OPERATION_CONFLICT', message: '导入操作已开始' });
       const requestHash = importHash(JSON.stringify(input)); const previous = session.previewRequests[input.requestId];
       if (previous) {
@@ -252,7 +266,8 @@ export class SkillImportService {
   async select(user: ImportUser, id: string, input: SkillImportSelection) {
     await this.store.rate(`selection:${id}`, 20, MINUTE);
     return this.mutate(id, async (session) => {
-      await this.assertWeb(user, session); this.live(session);
+      await this.assertWeb(user, session); this.live(session, true);
+      this.releaseCompletedOperation(session);
       if (session.operation) {
         if (session.operation.operationId !== input.operationId || session.operation.candidateId !== input.candidateId || session.operation.snapshotId !== input.snapshotId) throw new ConflictException({ code: 'OPERATION_CONFLICT', message: '该会话已有其他导入操作' });
         return { operationId: input.operationId, status: session.operation.status };
@@ -383,10 +398,24 @@ export class SkillImportService {
         if (pairing.deviceId) await this.device(pairing.deviceId, session.ownerUserId);
       } else {
         const device = await this.device(input.deviceId!, session.ownerUserId);
-        const existing = Object.values(session.pairings).find((value) => value.deviceId === device.id);
+        const matchingTemporary = Object.values(session.pairings).filter((value) =>
+          !value.deviceId
+          && !value.webConfirmed
+          && Date.now() < Date.parse(value.expiresAt)
+        );
+        if (matchingTemporary.length > 1) throw new ConflictException({ code: 'PAIRING_CONFLICT', message: '该会话存在多个待绑定配对，请重新扫描' });
+        const existing = Object.values(session.pairings).find((value) => value.deviceId === device.id) ?? matchingTemporary[0];
         this.assertClientVersion(input.clientVersion ?? existing?.clientVersion ?? device.clientVersion);
         if (session.activePairingId && session.activePairingId !== existing?.pairingId) throw new ConflictException({ code: 'CLIENT_BUSY', message: '该导入会话已连接其他设备' });
-        if (existing) pairing = existing;
+        if (existing) {
+          pairing = existing;
+          pairing.deviceId = device.id;
+          pairing.publicKey = device.publicKey;
+          pairing.keyFingerprint = device.keyFingerprint;
+          pairing.label = device.label;
+          pairing.platform = device.platform;
+          pairing.approvedScope = this.scopeSummary(device);
+        }
         else {
           if (Object.keys(session.pairings).length >= 3) throw new ConflictException({ code: 'SESSION_LIMIT_REACHED', message: '待确认设备过多' });
           const pairingId = importId();
@@ -470,7 +499,9 @@ export class SkillImportService {
   async commands(id: string, token: string, cursor: number) {
     await this.store.rate(`commands:${id}`, 60, MINUTE);
     return this.mutate(id, async (session) => {
-      await this.byGrant(session, token);
+      // A successful upload keeps the grant alive so Web can enqueue the next
+      // selected skill on the same session.
+      await this.byGrant(session, token, true);
       if (cursor > session.commandSequence) throw new BadRequestException({ code: 'CURSOR_INVALID', message: '命令游标无效' });
       // Unacknowledged commands remain deliverable even if a client advanced its read cursor.
       const items = session.commands.filter((command) => !command.completed && (!command.started || command.sequence > cursor)).slice(0, 20).map(({ started: _started, completed: _completed, ...command }) => command);

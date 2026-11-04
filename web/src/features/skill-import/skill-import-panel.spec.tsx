@@ -19,9 +19,9 @@ const pairing = { pairingId: 'pair_1', keyFingerprint: 'b'.repeat(64), shortCode
 const base: SkillImportSession = { id: 'session_1', status: 'waiting-client', version: 1, protocolVersion: 1, instanceId: 'instance_1', expiresAt: new Date(Date.now() + 1800000).toISOString(), idleExpiresAt: new Date(Date.now() + 600000).toISOString(), deepLink: 'sep-import://skills/v1?instanceId=instance_1&sessionId=session_1', artifactReady: false, candidateCount: 0, progress: null, pairings: [], operation: null };
 const candidate = { candidateId: 'candidate_1', revision: 1, name: '测试技能', description: '测试描述', sources: ['Claude'], scope: 'user', locations: [{ rootId: 'root_1', rootLabel: 'Claude Skills', relativePath: 'test' }], treeHash: 'c'.repeat(64), availability: 'previewable', warnings: [] };
 
-function mount(onArtifact = vi.fn()) {
+function mount(onArtifact = vi.fn(), onArtifacts = vi.fn()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  const view = render(<QueryClientProvider client={client}><SkillImportPanel onArtifact={onArtifact} onZipFile={vi.fn()} zipBusy={false} zipError={null} zipArtifact={null} /></QueryClientProvider>);
+  const view = render(<QueryClientProvider client={client}><SkillImportPanel onArtifact={onArtifact} onArtifacts={onArtifacts} onZipFile={vi.fn()} zipBusy={false} zipError={null} zipArtifact={null} /></QueryClientProvider>);
   return { ...view, client, onArtifact };
 }
 async function startScan() {
@@ -233,6 +233,94 @@ describe('本机 Skills 导入', () => {
     await act(async () => { await client.invalidateQueries({ queryKey: ['skill-import', 'admin', 'session_1', 'operation'] }); });
     expect(onArtifact.mock.calls.filter(([value]) => value !== null)).toHaveLength(1);
     expect(post.mock.calls.filter(([path]) => path.endsWith('/selection'))).toHaveLength(1);
+  }, 15000);
+
+  it('跨页多选按顺序导入，部分失败后只重试失败项', async () => {
+    const candidates = [
+      { ...candidate, candidateId: 'candidate_1', name: '技能一' },
+      { ...candidate, candidateId: 'candidate_2', name: '技能二' },
+    ];
+    const operations = new Map<string, string>();
+    const attempts = new Map<string, number>();
+    const artifacts = new Map(candidates.map((item) => [item.candidateId, {
+      ...artifact,
+      zipPath: `skills/${item.candidateId}.zip`,
+      filename: `${item.candidateId}.zip`,
+      sha256: item.candidateId === 'candidate_1' ? '1'.repeat(64) : '2'.repeat(64),
+      suggested: { name: item.name, description: `${item.name}描述` },
+    }]));
+    post.mockImplementation(async (path, body) => {
+      if (path === '/skill-import/sessions') return base;
+      if (path.endsWith('/preview') || path.endsWith('/selection')) {
+        const input = body as { candidateId: string; operationId?: string };
+        if (path.endsWith('/selection')) {
+          operations.set(input.operationId!, input.candidateId);
+          attempts.set(input.candidateId, (attempts.get(input.candidateId) ?? 0) + 1);
+        }
+        return {};
+      }
+      throw new Error(`Unexpected POST ${path}`);
+    });
+    get.mockImplementation(async (path) => {
+      if (path.endsWith('/config')) return { enabled: true, instanceId: base.instanceId, protocolVersion: 1, minClientVersion: '1.0.0' };
+      if (path.startsWith('/skill-import/devices')) return { items: [], nextCursor: null };
+      const url = new URL(path, 'https://example.com');
+      const view = url.searchParams.get('view');
+      if (view === 'status') return { ...base, status: 'results', candidateCount: candidates.length };
+      if (view === 'candidates') {
+        const filtered = Boolean(url.searchParams.get('source'));
+        const hasCursor = Boolean(url.searchParams.get('cursor'));
+        return { ...base, status: 'results', items: filtered ? [] : hasCursor ? [candidates[1]] : [candidates[0]], nextCursor: filtered || hasCursor ? null : 'page_2' };
+      }
+      if (view === 'preview') {
+        const candidateId = url.searchParams.get('candidateId')!;
+        return { ...base, status: 'results', previewStatus: 'ready', errorCode: null, preview: {
+          requestId: url.searchParams.get('requestId'), candidateId, snapshotId: `snapshot_${candidateId}`,
+          expiresAt: new Date(Date.now() + 120000).toISOString(), content: '# Skill', treeHash: candidate.treeHash,
+          fileCount: 1, totalUncompressedBytes: 6, estimatedPackageBytes: 32,
+          files: [{ relativePath: 'SKILL.md', bytes: 6 }], nextFilesCursor: null, warnings: [],
+        } };
+      }
+      if (view === 'operation') {
+        const operationId = url.searchParams.get('operationId')!;
+        const candidateId = operations.get(operationId)!;
+        const succeeded = candidateId !== 'candidate_1' || attempts.get(candidateId)! > 1;
+        return { ...base, status: succeeded ? 'uploaded' : 'failed', operation: {
+          operationId, status: succeeded ? 'succeeded' : 'failed', retryable: false,
+          sha256: succeeded ? artifacts.get(candidateId)!.sha256 : null,
+          errorCode: succeeded ? null : 'PACKAGE_REJECTED', expiresAt: base.expiresAt,
+        }, artifact: succeeded ? artifacts.get(candidateId) : null };
+      }
+      throw new Error(`Unexpected GET ${path}`);
+    });
+
+    const onArtifacts = vi.fn();
+    mount(vi.fn(), onArtifacts);
+    await startScan();
+    await screen.findByRole('checkbox', { name: '选择 技能一' });
+    fireEvent.click(screen.getByRole('checkbox', { name: '选择 技能一' }));
+    fireEvent.change(screen.getByRole('combobox', { name: 'Agent 来源' }), { target: { value: 'opencode' } });
+    await waitFor(() => expect(screen.getByText('已选 1 / 20')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: '移除已选 技能一' }));
+    expect(screen.getByText('已选 0 / 20')).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('combobox', { name: 'Agent 来源' }), { target: { value: '' } });
+    await screen.findByRole('checkbox', { name: '选择 技能一' });
+    fireEvent.click(screen.getByRole('button', { name: '加载更多' }));
+    await screen.findByRole('checkbox', { name: '选择 技能二' });
+    fireEvent.click(screen.getByRole('checkbox', { name: '选择 技能一' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: '选择 技能二' }));
+    expect(screen.getByText('已选 2 / 20')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '逐个导入已选' }));
+
+    await screen.findByText('失败：PACKAGE_REJECTED');
+    await screen.findByText('已上传');
+    expect(onArtifacts).toHaveBeenLastCalledWith([{ candidateId: 'candidate_2', candidateName: '技能二', artifact: artifacts.get('candidate_2') }]);
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+    await waitFor(() => expect(screen.getAllByText('已上传')).toHaveLength(2));
+    expect(post.mock.calls.filter(([path]) => path.endsWith('/selection')).map(([, body]) => (body as { candidateId: string }).candidateId)).toEqual(['candidate_1', 'candidate_2', 'candidate_1']);
+    expect(onArtifacts).toHaveBeenLastCalledWith([{ candidateId: 'candidate_1', candidateName: '技能一', artifact: artifacts.get('candidate_1') }]);
+    expect(screen.getByText('已选 0 / 20')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '逐个导入已选' })).toBeDisabled();
   }, 15000);
 
   it('取消会话时删除服务端授权并清空产物，不再轮询', async () => {

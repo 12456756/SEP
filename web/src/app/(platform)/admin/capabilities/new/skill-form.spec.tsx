@@ -9,10 +9,11 @@ vi.mock('next/navigation', () => ({ useRouter: () => ({ push }) }));
 vi.mock('@/components/ui/toast', () => ({ toast: { success, error } }));
 const metadata = { zipPath: 'skills/abc.zip', sha256: 'a'.repeat(64), fileCount: 4, totalSize: 8192, filename: '测试.ZIP', content: '---\nname: complete\n---\n# 完整 SKILL.md 正文' };
 const fetchMock = vi.fn();
+let skillImportEnabled = false;
 function response(body: unknown, status = 200) { return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } }); }
-function mount() {
+function mount(source: 'zip' | 'client' = 'zip') {
   render(<QueryClientProvider client={new QueryClient({ defaultOptions: { mutations: { retry: false } } })}><SkillForm onCancel={vi.fn()} /></QueryClientProvider>);
-  fireEvent.mouseDown(screen.getByRole('tab', { name: 'ZIP 上传' }), { button: 0, ctrlKey: false });
+  if (source === 'zip') fireEvent.mouseDown(screen.getByRole('tab', { name: 'ZIP 上传' }), { button: 0, ctrlKey: false });
 }
 async function upload() {
   fireEvent.change(screen.getByLabelText('Zip 文件（必须包含 SKILL.md）'), { target: { files: [new File(['zip'], metadata.filename, { type: 'application/zip' })] } });
@@ -23,13 +24,71 @@ function fill() {
   fireEvent.change(screen.getByLabelText('能力描述'), { target: { value: '完整上传包并保留正文的测试技能说明' } });
 }
 beforeEach(() => {
-  vi.clearAllMocks(); vi.stubGlobal('fetch', (path: string, options?: RequestInit) => path === '/api/skill-import/config'
-    ? Promise.resolve(response({ enabled: false, instanceId: 'test', protocolVersion: 1, minClientVersion: '1.0.0' }))
+  vi.clearAllMocks(); skillImportEnabled = false; vi.stubGlobal('fetch', (path: string, options?: RequestInit) => path === '/api/skill-import/config'
+    ? Promise.resolve(response({ enabled: skillImportEnabled, instanceId: 'test', protocolVersion: 1, minClientVersion: '1.0.0' }))
     : fetchMock(path, options));
   useAuthStore.getState().setAuth({ token: 'ops-memory-token', user: { id: 'ops', name: '运营', email: 'ops@example.com', avatar: null, role: 'ADMIN' }, enterprise: null, roleInEnterprise: null });
   fetchMock.mockImplementation(async (path: string) => response(path.endsWith('upload-skill') ? metadata : { id: 'created-cap' }));
 });
 afterEach(() => { useAuthStore.getState().clear(); vi.unstubAllGlobals(); });
+describe('multi-skill artifact queue', () => {
+  it('removes an imported artifact before creating the remaining skill with its own metadata', async () => {
+    skillImportEnabled = true;
+    const session = { id: 'session_1', status: 'results', version: 1, protocolVersion: 1, instanceId: 'test', expiresAt: new Date(Date.now() + 1800000).toISOString(), idleExpiresAt: new Date(Date.now() + 600000).toISOString(), deepLink: 'sep-import://skills/v1?instanceId=test&sessionId=session_1', artifactReady: false, candidateCount: 2, progress: null, pairings: [], operation: null };
+    const candidates = ['one', 'two'].map((id, index) => ({ candidateId: `candidate_${id}`, revision: 1, name: `技能${index + 1}`, description: `描述${index + 1}`, sources: ['codex'], scope: 'user', locations: [{ rootId: 'root_1', rootLabel: 'Codex', relativePath: `skill-${id}` }], treeHash: 'b'.repeat(64), availability: 'previewable', warnings: [] }));
+    const artifacts = candidates.map((candidate, index) => ({ zipPath: `skills/${candidate.candidateId}.zip`, sha256: String(index + 1).repeat(64), fileCount: 1, totalSize: 10, filename: `${candidate.candidateId}.zip`, content: `# ${candidate.name}`, suggested: { name: candidate.name, description: candidate.description }, warnings: [] }));
+    const operationCandidates = new Map<string, number>();
+    const created: Array<Record<string, unknown>> = [];
+    fetchMock.mockImplementation(async (path: string, options?: RequestInit) => {
+      const url = new URL(path, 'https://example.com');
+      const view = url.searchParams.get('view');
+      if (url.pathname === '/api/skill-import/sessions' && options?.method === 'POST') return response(session, 201);
+      if (url.pathname.endsWith('/preview') && options?.method === 'POST') return response({ requestId: (JSON.parse(String(options.body)) as { requestId: string }).requestId }, 202);
+      if (url.pathname.endsWith('/sessions/session_1') && options?.method === 'DELETE') return response(session);
+      if (url.pathname.startsWith('/api/skill-import/devices')) return response({ items: [], nextCursor: null });
+      if (url.pathname.endsWith('/sessions/session_1') && view === 'status') return response(session);
+      if (url.pathname.endsWith('/sessions/session_1') && view === 'candidates') return response({ ...session, items: candidates, nextCursor: null });
+      if (url.pathname.endsWith('/sessions/session_1') && view === 'preview') {
+        const candidateId = url.searchParams.get('candidateId')!;
+        return response({ ...session, previewStatus: 'ready', errorCode: null, preview: { requestId: url.searchParams.get('requestId'), candidateId, snapshotId: `snapshot_${candidateId}`, expiresAt: new Date(Date.now() + 120000).toISOString(), content: '# Skill', treeHash: 'b'.repeat(64), fileCount: 1, totalUncompressedBytes: 6, estimatedPackageBytes: 32, files: [{ relativePath: 'SKILL.md', bytes: 6 }], nextFilesCursor: null, warnings: [] } });
+      }
+      if (url.pathname.endsWith('/selection') && options?.method === 'POST') {
+        const body = JSON.parse(String(options.body)) as { candidateId: string; operationId: string };
+        operationCandidates.set(body.operationId, candidates.findIndex((candidate) => candidate.candidateId === body.candidateId));
+        return response({ operationId: body.operationId, status: 'pending' }, 202);
+      }
+      if (view === 'operation') {
+        const index = operationCandidates.get(url.searchParams.get('operationId')!)!;
+        const artifact = artifacts[index];
+        return response({ ...session, status: 'uploaded', operation: { operationId: url.searchParams.get('operationId'), status: 'succeeded', retryable: false, sha256: artifact.sha256, errorCode: null, expiresAt: session.expiresAt }, artifact });
+      }
+      if (url.pathname === '/api/capabilities' && options?.method === 'POST') {
+        created.push(JSON.parse(String(options.body)) as Record<string, unknown>);
+        return response({ id: `capability_${created.length}` }, 201);
+      }
+      throw new Error(`Unexpected request ${options?.method} ${path}`);
+    });
+
+    mount('client');
+    await waitFor(() => expect(screen.getByRole('button', { name: '扫描本机' })).toBeEnabled());
+    fireEvent.click(screen.getByRole('button', { name: '扫描本机' }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([path]) => String(path).includes('view=candidates'))).toBe(true));
+    await screen.findByRole('checkbox', { name: '选择 技能1' });
+    fireEvent.click(screen.getByRole('checkbox', { name: '选择 技能1' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: '选择 技能2' }));
+    fireEvent.click(screen.getByRole('button', { name: '逐个导入已选' }));
+    await waitFor(() => expect(screen.getAllByLabelText('能力名称')).toHaveLength(2));
+    expect(screen.getAllByLabelText('能力名称')[0]).toHaveValue('技能1');
+    expect(screen.getAllByLabelText('能力名称')[1]).toHaveValue('技能2');
+    fireEvent.click(screen.getByRole('button', { name: '移除待创建 技能1' }));
+    expect(screen.getAllByLabelText('能力名称')).toHaveLength(1);
+    expect(screen.getByLabelText('能力名称')).toHaveValue('技能2');
+    fireEvent.click(screen.getByRole('button', { name: '创建并进入平台待审' }));
+    await waitFor(() => expect(push).toHaveBeenCalledWith('/admin/skills'));
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({ name: '技能2', description: '描述2', metadata: { zipPath: 'skills/candidate_two.zip', sha256: '2'.repeat(64) } });
+  });
+});
 describe('ops SKILL 首次创建认证契约', () => {
   it('兼容提示不阻断创建，自动补全名称描述且不展示包内路径', async () => {
     const suggested = { name: '抖音文案提取', description: '提取视频中的文字内容' };
