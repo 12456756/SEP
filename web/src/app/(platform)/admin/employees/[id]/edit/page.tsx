@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect } from 'react';
+import Link from 'next/link';
 import { useRouter, useParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -14,7 +15,6 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import { adminApi, type EmployeeDetail } from '@/features/admin/admin-api';
 import { ApiError } from '@/lib/api-client';
 import {
@@ -24,11 +24,10 @@ import {
   useDefaultEmployeeGiftCNY,
   useDefaultEmployeeGiftPercentage,
 } from '@/features/admin/use-admin';
-import { useEnabledModels } from '@/features/admin/use-models';
 import { formatGiftInput, parseGiftInput } from '@/features/admin/employee-gift';
+import { EmployeeCapabilityPicker } from '@/features/admin/employee-capability-picker';
 import { toast } from '@/components/ui/toast';
 import { ArrowLeft, Loader2 } from 'lucide-react';
-import { cn } from '@/lib/utils';
 
 export default function EditEmployeePage() {
   const router = useRouter();
@@ -37,16 +36,16 @@ export default function EditEmployeePage() {
 
   const [isLoading, setIsLoading] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [generatingCopy, setGeneratingCopy] = useState<'description' | 'systemPrompt' | null>(null);
+  const [copyDraftModel, setCopyDraftModel] = useState('');
   const [employee, setEmployee] = useState<EmployeeDetail | null>(null);
-  const [selectedCapabilities, setSelectedCapabilities] = useState<string[]>([]);
+  const [capabilitySelection, setCapabilitySelection] = useState<{ employeeId: string; ids: string[] } | null>(null);
   const [formData, setFormData] = useState({
     name: '',
     description: '',
     industry: '通用',
     position: '通用',
-    avatar: '',
     systemPrompt: '',
-    modelId: 'gpt-4o',
     annualPriceCNY: 0,
   });
 
@@ -56,11 +55,14 @@ export default function EditEmployeePage() {
   const { data: defaultGift } = useDefaultEmployeeGiftCNY();
   const { data: defaultGiftPercentage } = useDefaultEmployeeGiftPercentage();
 
-  const { data: capabilities, isLoading: capabilitiesLoading } =
+  const { data: capabilities, isLoading: capabilitiesLoading, isError: capabilitiesError } =
     useAvailableCapabilities();
   const { data: bindings } = useEmployeeBindings(employeeId);
-  const { data: enabledModels, isLoading: modelsLoading } = useEnabledModels();
   const bindCapabilitiesMutation = useBindCapabilities();
+  const selectedCapabilities = capabilitySelection?.employeeId === employeeId
+    ? capabilitySelection.ids
+    : bindings?.map((binding) => binding.capability.id) ?? [];
+  const handleCapabilitiesChange = (ids: string[]) => setCapabilitySelection({ employeeId, ids });
 
   const industries = [
     '通用',
@@ -103,9 +105,7 @@ export default function EditEmployeePage() {
           description: data.description,
           industry: data.industry,
           position: data.position,
-          avatar: data.avatar || '',
           systemPrompt: data.systemPrompt,
-          modelId: data.modelId,
           annualPriceCNY: data.annualPriceCNY ? Number(data.annualPriceCNY) : 0,
         });
         // null 要还原成空串，不能落成 '0' —— 那会把「未配置」改写成「不赠送」
@@ -115,10 +115,6 @@ export default function EditEmployeePage() {
           ),
         );
 
-        // Initialize selectedCapabilities from bindings
-        if (bindings) {
-          setSelectedCapabilities(bindings.map((b: any) => b.capability.id));
-        }
       } catch (error: any) {
         if (!mounted) return;
         toast.error(error.message || '加载员工信息失败');
@@ -132,7 +128,7 @@ export default function EditEmployeePage() {
 
     loadEmployee();
     return () => { mounted = false; };
-  }, [employeeId, router, bindings]);
+  }, [employeeId, router]);
 
   const handleSubmit = async () => {
     if (!formData.name.trim()) {
@@ -171,6 +167,32 @@ export default function EditEmployeePage() {
       toast.error(details ? `请求参数校验失败：${details}` : error.message || '更新失败');
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const generateCopyDraft = async (kind: 'description' | 'systemPrompt') => {
+    if (!formData.name.trim()) {
+      toast.error('请先填写员工名称');
+      return;
+    }
+    setGeneratingCopy(kind);
+    try {
+      const result = await adminApi.generateEmployeeCopyDraft({
+        kind,
+        employee: {
+          name: formData.name,
+          industry: formData.industry,
+          position: formData.position,
+          capabilities: (capabilities ?? []).filter((capability) => selectedCapabilities.includes(capability.id))
+            .map(({ name, description }) => ({ name, description: description ?? '' })),
+        },
+      });
+      setFormData((current) => ({ ...current, [kind]: result.draft }));
+      setCopyDraftModel(result.modelId);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '文案生成失败，请稍后重试');
+    } finally {
+      setGeneratingCopy(null);
     }
   };
 
@@ -216,8 +238,13 @@ export default function EditEmployeePage() {
             />
           </div>
 
+          <p className="text-sm text-muted-foreground">员工头像由 <Link href="/admin/employees/avatar-styles" className="text-primary underline-offset-4 hover:underline">头像风格管理</Link> 统一配置。</p>
+
           <div className="space-y-2">
-            <Label htmlFor="description">描述</Label>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <Label htmlFor="description">员工简介</Label>
+              <Button type="button" variant="outline" size="sm" disabled={generatingCopy !== null} loading={generatingCopy === 'description'} onClick={() => void generateCopyDraft('description')}>AI 生成简介</Button>
+            </div>
             <Textarea
               id="description"
               value={formData.description}
@@ -225,6 +252,7 @@ export default function EditEmployeePage() {
               placeholder="简要描述该员工的功能和用途"
               rows={4}
             />
+            <p className="text-xs text-muted-foreground">AI 生成内容仅作为草稿，可继续修改；也可以直接填写。{copyDraftModel ? `当前生成模型：${copyDraftModel}` : '使用平台当前可用的默认会话模型。'}</p>
           </div>
 
           <div className="grid grid-cols-2 gap-4">
@@ -268,18 +296,10 @@ export default function EditEmployeePage() {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="avatar">头像地址</Label>
-            <Input
-              id="avatar"
-              type="text"
-              value={formData.avatar}
-              onChange={(e) => setFormData({ ...formData, avatar: e.target.value })}
-              placeholder="/assets/employees/silicon/frontend-engineer.webp"
-            />
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="systemPrompt">系统提示词</Label>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <Label htmlFor="systemPrompt">系统提示词</Label>
+              <Button type="button" variant="outline" size="sm" disabled={generatingCopy !== null} loading={generatingCopy === 'systemPrompt'} onClick={() => void generateCopyDraft('systemPrompt')}>AI 生成提示词</Button>
+            </div>
             <Textarea
               id="systemPrompt"
               value={formData.systemPrompt}
@@ -287,36 +307,7 @@ export default function EditEmployeePage() {
               placeholder="定义该员工的人设和行为规范"
               rows={6}
             />
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="modelId">模型</Label>
-            <Select
-              value={formData.modelId}
-              onValueChange={(value) => setFormData({ ...formData, modelId: value })}
-              disabled={modelsLoading}
-            >
-              <SelectTrigger id="modelId">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {modelsLoading ? (
-                  <div className="p-2 text-center text-sm text-muted-foreground">
-                    <Loader2 className="h-4 w-4 animate-spin mx-auto" />
-                  </div>
-                ) : !enabledModels || enabledModels.length === 0 ? (
-                  <div className="p-2 text-center text-sm text-muted-foreground">
-                    暂无可用模型
-                  </div>
-                ) : (
-                  enabledModels.map((model) => (
-                    <SelectItem key={model.id} value={model.id}>
-                      {model.label}
-                    </SelectItem>
-                  ))
-                )}
-              </SelectContent>
-            </Select>
+            <p className="text-xs text-muted-foreground">建议控制在 250 到 600 字，包含工作目标、可用能力和行为边界；生成后可继续修改。</p>
           </div>
 
           <div className="grid grid-cols-2 gap-4">
@@ -361,65 +352,7 @@ export default function EditEmployeePage() {
           </div>
 
           <div className="space-y-4 pt-4 border-t">
-            <div>
-              <Label>绑定能力 *</Label>
-              <p className="text-sm text-muted-foreground mb-3">
-                选择此员工可以使用的能力（至少选择一个）
-              </p>
-            </div>
-
-            {capabilitiesLoading ? (
-              <div className="text-center py-8 text-muted-foreground">
-                <Loader2 className="h-6 w-6 animate-spin mx-auto mb-2" />
-                加载能力列表...
-              </div>
-            ) : !capabilities || capabilities.length === 0 ? (
-              <div className="text-center py-8 text-muted-foreground">
-                <p>暂无可用能力</p>
-              </div>
-            ) : (
-              <div className="grid gap-3 sm:grid-cols-2">
-                {capabilities.map((cap: any) => (
-                  <label
-                    key={cap.id}
-                    className={cn(
-                      'flex items-start gap-3 p-4 border rounded-lg cursor-pointer transition-colors',
-                      selectedCapabilities.includes(cap.id)
-                        ? 'border-primary bg-primary/5'
-                        : 'border-border hover:bg-muted/50'
-                    )}
-                  >
-                    <input
-                      type="checkbox"
-                      className="mt-1"
-                      checked={selectedCapabilities.includes(cap.id)}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setSelectedCapabilities([...selectedCapabilities, cap.id]);
-                        } else {
-                          setSelectedCapabilities(
-                            selectedCapabilities.filter((id) => id !== cap.id)
-                          );
-                        }
-                      }}
-                    />
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium">{cap.name}</p>
-                      <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
-                        {cap.description}
-                      </p>
-                      <Badge variant="secondary" className="mt-2">
-                        {cap.type}
-                      </Badge>
-                    </div>
-                  </label>
-                ))}
-              </div>
-            )}
-
-            {selectedCapabilities.length === 0 && (
-              <p className="text-sm text-gdanger">* 请至少选择一个能力</p>
-            )}
+            <EmployeeCapabilityPicker capabilities={capabilities ?? []} selectedIds={selectedCapabilities} onChange={handleCapabilitiesChange} isLoading={capabilitiesLoading} isError={capabilitiesError} />
           </div>
 
           <div className="flex gap-4 pt-4">

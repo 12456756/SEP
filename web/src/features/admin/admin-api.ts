@@ -261,6 +261,22 @@ export interface UpdateEmployeeRequest {
   includedComputeCNY?: number | null;
 }
 
+export interface EmployeeCopyDraftRequest {
+  kind: 'description' | 'systemPrompt';
+  employee: {
+    name: string;
+    industry: string;
+    position: string;
+    capabilities: Array<{ name: string; description?: string }>;
+  };
+}
+
+export interface EmployeeCopyDraftResponse {
+  draft: string;
+  modelId: string;
+  modelSource: 'PLATFORM_DEFAULT';
+}
+
 export interface ComputeTransaction {
   id: string;
   type: 'RECHARGE' | 'CONSUME' | 'REFUND';
@@ -391,6 +407,9 @@ export const adminApi = {
   /**
    * 创建员工
    */
+  generateEmployeeCopyDraft: (data: EmployeeCopyDraftRequest) =>
+    api.post<EmployeeCopyDraftResponse>('/admin/employees/copy-draft', data),
+
   createEmployee: (data: CreateEmployeeRequest) => {
     return api.post<EmployeeDetail>('/admin/employees', data);
   },

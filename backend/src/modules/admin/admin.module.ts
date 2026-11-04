@@ -10,6 +10,7 @@ import { AuthModule } from '../auth/auth.module';
 import { AdminAuthService } from './admin-auth.service';
 import { CapabilityContributionModule } from '../capability-contribution/capability-contribution.module';
 import { EmployeeReadinessModule } from '../digital-employee/employee-readiness.module';
+import { EmployeeCopyDraftService } from './employee-copy-draft.service';
 
 @Module({
   imports: [
@@ -22,7 +23,7 @@ import { EmployeeReadinessModule } from '../digital-employee/employee-readiness.
     EmployeeReadinessModule,
   ],
   controllers: [AdminController, AdminUploadController],
-  providers: [AdminService, AdminAuthService],
+  providers: [AdminService, AdminAuthService, EmployeeCopyDraftService],
   exports: [AdminService, AdminAuthService],
 })
 export class AdminModule {}

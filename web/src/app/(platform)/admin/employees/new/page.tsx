@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -14,7 +15,6 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import { adminApi } from '@/features/admin/admin-api';
 import {
   useAvailableCapabilities,
@@ -22,18 +22,16 @@ import {
   useDefaultEmployeeGiftCNY,
   useDefaultEmployeeGiftPercentage,
 } from '@/features/admin/use-admin';
-import { useEnabledModels } from '@/features/admin/use-models';
 import { parseGiftInput } from '@/features/admin/employee-gift';
+import { EmployeeCapabilityPicker } from '@/features/admin/employee-capability-picker';
 import { toast } from '@/components/ui/toast';
 import { ArrowLeft, Loader2 } from 'lucide-react';
-import { cn } from '@/lib/utils';
 import { DigitalEmployeeCreateDtoSchema } from '../../../../../../../backend/src/shared';
 import { z } from 'zod';
 
 const employeeFormSchema = DigitalEmployeeCreateDtoSchema.pick({
   name: true,
   description: true,
-  avatar: true,
   annualPriceCNY: true,
   includedComputeCNY: true,
 }).extend({
@@ -44,15 +42,15 @@ const employeeFormSchema = DigitalEmployeeCreateDtoSchema.pick({
 export default function NewEmployeePage() {
   const router = useRouter();
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [generatingCopy, setGeneratingCopy] = useState<'description' | 'systemPrompt' | null>(null);
+  const [copyDraftModel, setCopyDraftModel] = useState('');
   const [selectedCapabilities, setSelectedCapabilities] = useState<string[]>([]);
   const [formData, setFormData] = useState({
     name: '',
     description: '',
     industry: '通用',
     position: '通用',
-    avatar: '',
     systemPrompt: '你是一位专业的硅基员工，随时准备协助用户完成各项任务。',
-    modelId: 'gpt-4o',
     annualPriceCNY: 0,
   });
 
@@ -62,12 +60,11 @@ export default function NewEmployeePage() {
   const { data: defaultGift } = useDefaultEmployeeGiftCNY();
   const { data: defaultGiftPercentage } = useDefaultEmployeeGiftPercentage();
 
-  const { data: capabilitiesData, isLoading: capabilitiesLoading } = useAvailableCapabilities();
+  const { data: capabilitiesData, isLoading: capabilitiesLoading, isError: capabilitiesError } = useAvailableCapabilities();
 
   // Hook 已经提取了 items 数组，添加防御性检查
   const capabilities = Array.isArray(capabilitiesData) ? capabilitiesData : [];
   const bindCapabilitiesMutation = useBindCapabilities();
-  const { data: enabledModels, isLoading: modelsLoading } = useEnabledModels();
 
   const industries = [
     '通用',
@@ -112,10 +109,9 @@ export default function NewEmployeePage() {
       return;
     }
 
-    const { avatar, description, ...rest } = formData;
+    const { description, ...rest } = formData;
     const payload = {
       ...rest,
-      ...(avatar.trim() ? { avatar: avatar.trim() } : {}),
       ...(description.trim() ? { description: description.trim() } : {}),
       includedComputeCNY: gift,
     };
@@ -153,6 +149,32 @@ export default function NewEmployeePage() {
     }
   };
 
+  const generateCopyDraft = async (kind: 'description' | 'systemPrompt') => {
+    if (!formData.name.trim()) {
+      toast.error('请先填写员工名称');
+      return;
+    }
+    setGeneratingCopy(kind);
+    try {
+      const result = await adminApi.generateEmployeeCopyDraft({
+        kind,
+        employee: {
+          name: formData.name,
+          industry: formData.industry,
+          position: formData.position,
+          capabilities: capabilities.filter((capability) => selectedCapabilities.includes(capability.id))
+            .map(({ name, description }) => ({ name, description: description ?? '' })),
+        },
+      });
+      setFormData((current) => ({ ...current, [kind]: result.draft }));
+      setCopyDraftModel(result.modelId);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '文案生成失败，请稍后重试');
+    } finally {
+      setGeneratingCopy(null);
+    }
+  };
+
   return (
     <div className="container mx-auto py-6 max-w-4xl">
       <div className="mb-6">
@@ -185,8 +207,13 @@ export default function NewEmployeePage() {
             />
           </div>
 
+          <p className="text-sm text-muted-foreground">员工头像跟随平台头像风格配置；创建后可在 <Link href="/admin/employees/avatar-styles" className="text-primary underline-offset-4 hover:underline">头像风格管理</Link> 中单独调整。</p>
+
           <div className="space-y-2">
-            <Label htmlFor="description">描述</Label>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <Label htmlFor="description">员工简介</Label>
+              <Button type="button" variant="outline" size="sm" disabled={generatingCopy !== null} loading={generatingCopy === 'description'} onClick={() => void generateCopyDraft('description')}>AI 生成简介</Button>
+            </div>
             <Textarea
               id="description"
               value={formData.description}
@@ -195,6 +222,7 @@ export default function NewEmployeePage() {
               maxLength={2000}
               rows={4}
             />
+            <p className="text-xs text-muted-foreground">AI 生成内容仅作为草稿，可继续修改；也可以直接填写。{copyDraftModel ? `当前生成模型：${copyDraftModel}` : '使用平台当前可用的默认会话模型。'}</p>
           </div>
 
           <div className="grid grid-cols-2 gap-4">
@@ -238,18 +266,10 @@ export default function NewEmployeePage() {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="avatar">头像地址</Label>
-            <Input
-              id="avatar"
-              type="text"
-              value={formData.avatar}
-              onChange={(e) => setFormData({ ...formData, avatar: e.target.value })}
-              placeholder="/assets/employees/silicon/frontend-engineer.webp"
-            />
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="systemPrompt">系统提示词</Label>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <Label htmlFor="systemPrompt">系统提示词</Label>
+              <Button type="button" variant="outline" size="sm" disabled={generatingCopy !== null} loading={generatingCopy === 'systemPrompt'} onClick={() => void generateCopyDraft('systemPrompt')}>AI 生成提示词</Button>
+            </div>
             <Textarea
               id="systemPrompt"
               value={formData.systemPrompt}
@@ -257,36 +277,7 @@ export default function NewEmployeePage() {
               placeholder="定义该员工的人设和行为规范"
               rows={6}
             />
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="modelId">模型</Label>
-            <Select
-              value={formData.modelId}
-              onValueChange={(value) => setFormData({ ...formData, modelId: value })}
-              disabled={modelsLoading}
-            >
-              <SelectTrigger id="modelId">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {modelsLoading ? (
-                  <div className="p-2 text-center text-sm text-muted-foreground">
-                    <Loader2 className="h-4 w-4 animate-spin mx-auto" />
-                  </div>
-                ) : !enabledModels || enabledModels.length === 0 ? (
-                  <div className="p-2 text-center text-sm text-muted-foreground">
-                    暂无可用模型
-                  </div>
-                ) : (
-                  enabledModels.map((model) => (
-                    <SelectItem key={model.id} value={model.id}>
-                      {model.label}
-                    </SelectItem>
-                  ))
-                )}
-              </SelectContent>
-            </Select>
+            <p className="text-xs text-muted-foreground">建议控制在 250 到 600 字，包含工作目标、可用能力和行为边界；生成后可继续修改。</p>
           </div>
 
           <div className="grid grid-cols-2 gap-4">
@@ -331,71 +322,13 @@ export default function NewEmployeePage() {
           </div>
 
           <div className="space-y-4 pt-4 border-t">
-            <div>
-              <Label>绑定能力 *</Label>
-              <p className="text-sm text-muted-foreground mb-3">
-                选择此员工可以使用的能力（至少选择一个）
-              </p>
-            </div>
-
             <div className="mb-4 p-4 bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 rounded-lg">
               <p className="text-sm text-blue-800 dark:text-blue-300">
                 💡 <strong>提示：</strong>选择的能力会按顺序设置优先级，可以在「高级管理」中调整。
               </p>
             </div>
 
-            {capabilitiesLoading ? (
-              <div className="text-center py-8 text-muted-foreground">
-                <Loader2 className="h-6 w-6 animate-spin mx-auto mb-2" />
-                加载能力列表...
-              </div>
-            ) : !capabilities || capabilities.length === 0 ? (
-              <div className="text-center py-8 text-muted-foreground">
-                <p>暂无可用能力</p>
-              </div>
-            ) : (
-              <div className="grid gap-3 sm:grid-cols-2">
-                {capabilities.map((cap: any) => (
-                  <label
-                    key={cap.id}
-                    className={cn(
-                      'flex items-start gap-3 p-4 border rounded-lg cursor-pointer transition-colors',
-                      selectedCapabilities.includes(cap.id)
-                        ? 'border-primary bg-primary/5'
-                        : 'border-border hover:bg-muted/50'
-                    )}
-                  >
-                    <input
-                      type="checkbox"
-                      className="mt-1"
-                      checked={selectedCapabilities.includes(cap.id)}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setSelectedCapabilities([...selectedCapabilities, cap.id]);
-                        } else {
-                          setSelectedCapabilities(
-                            selectedCapabilities.filter((id) => id !== cap.id)
-                          );
-                        }
-                      }}
-                    />
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium">{cap.name}</p>
-                      <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
-                        {cap.description}
-                      </p>
-                      <Badge variant="secondary" className="mt-2">
-                        {cap.type}
-                      </Badge>
-                    </div>
-                  </label>
-                ))}
-              </div>
-            )}
-
-            {selectedCapabilities.length === 0 && (
-              <p className="text-sm text-gdanger">* 请至少选择一个能力</p>
-            )}
+            <EmployeeCapabilityPicker capabilities={capabilities} selectedIds={selectedCapabilities} onChange={setSelectedCapabilities} isLoading={capabilitiesLoading} isError={capabilitiesError} />
           </div>
 
           <div className="flex gap-4 pt-4">

@@ -12,6 +12,7 @@ import {
   Request,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiResponse, ApiQuery } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { AdminService } from './admin.service';
 import { AdminAuthService } from './admin-auth.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -21,6 +22,8 @@ import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { z } from 'zod';
 import { UserRole, UserStatus } from '@prisma/client';
 import { CapabilityUploadDtoSchema, CnyAmountSchema, DigitalEmployeeCreateDtoSchema, EmployeeAvatarUrlSchema } from 'shared';
+import { EmployeeCopyDraftDtoSchema, type EmployeeCopyDraftDto } from '../../shared/employee-copy.dto';
+import { EmployeeCopyDraftService } from './employee-copy-draft.service';
 
 const EmployeeDescriptionSchema = z.string().trim().min(1, '描述不能为空')
   .max(DigitalEmployeeCreateDtoSchema.shape.description.maxLength ?? 2000);
@@ -141,6 +144,7 @@ export class AdminController {
   constructor(
     private readonly adminService: AdminService,
     private readonly adminAuthService: AdminAuthService,
+    private readonly employeeCopyDraftService: EmployeeCopyDraftService,
   ) {}
 
   @Get('stats')
@@ -399,6 +403,18 @@ export class AdminController {
       includedComputeCNY: dto.includedComputeCNY,
       operatorId: req.user.id,
     });
+  }
+
+  @Post('employees/copy-draft')
+  @Throttle({ chat: { ttl: 60000, limit: 10 } })
+  @ApiOperation({ summary: '根据员工信息生成简介或系统提示词草稿' })
+  @ApiResponse({ status: 201, description: '返回可编辑文案及使用的平台模型来源' })
+  @ApiResponse({ status: 400, description: '员工信息无效或超出输入限制' })
+  @ApiResponse({ status: 502, description: '文案模型暂时不可用' })
+  generateEmployeeCopyDraft(
+    @Body(new ZodValidationPipe(EmployeeCopyDraftDtoSchema)) dto: EmployeeCopyDraftDto,
+  ) {
+    return this.employeeCopyDraftService.generate(dto);
   }
 
   @Get('employees/avatar-styles')
