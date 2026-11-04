@@ -57,3 +57,13 @@ describe('description relaxation scope', () => {
     }).success).toBe(false);
   });
 });
+
+describe('employee name length', () => {
+  it('accepts names longer than 100 characters for create and update', () => {
+    const name = '员'.repeat(101);
+    expect(DigitalEmployeeCreateDtoSchema.safeParse({
+      name, description: '员工描述', industry: '通用', position: '通用', systemPrompt: '足够长的员工系统提示词内容',
+    }).success).toBe(true);
+    expect(DigitalEmployeeUpdateDtoSchema.safeParse({ name }).success).toBe(true);
+  });
+});

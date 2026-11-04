@@ -16,6 +16,7 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { adminApi, type EmployeeDetail } from '@/features/admin/admin-api';
+import { ApiError } from '@/lib/api-client';
 import {
   useAvailableCapabilities,
   useEmployeeBindings,
@@ -163,7 +164,11 @@ export default function EditEmployeePage() {
       toast.success('员工信息更新成功');
       router.push('/admin/employees');
     } catch (error: any) {
-      toast.error(error.message || '更新失败');
+      const errors = error instanceof ApiError && typeof error.body === 'object' && error.body !== null
+        ? (error.body as { errors?: Array<{ field: string; message: string }> }).errors
+        : undefined;
+      const details = errors?.map(({ field, message }) => `${field}: ${message}`).join('；');
+      toast.error(details ? `请求参数校验失败：${details}` : error.message || '更新失败');
     } finally {
       setIsSubmitting(false);
     }
@@ -208,7 +213,6 @@ export default function EditEmployeePage() {
               value={formData.name}
               onChange={(e) => setFormData({ ...formData, name: e.target.value })}
               placeholder="例如：智能客服助手"
-              maxLength={100}
             />
           </div>
 

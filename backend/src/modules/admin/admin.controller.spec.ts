@@ -28,12 +28,24 @@ describe('AdminController shared form contracts', () => {
     }
   });
 
+  it.each(['createEmployee', 'updateEmployee'] as const)('%s accepts employee names longer than 100 characters', (method) => {
+    const name = '员'.repeat(101);
+    expect(parseBody(method, { name })).toMatchObject({ name });
+  });
+
   it.each(['createEmployee', 'updateEmployee'] as const)('%s preserves optional description and enforces its 2000 limit', (method) => {
     expect(parseBody(method, { name: '测试员工' })).not.toHaveProperty('description');
     expect(parseBody(method, { name: '测试员工', description: 'x'.repeat(2000) }).description).toHaveLength(2000);
-    for (const description of [' \n ', 'x'.repeat(2001)]) {
-      expect(() => parseBody(method, { name: '测试员工', description })).toThrow(BadRequestException);
+    expect(() => parseBody(method, { name: '测试员工', description: 'x'.repeat(2001) })).toThrow(BadRequestException);
+    if (method === 'createEmployee') {
+      expect(() => parseBody(method, { name: '测试员工', description: ' \n ' })).toThrow(BadRequestException);
     }
+  });
+
+  it('allows clearing an employee description while updating, but still enforces the length limit', () => {
+    expect(parseBody('updateEmployee', { name: '抖音市场分析师_硅进', description: '   ' }))
+      .toMatchObject({ name: '抖音市场分析师_硅进', description: '' });
+    expect(() => parseBody('updateEmployee', { description: 'x'.repeat(2001) })).toThrow(BadRequestException);
   });
 
   it.each(['createCapabilityAdmin', 'updateCapabilityAdmin'] as const)('%s accepts short descriptions and the 100/2000 budget', (method) => {

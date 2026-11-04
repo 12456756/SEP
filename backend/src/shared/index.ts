@@ -1129,7 +1129,7 @@ export const EmployeeAvatarUrlSchema = z.union([
 ]);
 
 export const DigitalEmployeeCreateDtoSchema = z.object({
-  name: z.string().min(1).max(100),
+  name: z.string().min(1),
   description: z.string().trim().min(1).max(2000),
   industry: z.string(),
   position: z.string(),
@@ -1155,7 +1155,7 @@ export type DigitalEmployeeCreateDto = z.infer<
 >;
 
 export const DigitalEmployeeUpdateDtoSchema = z.object({
-  name: z.string().min(1).max(100).optional(),
+  name: z.string().min(1).optional(),
   description: z.string().trim().min(1).max(2000).optional(),
   industry: z.string().optional(),
   position: z.string().optional(),

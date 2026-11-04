@@ -182,7 +182,6 @@ export default function NewEmployeePage() {
               value={formData.name}
               onChange={(e) => setFormData({ ...formData, name: e.target.value })}
               placeholder="例如：智能客服助手"
-              maxLength={100}
             />
           </div>
 

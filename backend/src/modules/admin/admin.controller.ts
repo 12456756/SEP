@@ -53,7 +53,7 @@ const RejectEmployeeSchema = z.object({
 });
 
 const CreateEmployeeSchema = z.object({
-  name: z.string().min(1, '员工名称不能为空').max(100, '名称不能超过100字符'),
+  name: z.string().min(1, '员工名称不能为空'),
   description: EmployeeDescriptionSchema.optional(),
   industry: z.string().optional(),
   position: z.string().optional(),
@@ -69,8 +69,8 @@ const CreateEmployeeSchema = z.object({
 });
 
 const UpdateEmployeeSchema = z.object({
-  name: z.string().min(1, '员工名称不能为空').max(100, '名称不能超过100字符').optional(),
-  description: EmployeeDescriptionSchema.optional(),
+  name: z.string().min(1, '员工名称不能为空').optional(),
+  description: z.string().trim().max(DigitalEmployeeCreateDtoSchema.shape.description.maxLength ?? 2000).optional(),
   industry: z.string().optional(),
   position: z.string().optional(),
   avatar: OptionalEmployeeAvatarSchema,
