@@ -9,6 +9,7 @@ import * as crypto from "crypto";
 import { mkdir, readFile, writeFile } from "fs/promises";
 import { basename, resolve, sep } from "path";
 import AdmZip from "adm-zip";
+import { isSupportedArchiveFilename, normalizeArchive } from '../archive/archive-normalizer';
 import { StorageService } from '../upload/storage/storage.service';
 
 export const RPA_PACKAGE_MAX_BYTES = 50 * 1024 * 1024;
@@ -56,25 +57,37 @@ export class RpaPackageService {
 
   async store(file: Express.Multer.File): Promise<StoredRpaPackage> {
     if (!file?.buffer?.length) throw new BadRequestException("未上传 RPA 包");
-    if (!/\.zip$/i.test(file.originalname))
-      throw new BadRequestException("RPA 只支持 .zip 文件");
+    if (!isSupportedArchiveFilename(file.originalname))
+      throw new BadRequestException("仅支持 ZIP、TAR、TAR.GZ 或 TGZ 压缩包");
     if (file.buffer.length > RPA_PACKAGE_MAX_BYTES) {
       throw new BadRequestException(
         `RPA 包不能超过 ${Math.floor(RPA_PACKAGE_MAX_BYTES / 1024 / 1024)}MB`,
       );
     }
-    this.assertZipMagic(file.buffer);
+    let buffer: Buffer;
+    try {
+      buffer = await normalizeArchive(file.originalname, file.buffer, {
+        maxEntries: MAX_ENTRIES,
+        maxUncompressedBytes: MAX_UNCOMPRESSED_BYTES,
+      });
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : '压缩包无法解析');
+    }
+    if (buffer.length > RPA_PACKAGE_MAX_BYTES) {
+      throw new BadRequestException('转换后的 RPA ZIP 不能超过 50MB');
+    }
+    this.assertZipMagic(buffer);
     const sha256 = crypto
       .createHash("sha256")
-      .update(file.buffer)
+      .update(buffer)
       .digest("hex");
-    const parsed = this.parse(file.buffer, sha256);
+    const parsed = this.parse(buffer, sha256);
     if (this.usesSharedStorage()) {
-      await this.storage!.put({ key: parsed.key, buffer: file.buffer, mime: 'application/zip', filename: file.originalname });
+      await this.storage!.put({ key: parsed.key, buffer, mime: 'application/zip', filename: file.originalname });
     } else {
       await mkdir(this.root, { recursive: true });
       try {
-        await writeFile(this.resolveStoredPath(parsed.key), file.buffer, { flag: "wx" });
+        await writeFile(this.resolveStoredPath(parsed.key), buffer, { flag: "wx" });
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       }

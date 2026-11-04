@@ -12,6 +12,7 @@ import type { CurrentPlatformVersion } from './admin-api';
  */
 export interface AdminCapabilityRow extends Capability {
   currentPlatformVersion: CurrentPlatformVersion | null;
+  pendingPlatformVersion: { id: string; capabilityId: string; version: string; updatedAt: string } | null;
   enterpriseId: string | null;
   visibility: 'ENTERPRISE_PRIVATE' | 'MARKET_PUBLIC';
   platformReviewStatus:

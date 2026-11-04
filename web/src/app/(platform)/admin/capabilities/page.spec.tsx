@@ -2,13 +2,14 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import CapabilitiesPage from './page';
 
-const { list, approve, reject } = vi.hoisted(() => ({ list: vi.fn(), approve: vi.fn(), reject: vi.fn() }));
+const { list, approve, reject, reviewSkill } = vi.hoisted(() => ({ list: vi.fn(), approve: vi.fn(), reject: vi.fn(), reviewSkill: vi.fn() }));
 vi.mock('@/features/admin/use-admin', () => ({
   useAllCapabilities: list,
   useApproveCapability: () => ({ mutate: approve }),
   useRejectCapability: () => ({ mutate: reject }),
   useDeleteCapability: () => ({ mutate: vi.fn() }),
 }));
+vi.mock('../skills/use-skill-monitor', () => ({ useMonitorReview: () => ({ mutateAsync: reviewSkill, isPending: false }) }));
 
 function capability(overrides: Record<string, unknown> = {}) {
   return { id: 'skill-1', name: '写作技能', description: '文案生成', type: 'SKILL', status: 'PENDING',
@@ -65,11 +66,23 @@ describe('能力管理监控入口', () => {
     render(<CapabilitiesPage />);
     const row = within(screen.getByRole('row', { name: /写作技能/ }));
     expect(row.getByRole('link', { name: '技能监控' })).toHaveAttribute('href', '/admin/skills?capabilityId=skill-1&scope=PLATFORM');
-    expect(row.queryByRole('button', { name: '通过' })).not.toBeInTheDocument();
+    expect(row.queryByRole('button', { name: '审核通过' })).not.toBeInTheDocument();
     expect(row.queryByRole('button', { name: '驳回' })).not.toBeInTheDocument();
     expect(row.queryByRole('link', { name: /审核/ })).not.toBeInTheDocument();
     expect(approve).not.toHaveBeenCalled();
     expect(reject).not.toHaveBeenCalled();
+  });
+
+  it('平台待审技能可从能力列表直接审核确切待审版本', async () => {
+    list.mockReturnValue({ data: { items: [capability({
+      pendingPlatformVersion: { id: 'pending-version-1', capabilityId: 'skill-1', version: '1.0.0', updatedAt: '2026-10-10T00:00:00Z' },
+    })] } });
+    reviewSkill.mockResolvedValue({});
+    render(<CapabilitiesPage />);
+    fireEvent.click(screen.getByRole('button', { name: '审核通过' }));
+    expect(screen.getByRole('dialog')).toHaveTextContent('待审平台版本 v1.0.0');
+    fireEvent.click(screen.getByRole('button', { name: '确认审核通过' }));
+    await vi.waitFor(() => expect(reviewSkill).toHaveBeenCalledWith({ id: 'pending-version-1', decision: 'APPROVE' }));
   });
 
   it('非技能平台能力保留行内通过与驳回操作', () => {

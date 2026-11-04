@@ -772,11 +772,11 @@ export function SkillImportPanel({
           </TabsContent>
           <TabsContent value="zip" className="space-y-3">
             <div className="space-y-2">
-              <Label htmlFor="file">Zip 文件（必须包含 SKILL.md）</Label>
+              <Label htmlFor="file">技能压缩包（必须包含 SKILL.md）</Label>
               <Input
                 id="file"
                 type="file"
-                accept=".zip,application/zip"
+                accept=".zip,.tar,.tar.gz,.tgz,application/zip,application/gzip,application/x-tar"
                 disabled={zipBusy}
                 onChange={(event) => {
                   const file = event.target.files?.[0];

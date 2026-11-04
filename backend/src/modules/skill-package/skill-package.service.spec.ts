@@ -6,6 +6,8 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { deflateRawSync, inflateRawSync } from 'zlib';
 import AdmZip from 'adm-zip';
+import tar from 'tar-stream';
+import { gzipSync } from 'node:zlib';
 import { StorageService } from '../upload/storage/storage.service';
 import { SKILL_PACKAGE_MAX_BYTES, SkillPackageService } from './skill-package.service';
 
@@ -54,6 +56,22 @@ function zipWithRawName(maliciousName: string, markdown = SKILL_BODY): Buffer {
 
 function upload(buffer: Buffer, originalname = 'skill.zip'): Express.Multer.File {
   return { buffer, originalname, size: buffer.length } as Express.Multer.File;
+}
+
+function tarWith(entries: Array<[string, string]>): Promise<Buffer> {
+  const pack = tar.pack();
+  const chunks: Buffer[] = [];
+  pack.on('data', (chunk: Buffer) => chunks.push(chunk));
+  const done = new Promise<Buffer>((resolve, reject) => {
+    pack.on('error', reject);
+    pack.on('end', () => resolve(Buffer.concat(chunks)));
+  });
+  for (const [name, content] of entries) {
+    const body = Buffer.from(content);
+    pack.entry({ name, size: body.length }, body);
+  }
+  pack.finalize();
+  return done;
 }
 
 describe('SkillPackageService', () => {
@@ -110,6 +128,35 @@ describe('SkillPackageService', () => {
       );
       expect(stored.fileCount).toBe(2);
       expect(stored.content.startsWith('# 角色')).toBe(true);
+    });
+
+    it('兼容 Windows ZIP 反斜杠目录并将存储包规范化为正斜杠', async () => {
+      const zip = new AdmZip();
+      zip.addFile('SKILL.md', Buffer.from(installableMarkdown()));
+      zip.addFile('placeholder.txt', Buffer.from('参考资料'));
+      zip.getEntry('placeholder.txt')!.entryName = 'references\\guide.md';
+      zip.addFile('placeholder-dir/', Buffer.alloc(0)).entryName = 'references\\';
+
+      const stored = await service.store(upload(zip.toBuffer()));
+      const installable = await service.readInstallablePackage(stored.sha256);
+      const normalizedZip = new AdmZip(installable.buffer);
+
+      expect(normalizedZip.getEntry('references/guide.md')?.getData().toString()).toBe('参考资料');
+      expect(normalizedZip.getEntry('references/')).toBeDefined();
+      expect(normalizedZip.getEntries().map((entry) => entry.entryName)).not.toContain('references\\guide.md');
+      expect(normalizedZip.getEntries().map((entry) => entry.entryName)).not.toContain('references\\');
+    });
+
+    it.each(['skill.tar', 'skill.tar.gz', 'skill.tgz'])('将 %s 转换为已校验的 ZIP 存储', async (filename) => {
+      const tarBuffer = await tarWith([['./SKILL.md', installableMarkdown()], ['./references/guide.md', 'guide']]);
+      const source = filename === 'skill.tar' ? tarBuffer : gzipSync(tarBuffer);
+      const stored = await service.store(upload(source, filename));
+      const installable = await service.readInstallablePackage(stored.sha256);
+      const zip = new AdmZip(installable.buffer);
+
+      expect(zip.getEntry('SKILL.md')?.getData().toString()).toContain('name: weekly');
+      expect(zip.getEntry('references/guide.md')?.getData().toString()).toBe('guide');
+      expect(stored.key).toBe(`skills/${stored.sha256}.zip`);
     });
   });
 
@@ -508,7 +555,7 @@ describe('SkillPackageService', () => {
 
     it.each([
       '', './resource.txt', 'weekly/./resource.txt', 'weekly//resource.txt',
-      'weekly/resource:stream', 'weekly\\resource.txt', 'weekly\u0000resource.txt',
+      'weekly/resource:stream', 'weekly\u0000resource.txt',
       'weekly\nresource.txt', 'weekly\u007fresource.txt', 'a'.repeat(1025),
       './resources/', 'weekly//resources/',
     ])('上传与安装均拒绝不安全条目：%j', async (entryName) => {
@@ -517,10 +564,12 @@ describe('SkillPackageService', () => {
       await rejectPackage(buffer);
     });
 
-    it('拒绝反斜线入口，避免严格入口与旧 parse 的 basename 结果不一致', () => {
+    it('上传时规范化反斜线技能入口', async () => {
       const zip = new AdmZip();
       zip.addFile('placeholder', Buffer.from(installableMarkdown())).entryName = 'weekly\\SKILL.md';
-      return rejectPackage(zip.toBuffer());
+      const stored = await service.store(upload(zip.toBuffer()));
+      const installable = await service.readInstallablePackage(stored.sha256);
+      expect(installable.entryPath).toBe('weekly/SKILL.md');
     });
 
     it('接受 1024 字符安全附件路径与合法空 STORED 资源', async () => {

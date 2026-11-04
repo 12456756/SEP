@@ -26,6 +26,11 @@ describe('EmployeeCopyDraftService', () => {
     },
   };
 
+  const streamed = (content: string) => new Response(
+    `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\ndata: [DONE]\n\n`,
+    { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+  );
+
   beforeEach(() => {
     jest.clearAllMocks();
     settings.getEffectiveValue.mockImplementation(async (key: string) => ({
@@ -35,10 +40,7 @@ describe('EmployeeCopyDraftService', () => {
     }[key]));
     runtimePolicy.getSnapshot.mockResolvedValue({ values: { PLANNER_REQUEST_TIMEOUT_MS: 5000 } });
     prisma.platformModel.findMany.mockResolvedValue([{ modelId: 'platform-model' }, { modelId: 'fallback-model' }]);
-    fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({
-      ok: true,
-      json: async () => ({ choices: [{ message: { content: '  生成草稿  ' } }] }),
-    } as Response);
+    fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue(streamed('  生成草稿  '));
     service = new EmployeeCopyDraftService(settings as never, runtimePolicy as never, prisma as never);
   });
 
@@ -57,6 +59,7 @@ describe('EmployeeCopyDraftService', () => {
     }));
     const requestBody = JSON.parse(fetchSpy.mock.calls[0][1].body as string);
     expect(requestBody.model).toBe('platform-model');
+    expect(requestBody.stream).toBe(true);
     expect(requestBody.messages[0].content).toContain('企业选购页展示');
     expect(requestBody.messages[0].content).toContain('30 到 60 个汉字');
     expect(requestBody.max_tokens).toBe(900);
@@ -96,15 +99,20 @@ describe('EmployeeCopyDraftService', () => {
   });
 
   it('rejects empty and oversized model output', async () => {
-    fetchSpy.mockResolvedValueOnce({ ok: true, json: async () => ({ choices: [{ message: { content: '  ' } }] }) } as Response);
+    fetchSpy.mockResolvedValueOnce(streamed('  '));
     await expect(service.generate(input)).rejects.toBeInstanceOf(BadGatewayException);
 
-    fetchSpy.mockResolvedValueOnce({ ok: true, json: async () => ({ choices: [{ message: { content: 'x'.repeat(3001) } }] }) } as Response);
+    fetchSpy.mockResolvedValueOnce(streamed('x'.repeat(3001)));
     await expect(service.generate(input)).rejects.toThrow('文案模型返回内容过长');
   });
 
   it('maps relay errors to a user-safe upstream error', async () => {
-    fetchSpy.mockResolvedValue({ ok: false, text: async () => 'private upstream details' } as Response);
+    fetchSpy.mockResolvedValue(new Response('private upstream details', { status: 503 }));
     await expect(service.generate(input)).rejects.toThrow('文案模型暂时不可用');
+  });
+
+  it('maps transport failures without exposing upstream or credential details', async () => {
+    fetchSpy.mockRejectedValueOnce(new Error('private transport detail'));
+    await expect(service.generate(input)).rejects.toThrow('文案生成暂时失败');
   });
 });

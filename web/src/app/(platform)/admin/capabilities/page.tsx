@@ -37,6 +37,7 @@ import {
   useDeleteCapability,
   type AdminCapabilityRow,
 } from '@/features/admin/use-admin';
+import { useMonitorReview } from '../skills/use-skill-monitor';
 import { CAPABILITY_TYPE_META, cn } from '@/lib/utils';
 import { common } from '@/locales/zh-CN';
 
@@ -83,11 +84,13 @@ export default function CapabilitiesPage() {
   const [rejecting, setRejecting] = useState<AdminCapabilityRow | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [deleting, setDeleting] = useState<AdminCapabilityRow | null>(null);
+  const [approvingSkill, setApprovingSkill] = useState<AdminCapabilityRow | null>(null);
 
   const query = useAllCapabilities(status === 'ALL' ? undefined : status);
   const approve = useApproveCapability();
   const reject = useRejectCapability();
   const remove = useDeleteCapability();
+  const reviewSkill = useMonitorReview();
 
   const visible = useMemo(() => {
     const items = query.data?.items ?? [];
@@ -124,6 +127,17 @@ export default function CapabilitiesPage() {
         onError: (e) => toast.error(e instanceof Error ? e.message : '驳回失败'),
       },
     );
+  };
+
+  const handleApproveSkill = async () => {
+    if (!approvingSkill?.pendingPlatformVersion) return;
+    try {
+      await reviewSkill.mutateAsync({ id: approvingSkill.pendingPlatformVersion.id, decision: 'APPROVE' });
+      toast.success(`技能「${approvingSkill.name}」已审核通过`, '当前待审版本已发布为平台版本');
+      setApprovingSkill(null);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : '审核失败');
+    }
   };
 
   const handleDelete = () => {
@@ -285,6 +299,17 @@ export default function CapabilitiesPage() {
                               </Button>
                             </Link>
                           )}
+                          {pending && skill && !cap.enterpriseId && cap.pendingPlatformVersion && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              disabled={reviewSkill.isPending}
+                              onClick={() => setApprovingSkill(cap)}
+                            >
+                              <Check className="mr-1 h-3.5 w-3.5" />
+                              审核通过
+                            </Button>
+                          )}
                           {pending && !skill && contribution && (
                             <Link href={`/admin/contributions?selected=${encodeURIComponent(cap.id)}`}>
                               <Button variant="ghost" size="sm">
@@ -378,6 +403,18 @@ export default function CapabilitiesPage() {
         confirmText="删除"
         variant="danger"
         onConfirm={handleDelete}
+      />
+
+      <ConfirmDialog
+        open={Boolean(approvingSkill)}
+        onOpenChange={(open) => !open && !reviewSkill.isPending && setApprovingSkill(null)}
+        title="审核通过技能"
+        description={approvingSkill
+          ? `确认通过「${approvingSkill.name}」的待审平台版本 v${approvingSkill.pendingPlatformVersion?.version ?? '-'}？通过后会立即公开并供硅基员工使用。`
+          : ''}
+        confirmText="确认审核通过"
+        loading={reviewSkill.isPending}
+        onConfirm={handleApproveSkill}
       />
     </div>
   );

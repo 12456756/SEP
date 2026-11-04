@@ -14,7 +14,7 @@
     "assets:check": "node scripts/sync-employee-avatar-assets.mjs --check",
     "dev:backend": "pnpm --filter backend dev",
     "dev:web": "pnpm --filter web dev",
-    "dev": "concurrently \"pnpm dev:backend\" \"pnpm dev:web\"",
+    "dev": "pnpm --parallel --stream --filter backend --filter web dev",
     "build": "pnpm --filter backend build && pnpm --filter web build",
     "build:backend": "pnpm --filter backend build",
     "build:web": "pnpm --filter web build",

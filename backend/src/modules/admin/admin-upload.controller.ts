@@ -39,7 +39,7 @@ export class AdminUploadController {
   ) {}
 
   @Post('upload-skill')
-  @ApiOperation({ summary: '上传 SKILL.md zip 包' })
+  @ApiOperation({ summary: '上传 SKILL.md 压缩包（ZIP/TAR/TAR.GZ/TGZ）' })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
     schema: {
@@ -48,7 +48,7 @@ export class AdminUploadController {
         file: {
           type: 'string',
           format: 'binary',
-          description: 'zip 文件（必须包含 SKILL.md）',
+          description: 'ZIP、TAR、TAR.GZ 或 TGZ 文件（必须包含 SKILL.md）',
         },
       },
     },

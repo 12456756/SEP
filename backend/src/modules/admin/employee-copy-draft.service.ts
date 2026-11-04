@@ -52,6 +52,7 @@ export class EmployeeCopyDraftService {
         ],
         temperature: 0.4,
         max_tokens: MAX_OUTPUT_TOKENS,
+        stream: true,
       };
       lifecycle.assertActive();
       response = await lifecycle.wait(fetch(`${provider.baseURL}/chat/completions`, {
@@ -61,23 +62,63 @@ export class EmployeeCopyDraftService {
         body: JSON.stringify(body),
       }));
       if (!response.ok) {
-        await lifecycle.wait(response.text());
+        this.logger.warn(`Employee copy draft upstream rejected kind=${dto.kind} model=${modelId} status=${response.status}`);
         throw new BadGatewayException('文案模型暂时不可用，请稍后重试');
       }
-      const result = await lifecycle.wait(response.json()) as { choices?: Array<{ message?: { content?: unknown } }> };
-      lifecycle.assertActive();
-      const draft = result.choices?.[0]?.message?.content;
-      if (typeof draft !== 'string' || !draft.trim()) throw new BadGatewayException('文案模型没有返回内容，请重试');
+      const draft = await this.readStream(response, lifecycle);
+      if (!draft.trim()) throw new BadGatewayException('文案模型没有返回内容，请重试');
       if (draft.length > MAX_OUTPUT_CHARACTERS) throw new BadGatewayException('文案模型返回内容过长，请重试');
       return { draft: draft.trim(), modelId, modelSource: 'PLATFORM_DEFAULT' as const };
     } catch (error) {
       if (lifecycle.signal.aborted) throw lifecycle.signal.reason;
       if (error instanceof BadGatewayException) throw error;
-      this.logger.warn(`Employee copy draft failed kind=${dto.kind} status=upstream`);
+      const errorType = error instanceof Error ? error.constructor.name : typeof error;
+      this.logger.warn(`Employee copy draft failed kind=${dto.kind} model=${modelId} error=${errorType}`);
       throw new BadGatewayException('文案生成暂时失败，请稍后重试或手动填写');
     } finally {
       lifecycle.dispose();
       if (response?.body && !response.body.locked) await response.body.cancel().catch(() => undefined);
+    }
+  }
+
+  private async readStream(response: Response, lifecycle: ModelRequestLifecycle): Promise<string> {
+    if (!response.body) throw new BadGatewayException('文案模型没有返回内容，请重试');
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let draft = '';
+    try {
+      while (true) {
+        const { done, value } = await lifecycle.wait(reader.read());
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) continue;
+          const payload = trimmed.slice(5).trim();
+          if (!payload || payload === '[DONE]') continue;
+          try {
+            const event = JSON.parse(payload) as { choices?: Array<{ delta?: { content?: unknown } }> };
+            const delta = event.choices?.[0]?.delta?.content;
+            if (typeof delta === 'string') {
+              draft += delta;
+              if (draft.length > MAX_OUTPUT_CHARACTERS) {
+                await reader.cancel().catch(() => undefined);
+                throw new BadGatewayException('文案模型返回内容过长，请重试');
+              }
+            }
+          } catch (error) {
+            if (error instanceof BadGatewayException) throw error;
+            // Ignore non-JSON event lines; partial lines are retained in buffer.
+          }
+        }
+      }
+      lifecycle.assertActive();
+      return draft;
+    } finally {
+      await reader.cancel().catch(() => undefined);
     }
   }
 

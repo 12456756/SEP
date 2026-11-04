@@ -12,7 +12,7 @@ export function RpaPackageUpload({ value, onChange }: { value: RpaPackageParseRe
   const upload = useUploadRpaPackage();
   const choose = async (file?: File) => {
     if (!file) return;
-    if (!file.name.toLowerCase().endsWith('.zip')) { toast.error('请选择 .zip 文件'); return; }
+    if (!/\.(?:zip|tar|tgz|tar\.gz)$/i.test(file.name)) { toast.error('请选择 ZIP、TAR、TAR.GZ 或 TGZ 文件'); return; }
     try { onChange(await upload.mutateAsync(file)); }
     catch (error) { toast.error(error instanceof Error ? error.message : 'RPA 包上传失败'); }
     finally { if (input.current) input.current.value = ''; }
@@ -25,11 +25,11 @@ export function RpaPackageUpload({ value, onChange }: { value: RpaPackageParseRe
     </div>
   ) : (
     <div>
-      <input ref={input} type="file" accept=".zip,application/zip" className="sr-only" onChange={(event) => void choose(event.currentTarget.files?.[0])} />
+      <input ref={input} type="file" accept=".zip,.tar,.tar.gz,.tgz,application/zip,application/gzip,application/x-tar" className="sr-only" onChange={(event) => void choose(event.currentTarget.files?.[0])} />
       <button type="button" disabled={upload.isPending} onClick={() => input.current?.click()} className="flex min-h-40 w-full flex-col items-center justify-center gap-2 rounded-glass-lg border border-dashed border-glassline-brand bg-gbrand/5 p-6 text-center hover:bg-gbrand/10 disabled:opacity-60">
         <span className="grid h-11 w-11 place-items-center rounded-glass-lg border border-glassline-brand bg-gbrand/10 text-gbrand-text">{upload.isPending ? <Loader2 className="h-5 w-5 animate-spin" /> : <Upload className="h-5 w-5" />}</span>
-        <span className="text-sm font-medium text-gtext-primary">{upload.isPending ? '正在检查 ZIP 包…' : '点击选择 RPA ZIP 包'}</span>
-        <span className="max-w-md text-xs leading-5 text-gtext-muted">仅接受 ZIP，最大 50MB。平台会检查压缩包结构，不会执行其中任何文件；审核通过后其他用户可下载。</span>
+        <span className="text-sm font-medium text-gtext-primary">{upload.isPending ? '正在检查压缩包…' : '点击选择 RPA 压缩包'}</span>
+        <span className="max-w-md text-xs leading-5 text-gtext-muted">支持 ZIP、TAR、TAR.GZ 和 TGZ，最大 50MB。平台会检查压缩包结构，不会执行其中任何文件；审核通过后其他用户可下载。</span>
       </button>
     </div>
   );

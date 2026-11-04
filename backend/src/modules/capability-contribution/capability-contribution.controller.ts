@@ -107,7 +107,7 @@ export class CapabilityContributionController {
 
   @Post('skill-package')
   @ApiOperation({
-    summary: '上传 SKILL 包（zip，须含 SKILL.md）',
+    summary: '上传 SKILL 包（ZIP/TAR/TAR.GZ/TGZ，须含 SKILL.md）',
     description:
       '共享上传供运营首次创建和客户端使用，返回 sha256 与解析结果；上传本身不创建或替换技能版本。',
   })

@@ -81,11 +81,12 @@ describe('AdminService', () => {
     mockSettingService.getEffectiveValue.mockReset().mockResolvedValue('false');
     mockWalletService.adminDeposit.mockResolvedValue({ balance: 150 });
     mockWalletService.adminDeduct.mockResolvedValue({ balance: 50 });
+    mockPrismaService.skillVersion.findMany.mockResolvedValue([]);
     mockPrismaService.$transaction.mockImplementation((callback) => callback(mockPrismaService));
   });
 
   describe('listCapabilities', () => {
-    it('loads one minimal published platform version per capability without per-row queries', async () => {
+    it('loads minimal published and pending platform versions in batched queries', async () => {
       const version = {
         id: 'platform-v2', version: '1.0.1', platformReviewedAt: new Date('2026-10-10T00:00:00Z'),
       };
@@ -95,6 +96,9 @@ describe('AdminService', () => {
         { id: 'rpa', type: 'RPA', skillVersions: [] },
       ]);
       mockPrismaService.capability.count.mockResolvedValue(3);
+      mockPrismaService.skillVersion.findMany.mockResolvedValue([
+        { id: 'pending-1', capabilityId: 'skill-unpublished', version: '1.0.0', updatedAt: new Date('2026-10-11T00:00:00Z') },
+      ]);
 
       const result = await service.listCapabilities({ type: 'SKILL', page: 2, pageSize: 10 });
 
@@ -115,12 +119,14 @@ describe('AdminService', () => {
         }),
       }));
       expect(mockPrismaService.capability.count).toHaveBeenCalledWith({ where: { type: 'SKILL' } });
-      expect(mockPrismaService.skillVersion.findMany).not.toHaveBeenCalled();
+      expect(mockPrismaService.skillVersion.findMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: { capabilityId: { in: ['skill-published', 'skill-unpublished'] }, scope: 'PLATFORM', status: 'PENDING_PLATFORM_REVIEW' },
+      }));
       expect(result).toEqual({
         items: [
-          { id: 'skill-published', type: 'SKILL', currentPlatformVersion: version },
-          { id: 'skill-unpublished', type: 'SKILL', currentPlatformVersion: null },
-          { id: 'rpa', type: 'RPA', currentPlatformVersion: null },
+          { id: 'skill-published', type: 'SKILL', currentPlatformVersion: version, pendingPlatformVersion: null },
+          { id: 'skill-unpublished', type: 'SKILL', currentPlatformVersion: null, pendingPlatformVersion: { id: 'pending-1', capabilityId: 'skill-unpublished', version: '1.0.0', updatedAt: new Date('2026-10-11T00:00:00Z') } },
+          { id: 'rpa', type: 'RPA', currentPlatformVersion: null, pendingPlatformVersion: null },
         ],
         total: 3, page: 2, pageSize: 10,
       });
@@ -135,6 +141,7 @@ describe('AdminService', () => {
       const result = await service.listCapabilities();
       expect(result.items[0].currentPlatformVersion).toEqual(version);
       expect(result.items[0]).not.toHaveProperty('skillVersions');
+      expect(result.items[0].pendingPlatformVersion).toBeNull();
     });
 
     it.each([

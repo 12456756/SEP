@@ -6,6 +6,7 @@ import { basename, join, posix, resolve, sep } from 'path';
 import { TextDecoder } from 'util';
 import { inflateRawSync } from 'zlib';
 import AdmZip from 'adm-zip';
+import { isSupportedArchiveFilename, normalizeArchive } from '../archive/archive-normalizer';
 import { isSafeSkillPathComponent, SkillArtifactFrontmatterSchema } from 'shared';
 import { parseSkillMarkdown, prepareSkillMarkdown, SKILL_CONTENT_MAX_BYTES, skillLocalResourceReferences } from '../../shared/skill-content';
 import { SKILL_PACKAGE_MAX_BYTES, SKILL_PACKAGE_MAX_ENTRIES, SKILL_PACKAGE_MAX_UNCOMPRESSED_BYTES } from '../../shared/skill-content-schema';
@@ -92,18 +93,30 @@ export class SkillPackageService {
         `包不能超过 ${Math.floor(SKILL_PACKAGE_MAX_BYTES / 1024 / 1024)}MB`,
       );
     }
-    this.assertZipMagic(file.buffer);
-
-    const sha256 = crypto.createHash('sha256').update(file.buffer).digest('hex');
-    const parsed = this.packageContent(this.validatePackage(file.buffer, sha256));
+    if (!isSupportedArchiveFilename(file.originalname)) {
+      throw new BadRequestException('仅支持 ZIP、TAR、TAR.GZ 或 TGZ 压缩包');
+    }
+    let source: Buffer;
+    try {
+      source = await normalizeArchive(file.originalname, file.buffer, {
+        maxEntries: MAX_ENTRIES,
+        maxUncompressedBytes: MAX_UNCOMPRESSED_BYTES,
+      });
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : '压缩包无法解析');
+    }
+    this.assertZipMagic(source);
+    const buffer = this.normalizeEntrySeparators(source);
+    const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
+    const parsed = this.packageContent(this.validatePackage(buffer, sha256));
 
     if (this.usesSharedStorage()) {
-      await this.storage!.put({ key: parsed.key, buffer: file.buffer, mime: 'application/zip', filename: file.originalname });
+      await this.storage!.put({ key: parsed.key, buffer, mime: 'application/zip', filename: file.originalname });
     } else {
       await mkdir(this.root, { recursive: true });
       // wx：已存在就不重写。内容寻址下同名即同内容，重写只是浪费 IO。
       try {
-        await writeFile(this.resolveStoredPath(parsed.key), file.buffer, { flag: 'wx' });
+        await writeFile(this.resolveStoredPath(parsed.key), buffer, { flag: 'wx' });
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
       }
@@ -374,9 +387,31 @@ export class SkillPackageService {
     if (!entryName || entryName.length > 1024 || !path.split('/').every(isSafeSkillPathComponent)) {
       throw new BadRequestException('包内条目必须为安全相对路径');
     }
+    return entryName;
   }
 
-  private assertInstallableLocalHeader(buffer: Buffer, entry: AdmZip.IZipEntry) {
+  private normalizeEntrySeparators(buffer: Buffer): Buffer {
+    const entries = this.validateEntries(buffer);
+    const zip = new AdmZip(buffer);
+    const outputEntries = zip.getEntries();
+    let changed = false;
+
+    for (let index = 0; index < entries.length; index += 1) {
+      const normalized = this.assertInstallableLocalHeader(buffer, entries[index], true);
+      if (outputEntries[index].entryName !== normalized) {
+        outputEntries[index].entryName = normalized;
+        changed = true;
+      }
+    }
+
+    return changed ? zip.toBuffer() : buffer;
+  }
+
+  private assertInstallableLocalHeader(
+    buffer: Buffer,
+    entry: AdmZip.IZipEntry,
+    normalizeSeparators = false,
+  ): string {
     // adm-zip exposes central names only; streaming extractors may use local names.
     const { offset, flags, method, compressedSize } = entry.header;
     if (!Number.isSafeInteger(offset) || offset < 0 || offset + 30 > buffer.length ||
@@ -394,7 +429,9 @@ export class SkillPackageService {
       throw new BadRequestException('ZIP 本地文件头与中央目录不一致');
     }
     const name = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(localName);
-    this.assertInstallableEntryName(name, entry.isDirectory);
+    const validatedName = normalizeSeparators ? name.replace(/\\/g, '/') : name;
+    this.assertInstallableEntryName(validatedName, entry.isDirectory || validatedName.endsWith('/'));
+    return validatedName;
   }
 
   /** 只取展示用的文件名：去掉路径分隔符，限长，保留 .zip 后缀。 */

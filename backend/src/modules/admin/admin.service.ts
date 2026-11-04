@@ -945,10 +945,34 @@ export class AdminService {
       this.prisma.capability.count({ where }),
     ]);
 
+    const skillCapabilityIds = items
+      .filter((capability) => capability.type === 'SKILL')
+      .map((capability) => capability.id);
+    const pendingSkillVersions = skillCapabilityIds.length
+      ? await this.prisma.skillVersion.findMany({
+        where: {
+          capabilityId: { in: skillCapabilityIds },
+          scope: 'PLATFORM',
+          status: 'PENDING_PLATFORM_REVIEW',
+        },
+        orderBy: [{ submittedAt: 'desc' }, { createdAt: 'desc' }, { id: 'desc' }],
+        select: { id: true, capabilityId: true, version: true, updatedAt: true },
+      })
+      : [];
+    const pendingSkillVersionByCapability = new Map();
+    for (const version of pendingSkillVersions) {
+      if (!pendingSkillVersionByCapability.has(version.capabilityId)) {
+        pendingSkillVersionByCapability.set(version.capabilityId, version);
+      }
+    }
+
     return {
       items: items.map(({ skillVersions, ...capability }) => ({
         ...capability,
         currentPlatformVersion: capability.type === 'SKILL' ? skillVersions[0] ?? null : null,
+        pendingPlatformVersion: capability.type === 'SKILL'
+          ? pendingSkillVersionByCapability.get(capability.id) ?? null
+          : null,
       })),
       total,
       page,
