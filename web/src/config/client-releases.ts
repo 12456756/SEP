@@ -1,51 +1,70 @@
-/**
- * 官网 Hero 下载菜单的客户端发行配置。
- *
- * 安装包不进入 Web 仓库。客户端发布后只需将对应平台的 HTTPS 地址填入 url，
- * Hero 菜单即可直接触发浏览器下载。
- */
-export type ClientPlatform = 'macos-arm64' | 'macos-x64' | 'windows-x64';
+import { z } from 'zod';
 
-export interface ClientArtifact {
-  platform: ClientPlatform;
-  label: string;
-  fileName: string;
-  url: string | null;
-  architecture: string;
-  minimumOsVersion: string;
+export const CLIENT_RELEASE_URL =
+  'https://sep.longdaoec.com/sep-client/stable/client-release.json';
+
+export const ClientPlatformSchema = z.enum([
+  'macos-arm64',
+  'macos-x64',
+  'windows-x64',
+]);
+
+const ClientArtifactSchema = z.object({
+  platform: ClientPlatformSchema,
+  label: z.string().trim().min(1).max(80),
+  fileName: z.string().regex(/^SEP-Client-[A-Za-z0-9._-]+\.(dmg|exe)$/),
+  url: z
+    .string()
+    .url()
+    .refine((value) => {
+      try {
+        const url = new URL(value);
+        return (
+          url.protocol === 'https:' &&
+          url.hostname === 'sep.longdaoec.com' &&
+          url.pathname.startsWith('/sep-client/stable/')
+        );
+      } catch {
+        return false;
+      }
+    }, '客户端地址必须位于官方 stable 下载目录')
+    .nullable(),
+  architecture: z.string().trim().min(1).max(32),
+  minimumOsVersion: z.string().trim().min(1).max(80),
+});
+
+export const ClientReleaseSchema = z
+  .object({
+    version: z.string().regex(/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/),
+    artifacts: z.array(ClientArtifactSchema).length(3),
+  })
+  .superRefine((release, context) => {
+    const platforms = release.artifacts.map((artifact) => artifact.platform);
+    if (new Set(platforms).size !== platforms.length) {
+      context.addIssue({
+        code: 'custom',
+        message: '每个平台只能配置一个客户端安装包',
+        path: ['artifacts'],
+      });
+    }
+  });
+
+export type ClientPlatform = z.infer<typeof ClientPlatformSchema>;
+export type ClientArtifact = z.infer<typeof ClientArtifactSchema>;
+export type ClientRelease = z.infer<typeof ClientReleaseSchema>;
+
+export async function fetchClientRelease(
+  fetcher: typeof fetch = fetch,
+): Promise<ClientRelease> {
+  const response = await fetcher(CLIENT_RELEASE_URL, {
+    cache: 'no-store',
+    credentials: 'omit',
+    redirect: 'error',
+  });
+
+  if (!response.ok) {
+    throw new Error(`客户端发行配置请求失败（${response.status}）`);
+  }
+
+  return ClientReleaseSchema.parse(await response.json());
 }
-
-export interface ClientRelease {
-  version: string;
-  artifacts: ClientArtifact[];
-}
-
-export const CLIENT_RELEASE: ClientRelease = {
-  version: '0.3.3',
-  artifacts: [
-    {
-      platform: 'macos-arm64',
-      label: 'macOS · Apple 芯片',
-      fileName: 'SEP-Client-0.3.3-mac-arm64.dmg',
-      url: 'https://sep.longdaoec.com/sep-client/stable/0.3.3/SEP-Client-0.3.3-mac-arm64.dmg',
-      architecture: 'ARM64',
-      minimumOsVersion: 'macOS 12 或更高版本',
-    },
-    {
-      platform: 'macos-x64',
-      label: 'macOS · Intel 芯片',
-      fileName: 'SEP-Client-0.3.3-mac-x64.dmg',
-      url: 'https://sep.longdaoec.com/sep-client/stable/0.3.3/SEP-Client-0.3.3-mac-x64.dmg',
-      architecture: 'x64',
-      minimumOsVersion: 'macOS 12 或更高版本',
-    },
-    {
-      platform: 'windows-x64',
-      label: 'Windows · 64 位',
-      fileName: 'SEP-Client-0.3.3-win-x64.exe',
-      url: 'https://sep.longdaoec.com/sep-client/stable/0.3.3/SEP-Client-0.3.3-win-x64.exe',
-      architecture: 'x64',
-      minimumOsVersion: 'Windows 10 64 位或更高版本',
-    },
-  ],
-};

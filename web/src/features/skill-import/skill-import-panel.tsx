@@ -19,7 +19,7 @@ import {
   UploadCloud,
   X,
 } from "lucide-react";
-import { CLIENT_RELEASE } from "@/config/client-releases";
+import { useClientRelease } from "@/config/use-client-release";
 import { safeClientDeepLink, useSkillImport } from "./use-skill-import";
 import type { SkillImportArtifact, SkillImportCompletedArtifact } from "./types";
 
@@ -77,6 +77,8 @@ export function SkillImportPanel({
   zipArtifact,
 }: Props) {
   const [source, setSource] = useState("client");
+  const { release: clientRelease, loading: clientReleaseLoading } =
+    useClientRelease();
   const flow = useSkillImport(onArtifact, onArtifacts);
   const { session, preview, selected } = flow;
   const operation = flow.operation.data?.operation;
@@ -685,7 +687,7 @@ export function SkillImportPanel({
                 安装 SEP 客户端
               </summary>
               <div className="mt-2 flex flex-wrap gap-3">
-                {CLIENT_RELEASE.artifacts
+                {clientRelease?.artifacts
                   .filter((artifact) => artifact.url)
                   .map((artifact) => (
                     <a
@@ -696,11 +698,22 @@ export function SkillImportPanel({
                       <Download className="h-4 w-4" />
                       {artifact.label}
                     </a>
-                  ))}
+                  )) ?? (
+                    <p role="status" className="text-sm text-muted-foreground">
+                      {clientReleaseLoading
+                        ? "正在读取客户端版本…"
+                        : "客户端下载信息暂不可用"}
+                    </p>
+                  )}
               </div>
             </details>
             <p className="text-xs text-muted-foreground">
-              公开下载版本：v{CLIENT_RELEASE.version}
+              公开下载版本：
+              {clientRelease
+                ? `v${clientRelease.version}`
+                : clientReleaseLoading
+                  ? "正在读取"
+                  : "暂不可用"}
               {flow.config.data
                 ? `；本机扫描要求 v${flow.config.data.minClientVersion} 或更高版本`
                 : "；本机扫描需要包含 Skills 扫描模块的版本"}

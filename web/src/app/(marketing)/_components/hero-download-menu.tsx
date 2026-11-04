@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Apple, Download, Monitor } from 'lucide-react';
-import { CLIENT_RELEASE, type ClientArtifact, type ClientPlatform } from '@/config/client-releases';
+import type { ClientArtifact, ClientPlatform } from '@/config/client-releases';
+import { useClientRelease } from '@/config/use-client-release';
 
 const PLATFORM_ICONS: Record<ClientPlatform, typeof Apple> = {
   'macos-arm64': Apple,
@@ -25,6 +26,7 @@ function artifactDescription(artifact: ClientArtifact) {
 export function HeroDownloadMenu() {
   const [open, setOpen] = useState(false);
   const [platform, setPlatform] = useState<ClientPlatform>(() => detectPlatform());
+  const { release, loading } = useClientRelease();
   const containerRef = useRef<HTMLDivElement>(null);
   const canHoverRef = useRef(false);
 
@@ -96,7 +98,7 @@ export function HeroDownloadMenu() {
           </div>
 
           <div className="space-y-1">
-            {CLIENT_RELEASE.artifacts.map((artifact) => {
+            {release ? release.artifacts.map((artifact) => {
               const Icon = PLATFORM_ICONS[artifact.platform];
               const selected = artifact.platform === platform;
               const hasDownload = Boolean(artifact.url);
@@ -129,7 +131,11 @@ export function HeroDownloadMenu() {
                   </span>
                 </a>
               );
-            })}
+            }) : (
+              <p role="status" className="px-3 py-4 text-sm text-gtext-muted">
+                {loading ? '正在读取客户端版本…' : '客户端下载信息暂不可用'}
+              </p>
+            )}
           </div>
         </div>
         </div>

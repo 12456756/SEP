@@ -11,6 +11,9 @@ vi.mock('@/lib/api-client', async (load) => {
   const actual = await load<typeof import('@/lib/api-client')>();
   return { ...actual, api: { get: vi.fn(), post: vi.fn(), delete: vi.fn() } };
 });
+vi.mock('@/config/use-client-release', () => ({
+  useClientRelease: () => ({ release: null, loading: false }),
+}));
 const get = vi.mocked(api.get);
 const post = vi.mocked(api.post);
 const remove = vi.mocked(api.delete);
@@ -367,7 +370,7 @@ describe('本机 Skills 导入', () => {
     fireEvent.click(screen.getByRole('button', { name: '扫描本机' }));
     expect(post).not.toHaveBeenCalled();
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'ZIP 上传' }), { button: 0, ctrlKey: false });
-    expect(screen.getByLabelText('Zip 文件（必须包含 SKILL.md）')).toBeInTheDocument();
+    expect(screen.getByLabelText('技能压缩包（必须包含 SKILL.md）')).toBeInTheDocument();
   });
 
   it('拒绝含凭证、额外参数或错误会话的客户端链接', () => {
