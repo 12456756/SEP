@@ -158,6 +158,11 @@ describe('SkillPackageService', () => {
       expect(zip.getEntry('references/guide.md')?.getData().toString()).toBe('guide');
       expect(stored.key).toBe(`skills/${stored.sha256}.zip`);
     });
+
+    it('拒绝 TAR 包内的路径穿越条目', async () => {
+      const source = await tarWith([['../SKILL.md', installableMarkdown()]]);
+      await expect(service.store(upload(source, 'skill.tar'))).rejects.toBeInstanceOf(BadRequestException);
+    });
   });
 
   describe('拒绝非法包', () => {
@@ -166,8 +171,8 @@ describe('SkillPackageService', () => {
 
     it('拒绝空上传', () => reject(upload(Buffer.alloc(0))));
 
-    it('扩展名仅作展示，不阻断有效 ZIP 导入', async () =>
-      expect(service.store(upload(zipWith([['SKILL.md', SKILL_BODY]]), 'skill.tar.gz'))).resolves.toBeDefined());
+    it('拒绝未支持的压缩包扩展名', async () =>
+      expect(service.store(upload(zipWith([['SKILL.md', SKILL_BODY]]), 'skill.rar'))).rejects.toBeInstanceOf(BadRequestException));
 
     it('拒绝改名成 .zip 的非 zip 内容（魔数校验）', () =>
       reject(upload(Buffer.from('这不是 zip，只是改了后缀'), 'fake.zip')));
