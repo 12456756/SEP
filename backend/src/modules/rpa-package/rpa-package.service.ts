@@ -69,6 +69,7 @@ export class RpaPackageService {
       buffer = await normalizeArchive(file.originalname, file.buffer, {
         maxEntries: MAX_ENTRIES,
         maxUncompressedBytes: MAX_UNCOMPRESSED_BYTES,
+        strictExtension: true,
       });
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : '压缩包无法解析');

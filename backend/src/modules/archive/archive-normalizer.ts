@@ -12,6 +12,7 @@ const TAR_MAGIC = Buffer.from('ustar');
 export interface ArchiveLimits {
   maxEntries: number;
   maxUncompressedBytes: number;
+  strictExtension?: boolean;
 }
 
 export function isSupportedArchiveFilename(filename: string): boolean {
@@ -25,12 +26,15 @@ export async function normalizeArchive(
   buffer: Buffer,
   limits: ArchiveLimits,
 ): Promise<Buffer> {
-  if (buffer.subarray(0, ZIP_MAGIC.length).equals(ZIP_MAGIC)) return buffer;
-
   const lower = filename.toLowerCase();
+  const isZip = buffer.subarray(0, ZIP_MAGIC.length).equals(ZIP_MAGIC);
   const isGzip = buffer.subarray(0, GZIP_MAGIC.length).equals(GZIP_MAGIC);
   const expectsGzip = lower.endsWith('.tar.gz') || lower.endsWith('.tgz');
   const expectsTar = lower.endsWith('.tar');
+  if (isZip) {
+    if (limits.strictExtension && !lower.endsWith('.zip')) throw new Error('压缩包扩展名与内容不匹配');
+    return buffer;
+  }
   if (!isGzip && !expectsTar) throw new Error('不支持的压缩包格式');
   if (expectsGzip && !isGzip) throw new Error('TAR.GZ 文件格式无效');
   if (isGzip && !expectsGzip) throw new Error('压缩包扩展名与内容不匹配');
@@ -91,6 +95,14 @@ export async function normalizeArchive(
         return;
       }
       const name = header.name.replace(/^(?:\.\/)+/, '');
+      const normalizedName = name.replace(/\\/g, '/');
+      if (!name || name.includes('\0') || name.startsWith('/') || /^[a-zA-Z]:/.test(name) ||
+        normalizedName.split('/').includes('..') || name.includes('\\')) {
+        parseError = new Error(`TAR 条目路径非法：${name}`);
+        stream.resume();
+        next(parseError);
+        return;
+      }
       zip.addFile(name, Buffer.concat(chunks, entryBytes));
       next();
     });
