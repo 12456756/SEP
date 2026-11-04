@@ -76,40 +76,39 @@ preflight() {
   for name in sep-postgres sep-redis sep-green-backend sep-green-web; do
     [[ "$(docker inspect --format '{{.State.Health.Status}}' "$name")" == healthy ]]
   done
-  node - "$RELEASE_SOURCE" /www/sep/source <<'NODE'
-const fs = require('node:fs');
-const path = require('node:path');
-const [release, baseline] = process.argv.slice(2);
-const read = (root, name) => JSON.parse(fs.readFileSync(path.join(root, name), 'utf8'));
-const equal = (left, right) => JSON.stringify(left) === JSON.stringify(right);
-const releaseRoot = read(release, 'package.json');
-const baselineRoot = read(baseline, 'package.json');
-delete releaseRoot.scripts.dev;
-delete baselineRoot.scripts.dev;
-if (!equal(releaseRoot, baselineRoot)) process.exit(1);
-const releaseBackend = read(release, 'backend/package.json');
-const baselineBackend = read(baseline, 'backend/package.json');
-if (releaseBackend.dependencies?.['tar-stream'] !== '^3.2.0') process.exit(1);
-delete releaseBackend.dependencies['tar-stream'];
-if (!equal(releaseBackend, baselineBackend)) process.exit(1);
-if (!fs.readFileSync(path.join(release, 'web/package.json')).equals(
-  fs.readFileSync(path.join(baseline, 'web/package.json')))) process.exit(1);
-NODE
-  python3 - "$RELEASE_SOURCE/pnpm-lock.yaml" /www/sep/source/pnpm-lock.yaml <<'PY'
+  python3 - "$RELEASE_SOURCE" /www/sep/source <<'PY'
+import json
 import difflib
+import pathlib
 import sys
 
-release = open(sys.argv[1], encoding='utf-8').read().splitlines()
-baseline = open(sys.argv[2], encoding='utf-8').read().splitlines()
+release_root, baseline_root = map(pathlib.Path, sys.argv[1:])
+def read(root, name):
+    return json.loads((root / name).read_text())
+current = read(release_root, 'package.json')
+baseline = read(baseline_root, 'package.json')
+current['scripts'].pop('dev', None)
+baseline['scripts'].pop('dev', None)
+if current != baseline:
+    sys.exit(1)
+current = read(release_root, 'backend/package.json')
+baseline = read(baseline_root, 'backend/package.json')
+if current['dependencies'].pop('tar-stream', None) != '^3.2.0' or current != baseline:
+    sys.exit(1)
+if (release_root / 'web/package.json').read_bytes() != (baseline_root / 'web/package.json').read_bytes():
+    sys.exit(1)
+
+release_lines = (release_root / 'pnpm-lock.yaml').read_text().splitlines()
+baseline_lines = (baseline_root / 'pnpm-lock.yaml').read_text().splitlines()
 allowed = ['      tar-stream:', '        specifier: ^3.2.0', '        version: 3.2.0']
-matcher = difflib.SequenceMatcher(a=baseline, b=release, autojunk=False)
+matcher = difflib.SequenceMatcher(a=baseline_lines, b=release_lines, autojunk=False)
 additions = []
 for tag, a1, a2, b1, b2 in matcher.get_opcodes():
     if tag == 'equal':
         continue
     if tag != 'insert':
         sys.exit(1)
-    additions.extend(release[b1:b2])
+    additions.extend(release_lines[b1:b2])
 if additions != allowed:
     sys.exit(1)
 PY
