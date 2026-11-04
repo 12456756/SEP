@@ -3,7 +3,8 @@
 FROM sep-migrator:42fc2644a38b AS builder
 WORKDIR /app
 COPY . .
-RUN pnpm --filter backend exec prisma generate && pnpm --filter backend run build
+RUN ln -s .pnpm/tar-stream@3.2.0/node_modules/tar-stream /app/node_modules/tar-stream && \
+    pnpm --filter backend exec prisma generate && pnpm --filter backend run build
 RUN cp -r /app/backend/prisma /prod-bundle/prisma && \
     /app/backend/node_modules/.bin/prisma generate --schema=/prod-bundle/prisma/schema.prisma
 
