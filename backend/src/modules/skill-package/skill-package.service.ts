@@ -9,7 +9,7 @@ import AdmZip from 'adm-zip';
 import { isSupportedArchiveFilename, normalizeArchive } from '../archive/archive-normalizer';
 import { isSafeSkillPathComponent, SkillArtifactFrontmatterSchema } from 'shared';
 import { parseSkillMarkdown, prepareSkillMarkdown, SKILL_CONTENT_MAX_BYTES, skillLocalResourceReferences } from '../../shared/skill-content';
-import { CLIENT_SKILL_ARTIFACT_MAX_BYTES, CLIENT_SKILL_ARTIFACT_MAX_FILES, SKILL_PACKAGE_MAX_BYTES, SKILL_PACKAGE_MAX_ENTRIES, SKILL_PACKAGE_MAX_UNCOMPRESSED_BYTES } from '../../shared/skill-content-schema';
+import { SKILL_PACKAGE_MAX_BYTES, SKILL_PACKAGE_MAX_ENTRIES, SKILL_PACKAGE_MAX_UNCOMPRESSED_BYTES } from '../../shared/skill-content-schema';
 import { StorageService } from '../upload/storage/storage.service';
 
 export { SKILL_PACKAGE_MAX_BYTES } from '../../shared/skill-content-schema';
@@ -242,9 +242,6 @@ export class SkillPackageService {
       const skillEntry = skillEntries[0];
       if (skillEntries.length > 1) warnings.push({ code: 'MULTIPLE_ENTRIES', path: skillEntry.entryName,
         message: `检测到多个技能入口，已选择 ${skillEntry.entryName}（优先根目录，再按层级和路径排序）；其他文件保留，不影响审核通过。` });
-      if (buffer.length > CLIENT_SKILL_ARTIFACT_MAX_BYTES || files.length > CLIENT_SKILL_ARTIFACT_MAX_FILES) {
-        warnings.push({ code: 'CLIENT_ARTIFACT_LIMIT', message: '技能包超过当前客户端自动安装上限（20MiB 或 500 个文件），不影响审核通过；使用前需精简包或通过原始包下载自行安装。' });
-      }
       if (skillEntry.header.size > MAX_SKILL_MARKDOWN_BYTES) {
         throw new BadRequestException('SKILL.md 不能超过 2MiB');
       }

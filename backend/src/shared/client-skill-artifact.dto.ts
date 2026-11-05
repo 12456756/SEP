@@ -1,8 +1,4 @@
 import { z } from 'zod';
-import {
-  CLIENT_SKILL_ARTIFACT_MAX_BYTES,
-  CLIENT_SKILL_ARTIFACT_MAX_FILES,
-} from './skill-content-schema';
 
 export const SkillArtifactSha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
 export function isSafeSkillPathComponent(value: string): boolean {
@@ -48,8 +44,8 @@ export const ClientSkillArtifactAvailableSchema = z.object({
     }, '入口必须为安全相对路径'),
     entrySha256: SkillArtifactSha256Schema,
     artifactSha256: SkillArtifactSha256Schema,
-    byteLength: z.number().int().positive().max(CLIENT_SKILL_ARTIFACT_MAX_BYTES),
-    fileCount: z.number().int().positive().max(CLIENT_SKILL_ARTIFACT_MAX_FILES),
+    byteLength: z.number().int().positive().safe(),
+    fileCount: z.number().int().positive().safe(),
     downloadPath: z.string().regex(/^\/client\/subscriptions\/[a-zA-Z0-9_-]{1,128}\/skills\/[a-zA-Z0-9_-]{1,128}\/versions\/[a-zA-Z0-9_-]{1,128}\/artifact$/),
   }).strict();
 export const ClientSkillArtifactBlockedSchema = z.object({

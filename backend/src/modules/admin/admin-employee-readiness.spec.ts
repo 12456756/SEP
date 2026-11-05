@@ -111,11 +111,11 @@ describe('Employee publication and binding readiness protection', () => {
       expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
     });
 
-    it('rejects instructions with missing local resources and rolls back publication', async () => {
+    it('publishes approved instructions with advisory local resource references', async () => {
       versions[0].content = '[Checklist](./checklist.md)';
-      const snapshot = structuredClone(state);
-      await expect(publish(entry)).rejects.toThrow('PACKAGE_REQUIRED');
-      expect(state).toEqual(snapshot);
+      await publish(entry);
+      expect(state.employee.status).toBe('APPROVED');
+      expect(state.employee.publishedAt).toBeInstanceOf(Date);
     });
   });
 

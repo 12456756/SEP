@@ -1,6 +1,10 @@
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 import { Prisma, SkillVersion } from '@prisma/client';
+import { ConfigService } from '@nestjs/config';
+import AdmZip from 'adm-zip';
+import { createHash, randomBytes } from 'crypto';
 import { ClientSkillArtifactService } from '../client/client-skill-artifact.service';
+import { SkillPackageService } from '../skill-package/skill-package.service';
 import { EmployeeReadinessService } from './employee-readiness.service';
 
 const version = (capabilityId = 'cap-1', changes: Partial<SkillVersion> = {}): SkillVersion => ({
@@ -55,9 +59,29 @@ describe('EmployeeReadinessService', () => {
     await expect(service.assertReady('emp-1')).rejects.toThrow('能力-cap-1：技能制品不可安装 (INVALID_ENTRY)');
   });
 
-  it('blocks a single-file skill whose referenced local resource has no package', async () => {
+  it('allows approved single-file skills with advisory local resource references', async () => {
     prisma.skillVersion.findFirst.mockResolvedValue(version('cap-1', { content: '[Checklist](./checklist.md)' }));
-    await expect(service.assertReady('emp-1')).rejects.toThrow('PACKAGE_REQUIRED');
+    await expect(service.assertReady('emp-1')).resolves.toBeUndefined();
+  });
+
+  it('allows employee publication with a real ZIP over 20MiB and 500 files', async () => {
+    const zip = new AdmZip();
+    const content = 'Approved article writing instructions.\n';
+    zip.addFile('writer/SKILL.md', Buffer.from('---\nname: writer\ndescription: Article writer\n---\n' + content));
+    zip.addFile('writer/assets/media.bin', randomBytes(21 * 1024 * 1024));
+    for (let index = 0; index < 501; index += 1) zip.addFile(`writer/references/${index}.txt`, Buffer.from('Reference'));
+    const buffer = zip.toBuffer();
+    const hash = createHash('sha256').update(buffer).digest('hex');
+    const packageService = new SkillPackageService({ get: () => '/unused' } as unknown as ConfigService);
+    jest.spyOn(packageService, 'readBytes').mockResolvedValue(buffer);
+    artifacts = new ClientSkillArtifactService(prisma as any, {} as any,
+      { assertEmployeeSubscriptionsReady: jest.fn().mockResolvedValue(undefined) } as any, packageService);
+    service = new EmployeeReadinessService(prisma as any, artifacts);
+    prisma.skillVersion.findFirst.mockResolvedValue(version('cap-1', { content,
+      packageKey: `skills/${hash}.zip`, packageSha256: hash, packageFileCount: 503 }));
+    expect(buffer.length).toBeGreaterThan(20 * 1024 * 1024);
+    await expect(service.assertReady('emp-1')).resolves.toBeUndefined();
+    expect(packageService.readBytes).toHaveBeenCalledWith(`skills/${hash}.zip`);
   });
 
   it('checks actual subscription overrides in the same transaction after template readiness', async () => {

@@ -1,10 +1,7 @@
 import { BadRequestException, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import type { SkillVersion } from '@prisma/client';
 import { createHash } from 'crypto';
-import {
-  CLIENT_SKILL_ARTIFACT_MAX_BYTES, CLIENT_SKILL_ARTIFACT_MAX_FILES,
-  ClientSkillArtifactAvailableSchema,
-} from 'shared';
+import { ClientSkillArtifactAvailableSchema } from 'shared';
 import type { ClientSkillArtifactAvailable, ClientSkillArtifactBlocked, SkillArtifactBlockedReason } from 'shared';
 import { prepareSkillMarkdown } from '../../shared/skill-content';
 import type { SkillPackageService } from './skill-package.service';
@@ -24,9 +21,6 @@ export async function prepareSkillArtifact(
     ({ descriptor: { ...identity, status: 'BLOCKED', reason } });
   const available = (buffer: Buffer, fields: Pick<ClientSkillArtifactAvailable,
     'format' | 'installationDirectory' | 'entryPath' | 'entrySha256' | 'fileCount'>): PreparedSkillArtifact => {
-    if (buffer.length > CLIENT_SKILL_ARTIFACT_MAX_BYTES || fields.fileCount > CLIENT_SKILL_ARTIFACT_MAX_FILES) {
-      return blocked('INVALID_ENTRY');
-    }
     const result = ClientSkillArtifactAvailableSchema.safeParse({ ...identity, status: 'AVAILABLE', ...fields,
       artifactSha256: sha256(buffer), byteLength: buffer.length,
       downloadPath: `/client/subscriptions/${encodeURIComponent(subscriptionId)}/skills/${encodeURIComponent(capabilityId)}/versions/${encodeURIComponent(version.id)}/artifact`,

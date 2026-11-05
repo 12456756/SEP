@@ -234,12 +234,12 @@ describe('SkillPackageService', () => {
       expect(new AdmZip(result.buffer).getEntry('nested/scripts/run.py')!.getData().toString()).toBe('print(1)');
     });
 
-    it('文件数量超过客户端上限时仍可审核和读取原始包，并给出兼容提示', async () => {
+    it('文件数量超过旧客户端上限时允许审核和安装，不再显示过期限制提示', async () => {
       const buffer = zipWith([['SKILL.md', installableMarkdown()],
         ...Array.from({ length: 500 }, (_, index) => [`assets/${index}.txt`, 'x'] as [string, string])]);
-      await expect(service.store(upload(buffer))).resolves.toMatchObject({ fileCount: 501,
-        warnings: expect.arrayContaining([expect.objectContaining({ code: 'CLIENT_ARTIFACT_LIMIT' })]),
-      });
+      const stored = await service.store(upload(buffer));
+      expect(stored.fileCount).toBe(501);
+      expect(stored.warnings).toEqual([]);
       jest.spyOn(service, 'readBytes').mockResolvedValue(buffer);
       await expect(service.readInstallablePackage(sha256(buffer))).resolves.toMatchObject({ fileCount: 501 });
     });

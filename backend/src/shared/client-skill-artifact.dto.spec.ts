@@ -64,16 +64,18 @@ describe('client skill artifact v1 schemas', () => {
     { protocolVersion: 2 }, { status: 'UNKNOWN' }, { capabilityId: '' }, { versionId: '' },
     { approvedContentSha256: 'bad' }, { entrySha256: 'A'.repeat(64) }, { artifactSha256: 'a'.repeat(63) },
     { format: 'tar' }, { installationDirectory: '../skill' }, { installationDirectory: 'Bad_Name' },
-    { byteLength: 0 }, { byteLength: -1 }, { byteLength: 1.5 }, { byteLength: 100 * 1024 * 1024 + 1 },
-    { fileCount: 0 }, { fileCount: 1.5 }, { fileCount: 10001 },
+    { byteLength: 0 }, { byteLength: -1 }, { byteLength: 1.5 }, { byteLength: Number.MAX_SAFE_INTEGER + 1 },
+    { fileCount: 0 }, { fileCount: -1 }, { fileCount: 1.5 }, { fileCount: Number.MAX_SAFE_INTEGER + 1 },
   ])('rejects invalid AVAILABLE descriptor fields: %j', (override) => {
     expect(ClientSkillArtifactSchema.safeParse({ ...available, ...override }).success).toBe(false);
   });
 
-  it('accepts inclusive ZIP size and entry-count boundaries', () => {
-    expect(ClientSkillArtifactSchema.safeParse({ ...available, byteLength: 20 * 1024 * 1024, fileCount: 500 }).success).toBe(true);
-    expect(ClientSkillArtifactSchema.safeParse({ ...available, byteLength: 20 * 1024 * 1024 + 1 }).success).toBe(false);
-    expect(ClientSkillArtifactSchema.safeParse({ ...available, fileCount: 501 }).success).toBe(false);
+  it.each([
+    { byteLength: 20 * 1024 * 1024 + 1, fileCount: 821 },
+    { byteLength: 100 * 1024 * 1024 + 1, fileCount: 10001 },
+    { byteLength: Number.MAX_SAFE_INTEGER, fileCount: Number.MAX_SAFE_INTEGER },
+  ])('aligns descriptor size and count validation with the uncapped client contract: %j', (metadata) => {
+    expect(ClientSkillArtifactSchema.safeParse({ ...available, ...metadata }).success).toBe(true);
   });
 
   it('requires all AVAILABLE fields and forbids a blocked reason on AVAILABLE', () => {
