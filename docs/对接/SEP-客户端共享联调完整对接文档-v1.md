@@ -512,7 +512,7 @@ Content-Type: application/json
 }
 ```
 
-支持的 `role`：`system`、`user`、`assistant`、`tool`。`messages[].content` 当前要求字符串。`model` 必须来自当前订阅返回的 `allowedModels`，SEP 会再次检查平台启用状态、企业配置、订阅授权和余额。
+支持的 `role`：`system`、`user`、`assistant`、`tool`。`messages[].content` 支持字符串；`user` 消息也可使用 OpenAI 兼容的文本与图片块数组，图片块格式为 `{"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}`。内嵌图片支持 PNG、JPEG、GIF、WebP，HTTP JSON 与规范化请求默认各限制为 4 MiB；模型若明确配置为不支持 vision，Gateway 会拒绝图片请求。`model` 必须来自当前订阅返回的 `allowedModels`，SEP 会再次检查平台启用状态、企业配置、订阅授权和余额。
 
 ### 8.2 流式响应
 
