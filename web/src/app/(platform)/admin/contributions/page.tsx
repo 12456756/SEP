@@ -6,6 +6,8 @@ import {
   Bot,
   Check,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Clock3,
   FileCode2,
   LockKeyhole,
@@ -36,7 +38,9 @@ const tabs: Array<{ value: PlatformQueueStatus; label: string }> = [
 
 export default function AdminContributionsPage() {
   const [status, setStatus] = useState<PlatformQueueStatus>("PENDING_REVIEW");
-  const queue = usePlatformContributionQueue(status);
+  const [page, setPage] = useState(1);
+  const pageSize = 20;
+  const queue = usePlatformContributionQueue(status, page, pageSize);
   const [requestedId] = useState(() => {
     if (typeof window === "undefined") return "";
     return new URLSearchParams(window.location.search).get("selected") ?? "";
@@ -55,10 +59,17 @@ export default function AdminContributionsPage() {
     );
   }, [items, search]);
 
+  const totalPages = Math.max(1, Math.ceil((queue.data?.total ?? 0) / pageSize));
+
+  useEffect(() => {
+    setPage(1);
+  }, [status, search]);
 
   useEffect(() => {
     setSelectedId((current) => {
-      if (requestedId && filtered.some((item) => item.id === requestedId)) {
+      // Deep links from the capability catalog may point to an item on a later
+      // server page. Keep that id so the detail pane can load it directly.
+      if (requestedId && status === "PENDING_REVIEW") {
         return requestedId;
       }
       if (current && filtered.some((item) => item.id === current)) {
@@ -66,7 +77,7 @@ export default function AdminContributionsPage() {
       }
       return filtered[0]?.id ?? "";
     });
-  }, [filtered, requestedId]);
+  }, [filtered, requestedId, status]);
 
   return (
     <div className="flex h-[calc(100vh-64px)] min-h-[680px] flex-col overflow-hidden">
@@ -119,7 +130,8 @@ export default function AdminContributionsPage() {
               ))}
             </div>
           </div>
-          <div className="h-[calc(100%-117px)] overflow-y-auto p-2 scroll-thin">
+          <div className="flex h-[calc(100%-117px)] min-h-0 flex-col">
+            <div className="min-h-0 flex-1 overflow-y-auto p-2 scroll-thin">
             {queue.isLoading ? (
               <CenteredSpinner label="加载投稿队列..." />
             ) : queue.isError ? (
@@ -138,6 +150,34 @@ export default function AdminContributionsPage() {
                 title="暂无投稿"
                 description="当前状态没有匹配的能力投稿。"
               />
+            )}
+            </div>
+            {queue.data && totalPages > 1 && (
+              <div className="flex shrink-0 items-center justify-between gap-2 border-t border-glassline px-3 py-2 text-xs text-gtext-muted">
+                <span>共 {queue.data.total} 条 · 第 {page} / {totalPages} 页</span>
+                <div className="flex gap-1">
+                  <Button
+                    variant="glass"
+                    size="icon"
+                    className="h-7 w-7"
+                    aria-label="上一页"
+                    disabled={page <= 1 || queue.isFetching}
+                    onClick={() => setPage((current) => Math.max(1, current - 1))}
+                  >
+                    <ChevronLeft className="h-3.5 w-3.5" />
+                  </Button>
+                  <Button
+                    variant="glass"
+                    size="icon"
+                    className="h-7 w-7"
+                    aria-label="下一页"
+                    disabled={page >= totalPages || queue.isFetching}
+                    onClick={() => setPage((current) => Math.min(totalPages, current + 1))}
+                  >
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </div>
             )}
           </div>
         </aside>

@@ -38,11 +38,11 @@ describe('MemberService', () => {
       department: { findUnique: jest.fn() },
       enterpriseMember: {
         findMany: jest.fn().mockResolvedValue([]),
+        count: jest.fn().mockResolvedValue(2),
         findUnique: jest.fn(),
         create: jest.fn((a: any) => Promise.resolve({ id: 'mem-new', ...a.data })),
         update: jest.fn((a: any) => Promise.resolve({ id: a.where.id, ...a.data })),
         delete: jest.fn().mockResolvedValue({}),
-        count: jest.fn().mockResolvedValue(2),
       },
     };
     // 事务内的 client 用同一个 tx 对象，便于断言事务里发生了什么

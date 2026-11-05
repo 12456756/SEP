@@ -1,7 +1,8 @@
 'use client';
 
 import { useQuery } from '@tanstack/react-query';
-import { Download, Shield } from 'lucide-react';
+import { useState } from 'react';
+import { ChevronLeft, ChevronRight, Download, Shield } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { EmptyState, ErrorState, CenteredSpinner } from '@/components/ui/feedback';
@@ -40,9 +41,11 @@ function humanizeResource(resourceType: string, action: string) {
 }
 
 export default function AuditPage() {
+  const [page, setPage] = useState(1);
+  const pageSize = 50;
   const query = useQuery({
-    queryKey: ['audit-logs'],
-    queryFn: () => api.get<{ items: Array<any>; total: number }>('/audit-logs?pageSize=50'),
+    queryKey: ['audit-logs', page, pageSize],
+    queryFn: () => api.get<{ items: Array<any>; total: number; page: number; pageSize: number; totalPages: number }>(`/audit-logs?page=${page}&pageSize=${pageSize}`),
   });
 
   const exportCsv = async () => {
@@ -121,6 +124,21 @@ export default function AuditPage() {
                   ))}
                 </tbody>
               </table>
+              {query.data && query.data.totalPages > 1 && (
+                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-glassline px-2 py-3 text-sm text-gtext-muted">
+                  <span>共 {query.data.total} 条，第 {query.data.page} / {query.data.totalPages} 页</span>
+                  <div className="flex items-center gap-2">
+                    <Button variant="glass" size="sm" disabled={page <= 1 || query.isFetching} onClick={() => setPage((current) => Math.max(1, current - 1))}>
+                      <ChevronLeft className="h-4 w-4" />
+                      上一页
+                    </Button>
+                    <Button variant="glass" size="sm" disabled={page >= query.data.totalPages || query.isFetching} onClick={() => setPage((current) => Math.min(query.data!.totalPages, current + 1))}>
+                      下一页
+                      <ChevronRight className="h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </CardContent>

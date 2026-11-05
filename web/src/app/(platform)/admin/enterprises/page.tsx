@@ -1,22 +1,26 @@
 'use client';
 
-import { Building2, ExternalLink, DollarSign, Lock } from 'lucide-react';
+import { Building2, ChevronLeft, ChevronRight, ExternalLink, Lock } from 'lucide-react';
+import { useState } from 'react';
 import Link from 'next/link';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton, EmptyState } from '@/components/ui/feedback';
-import { useAllEnterprises } from '@/features/admin/use-admin';
+import { useAdminEnterpriseList } from '@/features/admin/use-admin';
 
 export default function EnterprisesPage() {
-  const { data: enterprises, isLoading, isError, error } = useAllEnterprises();
+  const [page, setPage] = useState(1);
+  const pageSize = 20;
+  const { data, isLoading, isFetching, isError, error } = useAdminEnterpriseList(page, pageSize);
+  const enterprises = data?.data ?? [];
 
   return (
     <div className="p-6 space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">企业管理</h1>
-        {enterprises && (
-          <span className="text-sm text-fg-muted">共 {enterprises.length} 家企业</span>
+        {data && (
+          <span className="text-sm text-fg-muted">共 {data.total} 家企业</span>
         )}
       </div>
 
@@ -44,7 +48,7 @@ export default function EnterprisesPage() {
                 }
               />
             </div>
-          ) : !enterprises || enterprises.length === 0 ? (
+          ) : enterprises.length === 0 ? (
             <p className="px-5 py-8 text-center text-sm text-fg-subtle">
               <Building2 className="mx-auto mb-2 h-8 w-8 opacity-30" />
               暂无企业注册
@@ -120,6 +124,31 @@ export default function EnterprisesPage() {
                 })}
               </tbody>
             </table>
+          )}
+          {data && data.totalPages > 1 && (
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border px-5 py-3 text-sm text-fg-muted">
+              <span>第 {data.page} / {data.totalPages} 页</span>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={page <= 1 || isFetching}
+                  onClick={() => setPage((current) => Math.max(1, current - 1))}
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                  上一页
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={page >= data.totalPages || isFetching}
+                  onClick={() => setPage((current) => Math.min(data.totalPages, current + 1))}
+                >
+                  下一页
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
           )}
         </CardContent>
       </Card>

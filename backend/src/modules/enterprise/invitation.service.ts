@@ -232,35 +232,82 @@ export class InvitationService {
     return this.deliver(invitation, token, invitationUrl, enterprise?.name ?? ctx.enterpriseId);
   }
 
-  /** 本企业邀请列表。可按状态过滤。顺带把已过期的 PENDING 收敛为 EXPIRED。 */
-  async list(userId: string, status?: InvitationStatusValue) {
+  /** 本企业邀请列表。可按状态过滤并分页。顺带把已过期的 PENDING 收敛为 EXPIRED。 */
+  async list(
+    userId: string,
+    status?: InvitationStatusValue,
+    pagination?: { page?: number; pageSize?: number },
+  ) {
     const ctx = await this.ctx.resolve(userId);
     this.ctx.assertEnterpriseAdmin(ctx);
 
     await this.expireStale(ctx.enterpriseId);
 
-    return this.prisma.enterpriseInvitation.findMany({
-      where: {
-        enterpriseId: ctx.enterpriseId,
-        ...(status && { status }),
-      },
-      orderBy: { createdAt: "desc" },
-      select: {
-        id: true,
-        email: true,
-        role: true,
-        position: true,
-        status: true,
-        expiresAt: true,
-        createdAt: true,
-        acceptedAt: true,
-        emailStatus: true,
-        emailLastAttemptAt: true,
-        emailSentAt: true,
-        emailError: true,
-        department: { select: { id: true, name: true } },
-      },
-    });
+    const page = Number.isInteger(pagination?.page) && (pagination?.page as number) > 0
+      ? (pagination.page as number)
+      : 1;
+    const pageSize = Number.isInteger(pagination?.pageSize) && (pagination?.pageSize as number) > 0
+      ? Math.min(pagination.pageSize as number, 100)
+      : 20;
+    const where = {
+      enterpriseId: ctx.enterpriseId,
+      ...(status && { status }),
+    };
+
+    if (!pagination) {
+      return this.prisma.enterpriseInvitation.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          email: true,
+          role: true,
+          position: true,
+          status: true,
+          expiresAt: true,
+          createdAt: true,
+          acceptedAt: true,
+          emailStatus: true,
+          emailLastAttemptAt: true,
+          emailSentAt: true,
+          emailError: true,
+          department: { select: { id: true, name: true } },
+        },
+      });
+    }
+
+    const [items, total] = await Promise.all([
+      this.prisma.enterpriseInvitation.findMany({
+        where,
+        orderBy: { createdAt: "desc" },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        select: {
+          id: true,
+          email: true,
+          role: true,
+          position: true,
+          status: true,
+          expiresAt: true,
+          createdAt: true,
+          acceptedAt: true,
+          emailStatus: true,
+          emailLastAttemptAt: true,
+          emailSentAt: true,
+          emailError: true,
+          department: { select: { id: true, name: true } },
+        },
+      }),
+      this.prisma.enterpriseInvitation.count({ where }),
+    ]);
+
+    return {
+      items,
+      total,
+      page,
+      pageSize,
+      totalPages: Math.ceil(total / pageSize) || 1,
+    };
   }
 
   /** 撤回邀请。已接受的不可撤回 —— 成员关系已生成，应走移出企业。 */

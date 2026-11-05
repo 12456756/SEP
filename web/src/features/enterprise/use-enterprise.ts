@@ -1,6 +1,6 @@
 'use client';
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, type UseQueryResult } from '@tanstack/react-query';
 import { api, uploadForm } from '@/lib/api-client';
 import { useAuthStore } from '@/lib/auth-store';
 import { qk } from '@/lib/query-keys';
@@ -56,15 +56,36 @@ export function useDeleteDepartment() {
 
 // ── 成员 ─────────────────────────────────────────────────────────────────────
 
-export function useMembers(departmentId?: string) {
+export type EnterpriseMemberPage = {
+  items: EnterpriseMember[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+};
+
+export function useMembers(departmentId?: string): UseQueryResult<EnterpriseMember[]>;
+export function useMembers(
+  departmentId: string | undefined,
+  pagination: { page?: number; pageSize?: number },
+): UseQueryResult<EnterpriseMemberPage>;
+export function useMembers(
+  departmentId?: string,
+  pagination?: { page?: number; pageSize?: number },
+): UseQueryResult<EnterpriseMember[] | EnterpriseMemberPage> {
   return useQuery({
-    queryKey: qk.members(departmentId),
+    queryKey: qk.members(departmentId, pagination),
     queryFn: () =>
-      api.get<EnterpriseMember[]>(
-        departmentId
-          ? `/enterprise/members?departmentId=${departmentId}`
-          : '/enterprise/members',
-      ),
+      api.get<EnterpriseMember[] | EnterpriseMemberPage>(
+        (() => {
+          const params = new URLSearchParams();
+          if (departmentId) params.set('departmentId', departmentId);
+          if (pagination?.page !== undefined) params.set('page', String(pagination.page));
+          if (pagination?.pageSize !== undefined) params.set('pageSize', String(pagination.pageSize));
+          const query = params.toString();
+          return query ? `/enterprise/members?${query}` : '/enterprise/members';
+        })(),
+      ).then((result) => (Array.isArray(result) && pagination ? { items: result, total: result.length, page: pagination.page ?? 1, pageSize: pagination.pageSize ?? result.length, totalPages: 1 } : result) as EnterpriseMember[] | EnterpriseMemberPage),
   });
 }
 
@@ -129,15 +150,27 @@ export function useDeleteMember() {
  * 邀请列表。仅企业管理员可读 —— 非管理员调用后端返回 403，
  * 故调用方须用 `enabled` 关掉，否则页面一进来就弹一条无意义的权限错误。
  */
+export function useInvitations(status?: InvitationStatus, opts?: { enabled?: boolean }): UseQueryResult<EnterpriseInvitation[]>;
+export function useInvitations(
+  status: InvitationStatus | undefined,
+  opts: { enabled?: boolean; page?: number; pageSize?: number },
+): UseQueryResult<{ items: EnterpriseInvitation[]; total: number; page: number; pageSize: number; totalPages: number }>;
 export function useInvitations(
   status?: InvitationStatus,
-  opts?: { enabled?: boolean },
-) {
+  opts?: { enabled?: boolean; page?: number; pageSize?: number },
+): UseQueryResult<EnterpriseInvitation[] | { items: EnterpriseInvitation[]; total: number; page: number; pageSize: number; totalPages: number }> {
   return useQuery({
-    queryKey: qk.invitations(status),
+    queryKey: qk.invitations(status, opts?.page, opts?.pageSize),
     queryFn: () =>
-      api.get<EnterpriseInvitation[]>(
-        status ? `/enterprise/invitations?status=${status}` : '/enterprise/invitations',
+      api.get<EnterpriseInvitation[] | { items: EnterpriseInvitation[]; total: number; page: number; pageSize: number; totalPages: number }>(
+        (() => {
+          const params = new URLSearchParams();
+          if (status) params.set('status', status);
+          if (opts?.page !== undefined) params.set('page', String(opts.page));
+          if (opts?.pageSize !== undefined) params.set('pageSize', String(opts.pageSize));
+          const query = params.toString();
+          return query ? `/enterprise/invitations?${query}` : '/enterprise/invitations';
+        })(),
       ),
     enabled: opts?.enabled ?? true,
   });

@@ -27,7 +27,7 @@ import {
   useDeleteTaskRun,
   useDeleteTaskTemplate,
   useTaskRun,
-  useTaskRuns,
+  useInfiniteTaskRuns,
   useTaskTemplates,
   useUpdateTaskRun,
 } from '@/features/task/use-task-runs';
@@ -89,7 +89,7 @@ function TasksPageContent() {
   const subscriptionId = searchParams.get('subscriptionId') || undefined;
   const enterprise = useAuthStore((state) => state.enterprise);
 
-  const runsQuery = useTaskRuns({ limit: 50 });
+  const runsQuery = useInfiniteTaskRuns({ limit: 50 });
   const templatesQuery = useTaskTemplates();
   const createRun = useCreateTaskRun();
   const updateRun = useUpdateTaskRun();
@@ -121,7 +121,7 @@ function TasksPageContent() {
   const resumeStep = useResumeStep(activeRunId);
   const stepConversation = useStepConversation(activeRunId);
 
-  const runs = runsQuery.data?.items ?? [];
+  const runs = runsQuery.data?.pages.flatMap((page) => page.items) ?? [];
   const loadedRun = useTaskRun(activeRunId ?? '');
 
   const availableEmployees = useMemo(
@@ -588,6 +588,9 @@ function TasksPageContent() {
         }}
         onDelete={removeRun}
         onNew={createNewTask}
+        hasMore={Boolean(runsQuery.hasNextPage)}
+        loadingMore={runsQuery.isFetchingNextPage}
+        onLoadMore={() => void runsQuery.fetchNextPage()}
       />
 
       <TaskTemplateDrawer

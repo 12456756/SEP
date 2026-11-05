@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { KeyRound, Plus, Pencil, Trash2, Users, AlertTriangle } from 'lucide-react';
+import { KeyRound, Plus, Pencil, Trash2, Users, AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -67,7 +67,10 @@ export default function MembersPage() {
   const { roleInEnterprise } = useAuthStore();
   const isAdmin = roleInEnterprise === 'ENTERPRISE_ADMIN';
 
-  const { data: members = [], isLoading } = useMembers();
+  const [memberPage, setMemberPage] = useState(1);
+  const MEMBER_PAGE_SIZE = 20;
+  const { data: memberResult, isLoading } = useMembers(undefined, { page: memberPage, pageSize: MEMBER_PAGE_SIZE });
+  const members = Array.isArray(memberResult) ? memberResult : memberResult?.items ?? [];
   const { data: depts = [] } = useDepartments();
   // 邀请数只在管理员视角下取 —— 普通成员没有 /enterprise/invitations 权限，
   // 拉了只会得到 403 并污染错误提示
@@ -188,7 +191,7 @@ export default function MembersPage() {
       {isAdmin && (
         <Tabs value={tab} onValueChange={(v) => setTab(v as 'members' | 'invitations')}>
           <TabsList>
-            <TabsTrigger value="members">成员 {members.length}</TabsTrigger>
+            <TabsTrigger value="members">成员 {Array.isArray(memberResult) ? members.length : memberResult?.total ?? members.length}</TabsTrigger>
             <TabsTrigger value="invitations">
               邀请{pendingInvites > 0 ? ` ${pendingInvites}` : ''}
             </TabsTrigger>
@@ -286,6 +289,19 @@ export default function MembersPage() {
               </TableBody>
             </Table>
           </div>
+          {!Array.isArray(memberResult) && memberResult && memberResult.totalPages > 1 && (
+            <div className="flex items-center justify-between text-sm text-fg-muted">
+              <span>共 {memberResult.total} 位成员 · 第 {memberResult.page} / {memberResult.totalPages} 页</span>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={() => setMemberPage((p) => Math.max(1, p - 1))} disabled={memberPage <= 1}>
+                  <ChevronLeft className="h-4 w-4" /> 上一页
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => setMemberPage((p) => Math.min(memberResult.totalPages, p + 1))} disabled={memberPage >= memberResult.totalPages}>
+                  下一页 <ChevronRight className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

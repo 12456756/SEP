@@ -190,7 +190,10 @@ export class EnterpriseController {
 
   @Get("members")
   @ApiOperation({ summary: "本企业成员列表" })
-  @ApiResponse({ status: 200, description: "成员列表" })
+  @ApiQuery({ name: "departmentId", required: false })
+  @ApiQuery({ name: "page", required: false, type: Number, description: "页码，默认1" })
+  @ApiQuery({ name: "pageSize", required: false, type: Number, description: "每页数量，默认20，最大100" })
+  @ApiResponse({ status: 200, description: "成员分页列表" })
   async listMembers(
     @Request() req: AuthedRequest,
     @Query("departmentId") departmentId?: string,
@@ -203,7 +206,11 @@ export class EnterpriseController {
       const parsed = new ZodValidationPipe(KnowledgeGrantCandidateQuerySchema).transform(query);
       return this.members.listKnowledgeGrantCandidates(req.user.id, parsed);
     }
-    return this.members.list(req.user.id, departmentId);
+    const hasPagination = query?.page !== undefined || query?.pageSize !== undefined;
+    return this.members.list(req.user.id, departmentId, hasPagination ? {
+      page: Number(query?.page),
+      pageSize: Number(query?.pageSize),
+    } : undefined);
   }
 
   @Post("members")
@@ -270,12 +277,21 @@ export class EnterpriseController {
     summary: "本企业邀请列表（仅企业管理员）",
     description: "顺带把已过期的 PENDING 收敛为 EXPIRED。不返回 token。",
   })
-  @ApiResponse({ status: 200, description: "邀请列表" })
+  @ApiQuery({ name: "status", required: false, enum: ['PENDING', 'ACCEPTED', 'EXPIRED', 'REVOKED'] })
+  @ApiQuery({ name: "page", required: false, type: Number, description: "页码，默认1" })
+  @ApiQuery({ name: "pageSize", required: false, type: Number, description: "每页数量，默认20，最大100" })
+  @ApiResponse({ status: 200, description: "邀请分页列表" })
   async listInvitations(
     @Request() req: AuthedRequest,
     @Query("status") status?: InvitationStatusValue,
+    @Query("page") page?: string,
+    @Query("pageSize") pageSize?: string,
   ) {
-    return this.invitations.list(req.user.id, status);
+    const hasPagination = page !== undefined || pageSize !== undefined;
+    return this.invitations.list(req.user.id, status, hasPagination ? {
+      page: Number(page),
+      pageSize: Number(pageSize),
+    } : undefined);
   }
 
   @Post("invitations")

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Check, Copy, Link2, Loader2, Mail, Plus, RotateCw, XCircle } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, Copy, Link2, Loader2, Mail, Plus, RotateCw, XCircle } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import { Badge } from '@/components/ui/badge';
@@ -248,7 +248,10 @@ function InviteDialog({
 }
 
 export function InvitationPanel({ depts }: { depts: Department[] }) {
-  const { data: invitations = [], isLoading } = useInvitations();
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 20;
+  const { data: result, isLoading } = useInvitations(undefined, { page, pageSize: PAGE_SIZE });
+  const invitations = (Array.isArray(result) ? result : result?.items ?? []) as EnterpriseInvitation[];
   const revokeInvitation = useRevokeInvitation();
   const resendInvitation = useResendInvitation();
 
@@ -397,6 +400,20 @@ export function InvitationPanel({ depts }: { depts: Department[] }) {
               })}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {!Array.isArray(result) && result && result.totalPages > 1 && (
+        <div className="flex items-center justify-between text-sm text-fg-muted">
+          <span>共 {result.total} 条邀请 · 第 {result.page} / {result.totalPages} 页</span>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={page <= 1}>
+              <ChevronLeft className="h-4 w-4" /> 上一页
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setPage((value) => Math.min(result.totalPages, value + 1))} disabled={page >= result.totalPages}>
+              下一页 <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
         </div>
       )}
 

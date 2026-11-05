@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { Search, ShieldCheck, UserRound } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Search, ShieldCheck, UserRound } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -17,7 +17,9 @@ export default function AdminAuthUsersPage() {
   const [keyword, setKeyword] = useState('');
   const [query, setQuery] = useState('');
   const [status, setStatus] = useState('');
-  const users = useAdminAuthUsers({ keyword: query, status, pageSize: 50 });
+  const [page, setPage] = useState(1);
+  const pageSize = 50;
+  const users = useAdminAuthUsers({ keyword: query, status, page, pageSize });
 
   if (users.isLoading) return <CenteredSpinner />;
   if (users.isError)
@@ -52,14 +54,22 @@ export default function AdminAuthUsersPage() {
             <Input
               value={keyword}
               onChange={(e) => setKeyword(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && setQuery(keyword)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  setPage(1);
+                  setQuery(keyword);
+                }
+              }}
               placeholder="搜索邮箱或姓名"
               className="pl-9"
             />
           </div>
           <select
             value={status}
-            onChange={(e) => setStatus(e.target.value)}
+            onChange={(e) => {
+              setPage(1);
+              setStatus(e.target.value);
+            }}
             className="h-10 rounded-md border border-glassline bg-glass-1 px-3 text-sm"
           >
             <option value="">全部状态</option>
@@ -68,7 +78,7 @@ export default function AdminAuthUsersPage() {
             <option value="CLOSURE_PENDING">注销待生效</option>
             <option value="CLOSED">已注销</option>
           </select>
-          <Button variant="outline" onClick={() => setQuery(keyword)}>
+          <Button variant="outline" onClick={() => { setPage(1); setQuery(keyword); }}>
             搜索
           </Button>
         </CardContent>
@@ -142,6 +152,21 @@ export default function AdminAuthUsersPage() {
                 ))}
               </tbody>
             </table>
+          )}
+          {data && data.totalPages > 1 && (
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-glassline px-4 py-3 text-sm text-fg-muted">
+              <span>共 {data.total} 条，第 {data.page} / {data.totalPages} 页</span>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" disabled={page <= 1 || users.isFetching} onClick={() => setPage((current) => Math.max(1, current - 1))}>
+                  <ChevronLeft className="h-4 w-4" />
+                  上一页
+                </Button>
+                <Button variant="outline" size="sm" disabled={page >= data.totalPages || users.isFetching} onClick={() => setPage((current) => Math.min(data!.totalPages, current + 1))}>
+                  下一页
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
           )}
         </CardContent>
       </Card>

@@ -1,6 +1,6 @@
 'use client';
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api-client';
 import { qk } from '@/lib/query-keys';
 import type { TaskPlanStep, TaskRunStatus } from './task-orchestration';
@@ -33,6 +33,17 @@ export function useTaskRuns(params: ListParams = {}) {
   return useQuery({
     queryKey: qk.taskRunList(params as Record<string, unknown>),
     queryFn: () => api.get<TaskRunListResponse>(`/tasks${listQuery(params)}`),
+  });
+}
+
+/** 工作记录抽屉使用 cursor 分页，避免一次加载全部历史记录。 */
+export function useInfiniteTaskRuns(params: Omit<ListParams, 'cursor'> = {}) {
+  return useInfiniteQuery({
+    queryKey: qk.taskRunList(params as Record<string, unknown>),
+    queryFn: ({ pageParam, signal }) =>
+      api.get<TaskRunListResponse>(`/tasks${listQuery({ ...params, cursor: pageParam ?? undefined })}`, { signal }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (page) => page.nextCursor ?? undefined,
   });
 }
 

@@ -91,9 +91,9 @@ export type PlatformContributionDetail = PlatformContribution & {
   } | null;
 };
 
-export function usePlatformContributionQueue(status: PlatformQueueStatus) {
+export function usePlatformContributionQueue(status: PlatformQueueStatus, page = 1, pageSize = 20) {
   return useQuery({
-    queryKey: qk.contributionAdminQueue(status),
+    queryKey: qk.contributionAdminQueue(status, page, pageSize),
     queryFn: () =>
       api.get<{
         items: PlatformContribution[];
@@ -101,7 +101,7 @@ export function usePlatformContributionQueue(status: PlatformQueueStatus) {
         page: number;
         pageSize: number;
         status: PlatformQueueStatus;
-      }>(`/admin/contributions?status=${status}&pageSize=100`),
+      }>(`/admin/contributions?status=${status}&page=${page}&pageSize=${pageSize}`),
   });
 }
 
@@ -127,15 +127,7 @@ export function usePlatformContributionReview() {
         { decision: input.decision, comment: input.comment },
       ),
     onSuccess: (_data, input) => {
-      void queryClient.invalidateQueries({
-        queryKey: qk.contributionAdminQueue("PENDING_REVIEW"),
-      });
-      void queryClient.invalidateQueries({
-        queryKey: qk.contributionAdminQueue("APPROVED"),
-      });
-      void queryClient.invalidateQueries({
-        queryKey: qk.contributionAdminQueue("REJECTED"),
-      });
+      void queryClient.invalidateQueries({ queryKey: ["admin", "contributions"] });
       void queryClient.invalidateQueries({
         queryKey: qk.contributionAdmin(input.id),
       });

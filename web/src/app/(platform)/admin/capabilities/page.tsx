@@ -8,6 +8,8 @@ import {
   ArrowUpRight,
   Building2,
   Check,
+  ChevronLeft,
+  ChevronRight,
   FileCode2,
   Inbox,
   Search,
@@ -81,12 +83,14 @@ function isContribution(cap: AdminCapabilityRow) {
 export default function CapabilitiesPage() {
   const [status, setStatus] = useState<StatusFilter>('ALL');
   const [keyword, setKeyword] = useState('');
+  const [page, setPage] = useState(1);
+  const pageSize = 20;
   const [rejecting, setRejecting] = useState<AdminCapabilityRow | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [deleting, setDeleting] = useState<AdminCapabilityRow | null>(null);
   const [approvingSkill, setApprovingSkill] = useState<AdminCapabilityRow | null>(null);
 
-  const query = useAllCapabilities(status === 'ALL' ? undefined : status);
+  const query = useAllCapabilities(status === 'ALL' ? undefined : status, page, pageSize);
   const approve = useApproveCapability();
   const reject = useRejectCapability();
   const remove = useDeleteCapability();
@@ -103,6 +107,13 @@ export default function CapabilitiesPage() {
         cap.enterprise?.name.toLowerCase().includes(kw),
     );
   }, [query.data?.items, keyword]);
+
+  const totalPages = Math.max(1, Math.ceil((query.data?.total ?? 0) / pageSize));
+
+  const changeStatus = (next: StatusFilter) => {
+    setStatus(next);
+    setPage(1);
+  };
 
   const handleApprove = (cap: AdminCapabilityRow) => {
     approve.mutate(
@@ -178,7 +189,7 @@ export default function CapabilitiesPage() {
             {STATUS_FILTERS.map(({ key, label }) => (
               <button
                 key={key}
-                onClick={() => setStatus(key)}
+                onClick={() => changeStatus(key)}
                 className={cn(
                   'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
                   status === key
@@ -194,7 +205,10 @@ export default function CapabilitiesPage() {
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted" />
             <Input
               value={keyword}
-              onChange={(e) => setKeyword(e.target.value)}
+              onChange={(e) => {
+                setKeyword(e.target.value);
+                setPage(1);
+              }}
               placeholder="搜索能力名称、描述或来源企业"
               className="pl-9"
             />
@@ -358,11 +372,24 @@ export default function CapabilitiesPage() {
         </CardContent>
       </Card>
 
-      {visible.length > 0 && (
-        <p className="text-xs text-fg-subtle">
-          共 {query.data?.total ?? visible.length} 个能力
-          {keyword && ` · 当前筛选出 ${visible.length} 个`}
-        </p>
+      {query.data && (
+        <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-fg-subtle">
+          <span>
+            共 {query.data.total} 个能力
+            {keyword && ` · 当前页筛选出 ${visible.length} 个`}
+          </span>
+          {totalPages > 1 && (
+            <div className="flex items-center gap-2">
+              <span>第 {page} / {totalPages} 页</span>
+              <Button variant="outline" size="icon" className="h-7 w-7" aria-label="上一页" disabled={page <= 1 || query.isFetching} onClick={() => setPage((current) => Math.max(1, current - 1))}>
+                <ChevronLeft className="h-3.5 w-3.5" />
+              </Button>
+              <Button variant="outline" size="icon" className="h-7 w-7" aria-label="下一页" disabled={page >= totalPages || query.isFetching} onClick={() => setPage((current) => Math.min(totalPages, current + 1))}>
+                <ChevronRight className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          )}
+        </div>
       )}
 
       <Dialog open={Boolean(rejecting)} onOpenChange={(open) => !open && setRejecting(null)}>

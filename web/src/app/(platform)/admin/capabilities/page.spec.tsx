@@ -102,10 +102,10 @@ describe('能力管理监控入口', () => {
       capability({ id: 'rpa-1', name: '自动化', type: 'RPA', description: '账务核对', enterprise: { name: '示例企业' } }),
     ] } });
     render(<CapabilitiesPage />);
-    expect(list).toHaveBeenLastCalledWith(undefined);
+    expect(list).toHaveBeenLastCalledWith(undefined, 1, 20);
     for (const [label, value] of [['待审核', 'PENDING'], ['已发布', 'APPROVED'], ['已拒绝', 'REJECTED'], ['全部', undefined]]) {
       fireEvent.click(screen.getByRole('button', { name: label }));
-      expect(list).toHaveBeenLastCalledWith(value);
+      expect(list).toHaveBeenLastCalledWith(value, 1, 20);
     }
     const search = screen.getByPlaceholderText('搜索能力名称、描述或来源企业');
     for (const keyword of ['自动化', '账务', '示例企业']) {

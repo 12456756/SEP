@@ -16,7 +16,7 @@ vi.mock('@/features/task/use-task-execution', () => ({
   useStepConversation: () => mocks.mutation,
 }));
 vi.mock('@/features/task/use-task-runs', () => ({
-  useTaskRuns: () => ({ data: { items: [] } }),
+  useInfiniteTaskRuns: () => ({ data: { pages: [{ items: [], nextCursor: null }] }, isLoading: false, hasNextPage: false, isFetchingNextPage: false, fetchNextPage: vi.fn() }),
   useTaskRun: () => ({}),
   useTaskTemplates: () => ({ data: [] }),
   useCreateTaskRun: () => mocks.mutation,

@@ -65,6 +65,7 @@ describe('InvitationService', () => {
         ),
         findFirst: jest.fn().mockResolvedValue(null),
         findMany: jest.fn().mockResolvedValue([]),
+        count: jest.fn().mockResolvedValue(0),
         findUnique: jest.fn(),
         findUniqueOrThrow: jest.fn((a: any) => Promise.resolve({ id: a.where.id })),
         update: jest.fn((a: any) => Promise.resolve({ id: a.where.id })),

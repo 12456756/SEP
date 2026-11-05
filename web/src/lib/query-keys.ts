@@ -21,12 +21,16 @@ export const qk = {
   adminUsers: ['admin', 'users'] as const,
   // 企业组织
   departments: ['enterprise', 'departments'] as const,
-  members: (deptId?: string) =>
-    deptId ? ['enterprise', 'members', deptId] : (['enterprise', 'members'] as const),
-  invitations: (status?: string) =>
-    status
-      ? (['enterprise', 'invitations', status] as const)
-      : (['enterprise', 'invitations'] as const),
+  members: (deptId?: string, pagination?: Record<string, unknown>) =>
+    pagination === undefined
+      ? (deptId ? ['enterprise', 'members', deptId] : (['enterprise', 'members'] as const))
+      : ['enterprise', 'members', deptId ?? '', pagination] as const,
+  invitations: (status?: string, page?: number, pageSize?: number) =>
+    page === undefined && pageSize === undefined
+      ? (status ? (['enterprise', 'invitations', status] as const) : (['enterprise', 'invitations'] as const))
+      : (status
+        ? (['enterprise', 'invitations', status, page ?? 0, pageSize ?? 0] as const)
+        : (['enterprise', 'invitations', page ?? 0, pageSize ?? 0] as const)),
   deptMembers: (deptId: string, params?: Record<string, unknown>) =>
     ['enterprise', 'departments', deptId, 'members', params ?? {}] as const,
   subscriptionGrants: (subscriptionId: string) =>
@@ -56,7 +60,8 @@ export const qk = {
   contributionMine: ['contributions', 'mine'] as const,
   contribution: (id: string) => ['contributions', id] as const,
   contributionRewards: ['contributions', 'rewards'] as const,
-  contributionAdminQueue: (status: string) => ['admin', 'contributions', status] as const,
+  contributionAdminQueue: (status: string, page?: number, pageSize?: number) =>
+    page === undefined ? ['admin', 'contributions', status] as const : ['admin', 'contributions', status, page, pageSize ?? 20] as const,
   contributionAdmin: (id: string) => ['admin', 'contributions', id] as const,
   contributionReviewQueue: (kind: string) => ['admin', 'capability-review', kind] as const,
   // 任务中心持久化（替代原先的 localStorage）

@@ -42,6 +42,9 @@ export function TaskHistoryDrawer({
   onSelect,
   onDelete,
   onNew,
+  hasMore = false,
+  loadingMore = false,
+  onLoadMore,
 }: {
   open: boolean;
   runs: TaskRunSummary[];
@@ -52,6 +55,9 @@ export function TaskHistoryDrawer({
   onSelect: (run: TaskRunSummary) => void;
   onDelete: (run: TaskRunSummary) => void;
   onNew: () => void;
+  hasMore?: boolean;
+  loadingMore?: boolean;
+  onLoadMore?: () => void;
 }) {
   if (!open) return null;
 
@@ -149,6 +155,18 @@ export function TaskHistoryDrawer({
                   </div>
                 );
               })}
+              {hasMore && onLoadMore && (
+                <Button
+                  type="button"
+                  variant="glass"
+                  className="w-full"
+                  onClick={onLoadMore}
+                  loading={loadingMore}
+                  disabled={loadingMore}
+                >
+                  加载更多
+                </Button>
+              )}
             </div>
           )}
         </div>

@@ -19,31 +19,76 @@ export class MemberService {
     @Optional() private readonly invitations?: InvitationService,
   ) {}
 
-  /** 列出本企业成员。可按部门过滤。 */
-  async list(userId: string, departmentId?: string) {
+  /** 列出本企业成员。可按部门过滤并分页。 */
+  async list(
+    userId: string,
+    departmentId?: string,
+    pagination?: { page?: number; pageSize?: number },
+  ) {
     const ctx = await this.ctx.resolve(userId);
+    const page = Number.isInteger(pagination?.page) && (pagination?.page as number) > 0
+      ? (pagination.page as number)
+      : 1;
+    const pageSize = Number.isInteger(pagination?.pageSize) && (pagination?.pageSize as number) > 0
+      ? Math.min(pagination.pageSize as number, 100)
+      : 20;
+    const where = {
+      enterpriseId: ctx.enterpriseId,
+      ...(departmentId && { departmentId }),
+    };
 
-    return this.prisma.enterpriseMember.findMany({
-      where: {
-        enterpriseId: ctx.enterpriseId,
-        ...(departmentId && { departmentId }),
-      },
-      orderBy: { createdAt: "asc" },
-      select: {
-        id: true,
-        role: true,
-        position: true,
-        createdAt: true,
-        user: { select: { id: true, email: true, name: true, avatar: true } },
-        department: {
-          select: {
-            id: true,
-            name: true,
-            parent: { select: { id: true, name: true } },
+    if (!pagination) {
+      return this.prisma.enterpriseMember.findMany({
+        where,
+        orderBy: { createdAt: "asc" },
+        select: {
+          id: true,
+          role: true,
+          position: true,
+          createdAt: true,
+          user: { select: { id: true, email: true, name: true, avatar: true } },
+          department: {
+            select: {
+              id: true,
+              name: true,
+              parent: { select: { id: true, name: true } },
+            },
           },
         },
-      },
-    });
+      });
+    }
+
+    const [items, total] = await Promise.all([
+      this.prisma.enterpriseMember.findMany({
+        where,
+        orderBy: { createdAt: "asc" },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        select: {
+          id: true,
+          role: true,
+          position: true,
+          createdAt: true,
+          user: { select: { id: true, email: true, name: true, avatar: true } },
+          department: {
+            select: {
+              id: true,
+              name: true,
+              parent: { select: { id: true, name: true } },
+            },
+          },
+        },
+      }),
+      this.prisma.enterpriseMember.count({ where }),
+    ]);
+
+    return {
+      items,
+      total,
+      page,
+      pageSize,
+      totalPages: Math.ceil(total / pageSize) || 1,
+    };
   }
 
   /** Administrator-only safe projection for knowledge grants; legacy list remains unchanged. */
