@@ -103,6 +103,10 @@ describe("GrantService", () => {
       const [direct, department] = prisma.employeeGrant.findMany.mock.calls.map(([query]: any[]) => query.include.subscription.include.employee);
       expect(department).toEqual(direct);
       expect(department.select.bindings).toBeDefined();
+      expect(department.select.bindings.where).toEqual({
+        enabled: true,
+        capability: { status: 'APPROVED' },
+      });
       expect(department.select.functionalCategory).toBe(true);
       expect(department.select.systemPrompt).toBeUndefined();
     });

@@ -246,6 +246,7 @@ export interface CreateEmployeeRequest {
 }
 
 export interface UpdateEmployeeRequest {
+  capabilityIds?: string[];
   name?: string;
   description?: string;
   industry?: string;

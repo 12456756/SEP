@@ -2,6 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import NewCapabilityPage from './page';
 
+const routerPush = vi.fn();
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ push: routerPush }),
+}));
+
 vi.mock('./skill-form', () => ({
   SkillForm: ({ onCancel }: { onCancel: () => void }) => (
     <div>
@@ -12,7 +18,7 @@ vi.mock('./skill-form', () => ({
 }));
 
 vi.mock('@/features/contribution/contribution-create-dialog', () => ({
-  ContributionCreateDialog: ({ open }: { open: boolean }) => open ? <div>RPA 创建表单</div> : null,
+  ContributionCreateDialog: ({ open, mode, onSuccess }: { open: boolean; mode?: string; onSuccess?: (capability: { id: string }) => void }) => open ? <div>RPA 创建表单<button type="button" onClick={() => onSuccess?.({ id: 'rpa 1' })}>{mode}</button></div> : null,
 }));
 
 describe('新建能力页', () => {
@@ -39,5 +45,7 @@ describe('新建能力页', () => {
     fireEvent.click(screen.getByRole('button', { name: /RPA/ }));
 
     expect(screen.getByText('RPA 创建表单')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'platform-review' }));
+    expect(routerPush).toHaveBeenCalledWith('/admin/contributions?selected=rpa%201');
   });
 });

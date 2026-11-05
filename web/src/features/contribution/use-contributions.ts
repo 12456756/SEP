@@ -36,14 +36,22 @@ function invalidate(qc: ReturnType<typeof useQueryClient>) {
   void qc.invalidateQueries({ queryKey: qk.contributions });
 }
 
-export function useCreateContribution() {
+export function useCreateContribution(options?: { submitToPlatformReview?: boolean }) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (body: Record<string, unknown>) => {
       if (String(body.type).toUpperCase() === 'SKILL') throw new Error('SKILL 首次创建仅在运营后台提供');
-      return api.post<ContributionCapability>('/contributions', ContributionCapabilityCreateDtoSchema.parse(body));
+      const payload = ContributionCapabilityCreateDtoSchema.parse(body);
+      const endpoint = options?.submitToPlatformReview ? '/admin/contributions/rpa' : '/contributions';
+      return api.post<ContributionCapability>(endpoint, payload);
     },
-    onSuccess: () => invalidate(qc),
+    onSuccess: () => {
+      invalidate(qc);
+      if (options?.submitToPlatformReview) {
+        void qc.invalidateQueries({ queryKey: ['capabilities'] });
+        void qc.invalidateQueries({ queryKey: ['admin', 'contributions'] });
+      }
+    },
   });
 }
 

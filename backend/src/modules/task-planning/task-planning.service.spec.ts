@@ -133,6 +133,16 @@ describe('TaskPlanningService', () => {
     expect(plan.steps[1].dependsOn).toEqual(['step-1']);
   });
 
+  it('only offers enabled bindings with approved capabilities to the planner', async () => {
+    await service.preview('user-1', { objective: '分析销售数据' });
+
+    const query = prisma.digitalEmployee.findMany.mock.calls[0][0];
+    expect(query.select.bindings.where).toEqual({
+      enabled: true,
+      capability: { status: 'APPROVED' },
+    });
+  });
+
   it('rejects a requested employee outside the active subscription set', async () => {
     await expect(
       service.preview('user-1', { objective: '分析销售数据', employeeIds: ['unknown-employee'] }),

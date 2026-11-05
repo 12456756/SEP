@@ -18,11 +18,12 @@ beforeAll(() => {
 });
 
 const createMutation = vi.fn();
+const useCreateContributionMock = vi.fn((_options?: unknown) => ({ mutate: createMutation, isPending: false }));
 const uploadMutation = vi.fn();
 const uploadRpaMutation = vi.fn();
 
 vi.mock('./use-contributions', () => ({
-  useCreateContribution: () => ({ mutate: createMutation, isPending: false }),
+  useCreateContribution: (options?: unknown) => useCreateContributionMock(options),
   useUploadSkillPackage: () => ({ mutate: uploadMutation, isPending: false }),
   useUploadRpaPackage: () => ({ mutateAsync: uploadRpaMutation, isPending: false }),
 }));
@@ -41,11 +42,11 @@ const RPA_PARSED: RpaPackageParseResult = {
   files: ['main.exe'],
 };
 
-function renderDialog() {
+function renderDialog(props?: Partial<React.ComponentProps<typeof ContributionCreateDialog>>) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <ContributionCreateDialog open onOpenChange={vi.fn()} />
+      <ContributionCreateDialog open onOpenChange={vi.fn()} {...props} />
     </QueryClientProvider>,
   );
 }
@@ -56,7 +57,7 @@ function goToContentStep() {
 
 async function goToInfoStep() {
   goToContentStep();
-  const input = document.querySelector('input[type="file"][accept=".zip,application/zip"]') as HTMLInputElement;
+  const input = document.querySelector('input[type="file"]') as HTMLInputElement;
   fireEvent.change(input, { target: { files: [new File(['rpa'], 'invoice-rpa.zip', { type: 'application/zip' })] } });
   await screen.findByText('invoice-rpa.zip');
   fireEvent.change(screen.getByPlaceholderText(/账号\/环境要求/), { target: { value: '需要安装客户端并配置目录后使用' } });
@@ -76,6 +77,7 @@ describe('创建能力贡献', () => {
       addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(),
     }));
     createMutation.mockReset();
+    useCreateContributionMock.mockClear();
     uploadMutation.mockReset();
     uploadRpaMutation.mockReset();
     uploadRpaMutation.mockResolvedValue(RPA_PARSED);
@@ -86,8 +88,8 @@ describe('创建能力贡献', () => {
     expect(screen.queryByRole('button', { name: /^Skill/i })).not.toBeInTheDocument();
     goToContentStep();
     expect(screen.queryByText('点击选择 SKILL ZIP 包')).not.toBeInTheDocument();
-    expect(screen.getByText('点击选择 RPA ZIP 包')).toBeInTheDocument();
-    expect(document.querySelector('input[type="file"][accept=".zip,application/zip"]')).toBeInTheDocument();
+    expect(screen.getByText('点击选择 RPA 压缩包')).toBeInTheDocument();
+    expect(document.querySelector('input[type="file"]')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /下一步/ })).toBeDisabled();
     expect(uploadMutation).not.toHaveBeenCalled();
     expect(createMutation).not.toHaveBeenCalled();
@@ -109,9 +111,9 @@ describe('创建能力贡献', () => {
     goToContentStep();
 
     expect(screen.getByText('上传可复用的自动化流程')).toBeInTheDocument();
-    expect(screen.getByText('点击选择 RPA ZIP 包')).toBeInTheDocument();
+    expect(screen.getByText('点击选择 RPA 压缩包')).toBeInTheDocument();
     expect(screen.queryByText('上传 SKILL ZIP 包')).not.toBeInTheDocument();
-    const input = document.querySelector('input[type="file"][accept=".zip,application/zip"]') as HTMLInputElement;
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement;
     expect(input).toBeTruthy();
 
     const file = new File(['rpa'], 'invoice-rpa.zip', { type: 'application/zip' });
@@ -130,6 +132,19 @@ describe('创建能力贡献', () => {
     expect(body.skillConfig).toBeUndefined();
     expect(uploadMutation).not.toHaveBeenCalled();
     expect(body.rpaConfig).toMatchObject({ packageSha256: 'c'.repeat(64), packageFilename: 'invoice-rpa.zip' });
+  });
+
+  it('平台投稿模式提交审核并返回创建结果', async () => {
+    const onSuccess = vi.fn();
+    renderDialog({ mode: 'platform-review', onSuccess });
+    await goToInfoStep();
+    fireEvent.change(screen.getByPlaceholderText(/说明它解决什么问题/), { target: { value: '自动处理发票并归档' } });
+    fireEvent.click(screen.getByRole('button', { name: /提交平台审核/ }));
+
+    expect(useCreateContributionMock).toHaveBeenCalledWith({ submitToPlatformReview: true });
+    const options = createMutation.mock.calls[0]?.[1] as { onSuccess: (value: { id: string }) => void };
+    options.onSuccess({ id: 'rpa-1' });
+    expect(onSuccess).toHaveBeenCalledWith({ id: 'rpa-1' });
   });
 
   it('弹窗接受非空短描述并 trim，而不是用 10 字硬限拦截', async () => {

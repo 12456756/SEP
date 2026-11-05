@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/lib/api-client';
 import { qk } from '@/lib/query-keys';
 import type { Capability, DigitalEmployee } from '@/lib/types';
-import type { CurrentPlatformVersion } from './admin-api';
+import type { CurrentPlatformVersion, UpdateEmployeeRequest } from './admin-api';
 
 /**
  * 运营端能力列表行。比公开的 `Capability` 多出投稿相关字段 ——
@@ -122,6 +122,11 @@ export function useArchiveCapability() {
       qc.invalidateQueries({ queryKey: ['market', 'employees'] });
       qc.invalidateQueries({ queryKey: ['capability-iteration', 'list'] });
       qc.invalidateQueries({ queryKey: ['available-capabilities'] });
+      qc.invalidateQueries({ queryKey: ['admin-employees'] });
+      qc.invalidateQueries({ queryKey: ['admin-employee'] });
+      qc.invalidateQueries({ queryKey: ['employee-bindings'] });
+      qc.invalidateQueries({ queryKey: qk.myEmployees });
+      qc.invalidateQueries({ queryKey: qk.subscriptions });
     },
   });
 }
@@ -210,6 +215,22 @@ export function useUpdateEmployee() {
     onSuccess: (_res, { id }) => {
       qc.invalidateQueries({ queryKey: qk.employees() });
       qc.invalidateQueries({ queryKey: qk.employee(id) });
+    },
+  });
+}
+
+export function useSaveAdminEmployee() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: UpdateEmployeeRequest }) => adminApi.updateEmployee(id, data),
+    onSuccess: (_result, { id }) => {
+      qc.invalidateQueries({ queryKey: ['admin-employees'] });
+      qc.invalidateQueries({ queryKey: ['admin-employee', id] });
+      qc.invalidateQueries({ queryKey: ['employee-bindings', id] });
+      qc.invalidateQueries({ queryKey: ['digital-employees'] });
+      qc.invalidateQueries({ queryKey: ['market', 'employees'] });
+      qc.invalidateQueries({ queryKey: qk.myEmployees });
+      qc.invalidateQueries({ queryKey: qk.subscriptions });
     },
   });
 }

@@ -83,6 +83,7 @@ const UpdateEmployeeSchema = z.object({
   price: z.number().nonnegative().optional(),
   annualPriceCNY: CnyAmountSchema.optional(),
   includedComputeCNY: CnyAmountSchema.nullable().optional(),
+  capabilityIds: z.array(z.string().min(1)).min(1, '至少选择一个能力').optional(),
 });
 
 const CreateCapabilitySchema = z.object({

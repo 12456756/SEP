@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { TASK_EVENT_TYPE, TASK_STEP_STATUS, type TaskRun, type TaskRunStep } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ConversationService } from '../conversation/conversation.service';
@@ -111,6 +111,7 @@ export class TaskStepExecutor {
     }
 
     try {
+      await this.assertCapabilityAvailable(step);
       const sessionId = await this.ensureSession(run, step);
       const output = await this.runOnce(run, step, sessionId, prompt);
       const completedAt = new Date();
@@ -178,6 +179,21 @@ export class TaskStepExecutor {
 
       this.logger.warn(`Step ${step.stepKey} of run ${run.id} failed: ${message}`);
       return { outcome: 'failed', error: message };
+    }
+  }
+
+  private async assertCapabilityAvailable(step: TaskRunStep): Promise<void> {
+    const binding = await this.prisma.employeeCapabilityBinding.findFirst({
+      where: {
+        employeeId: step.employeeId,
+        capabilityId: step.capabilityId,
+        enabled: true,
+        capability: { status: 'APPROVED' },
+      },
+      select: { id: true },
+    });
+    if (!binding) {
+      throw new BadRequestException('计划中的能力已下架或不再绑定该员工，请重新规划任务');
     }
   }
 

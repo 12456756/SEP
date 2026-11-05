@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException, BadRequestException, Optional, ServiceUnavailableException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { DigitalEmployee, Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { WalletService } from '../wallet/wallet.service';
 import { TransactionType } from '@prisma/client';
@@ -440,7 +440,7 @@ export class AdminService {
     if (keyword?.trim()) filters.push({ name: { contains: keyword.trim(), mode: 'insensitive' } });
     if (industry?.trim()) filters.push({ industry: { contains: industry.trim(), mode: 'insensitive' } });
     if (position?.trim()) filters.push({ position: { contains: position.trim(), mode: 'insensitive' } });
-    if (capabilityKeyword?.trim()) filters.push({ bindings: { some: { capability: { name: { contains: capabilityKeyword.trim(), mode: 'insensitive' } } } } });
+    if (capabilityKeyword?.trim()) filters.push({ bindings: { some: { enabled: true, capability: { status: 'APPROVED', name: { contains: capabilityKeyword.trim(), mode: 'insensitive' } } } } });
     if (filters.length) where.AND = filters;
 
     const [employees, total] = await Promise.all([
@@ -450,6 +450,7 @@ export class AdminService {
         take: pageSize,
         include: {
           bindings: {
+            where: { enabled: true, capability: { status: 'APPROVED' } },
             include: {
               capability: {
                 select: {
@@ -463,7 +464,7 @@ export class AdminService {
           },
           _count: {
             select: {
-              bindings: true,
+              bindings: { where: { enabled: true, capability: { status: 'APPROVED' } } },
             },
           },
         },
@@ -580,18 +581,11 @@ export class AdminService {
       price?: number;
       annualPriceCNY?: number;
       includedComputeCNY?: number | null;
+      capabilityIds?: string[];
     },
     operatorId: string,
   ) {
-    const employee = await this.prisma.digitalEmployee.findUnique({
-      where: { id: employeeId },
-    });
-
-    if (!employee) {
-      throw new NotFoundException('员工不存在');
-    }
-
-    return this.prisma.digitalEmployee.update({
+    const save = (db: Prisma.TransactionClient, employee: DigitalEmployee) => db.digitalEmployee.update({
       where: { id: employeeId },
       data: {
         name: data.name,
@@ -611,6 +605,18 @@ export class AdminService {
         includedComputeCNY: data.includedComputeCNY,
       },
     });
+
+    const capabilityIds = data.capabilityIds;
+    if (capabilityIds !== undefined) {
+      return this.employeeReadiness().withEmployeeLock(employeeId, async (tx, employee) => {
+        await this.replaceEmployeeBindings(tx, employee, capabilityIds);
+        return save(tx, employee);
+      });
+    }
+
+    const employee = await this.prisma.digitalEmployee.findUnique({ where: { id: employeeId } });
+    if (!employee) throw new NotFoundException('员工不存在');
+    return save(this.prisma, employee);
   }
 
   /**
@@ -681,6 +687,7 @@ export class AdminService {
       where: { id: employeeId },
       include: {
         bindings: {
+          where: { enabled: true, capability: { status: 'APPROVED' } },
           include: {
             capability: {
               select: {
@@ -734,51 +741,54 @@ export class AdminService {
    */
   async bindCapabilities(employeeId: string, capabilityIds: string[], operatorId: string) {
     const readiness = this.employeeReadiness();
-    return readiness.withEmployeeLock(employeeId, async (tx, employee) => {
-      const capabilities = await tx.capability.findMany({
-        where: { id: { in: capabilityIds } },
-      });
-      if (capabilities.length !== capabilityIds.length) {
-        throw new BadRequestException('部分能力不存在');
-      }
-      if (capabilities.some((capability) => capability.status !== 'APPROVED')) {
-        throw new BadRequestException('只能绑定已发布的能力');
-      }
+    return readiness.withEmployeeLock(employeeId, (tx, employee) => this.replaceEmployeeBindings(tx, employee, capabilityIds));
+  }
 
-      const approvedSkillVersions = await tx.skillVersion.findMany({
-        where: {
-          capabilityId: { in: capabilityIds },
-          scope: 'PLATFORM',
-          status: 'PLATFORM_APPROVED',
-        },
-        select: { id: true, capabilityId: true },
-        orderBy: [
-          { platformReviewedAt: { sort: 'desc', nulls: 'last' } },
-          { createdAt: 'desc' }, { id: 'desc' },
-        ],
-      });
-      const defaultVersions = new Map<string, string>();
-      for (const version of approvedSkillVersions) {
-        if (!defaultVersions.has(version.capabilityId)) {
-          defaultVersions.set(version.capabilityId, version.id);
-        }
-      }
-
-      await tx.employeeCapabilityBinding.deleteMany({ where: { employeeId } });
-
-      const bindings = capabilityIds.map((capabilityId, index) => ({
-        employeeId,
-        capabilityId,
-        priority: capabilityIds.length - index,
-        enabled: true,
-        defaultSkillVersionId: defaultVersions.get(capabilityId),
-      }));
-
-      await tx.employeeCapabilityBinding.createMany({ data: bindings });
-
-      if (employee.status === 'APPROVED') await readiness.assertReady(employeeId, tx);
-      return { success: true, count: bindings.length };
+  private async replaceEmployeeBindings(tx: Prisma.TransactionClient, employee: DigitalEmployee, capabilityIds: string[]) {
+    const employeeId = employee.id;
+    const capabilities = await tx.capability.findMany({
+      where: { id: { in: capabilityIds } },
     });
+    if (capabilities.length !== capabilityIds.length) {
+      throw new BadRequestException('部分能力不存在');
+    }
+    if (capabilities.some((capability) => capability.status !== 'APPROVED')) {
+      throw new BadRequestException('只能绑定已发布的能力');
+    }
+
+    const approvedSkillVersions = await tx.skillVersion.findMany({
+      where: {
+        capabilityId: { in: capabilityIds },
+        scope: 'PLATFORM',
+        status: 'PLATFORM_APPROVED',
+      },
+      select: { id: true, capabilityId: true },
+      orderBy: [
+        { platformReviewedAt: { sort: 'desc', nulls: 'last' } },
+        { createdAt: 'desc' }, { id: 'desc' },
+      ],
+    });
+    const defaultVersions = new Map<string, string>();
+    for (const version of approvedSkillVersions) {
+      if (!defaultVersions.has(version.capabilityId)) {
+        defaultVersions.set(version.capabilityId, version.id);
+      }
+    }
+
+    await tx.employeeCapabilityBinding.deleteMany({ where: { employeeId } });
+
+    const bindings = capabilityIds.map((capabilityId, index) => ({
+      employeeId,
+      capabilityId,
+      priority: capabilityIds.length - index,
+      enabled: true,
+      defaultSkillVersionId: defaultVersions.get(capabilityId),
+    }));
+
+    await tx.employeeCapabilityBinding.createMany({ data: bindings });
+
+    if (employee.status === 'APPROVED') await this.employeeReadiness().assertReady(employeeId, tx);
+    return { success: true, count: bindings.length };
   }
 
   /**
@@ -1131,6 +1141,9 @@ export class AdminService {
     if (!capability) throw new NotFoundException('能力不存在');
     if (capability.type === 'SKILL') {
       throw new BadRequestException('技能不能使用通用能力审核，请前往技能监控选择精确版本并发布为平台版本');
+    }
+    if (capability.type === 'RPA') {
+      throw new BadRequestException('RPA 不能使用通用能力审核，请提交平台审核后前往投稿审核队列发布版本');
     }
     if (capability.status !== 'PENDING') {
       throw new BadRequestException('只能审核待审核状态的能力');

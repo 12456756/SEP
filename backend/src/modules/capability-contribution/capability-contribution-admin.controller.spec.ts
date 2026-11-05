@@ -1,4 +1,41 @@
-import { CapabilityReviewAdminController } from './capability-contribution-admin.controller';
+import {
+  CapabilityContributionAdminController,
+  CapabilityReviewAdminController,
+} from './capability-contribution-admin.controller';
+
+describe('CapabilityContributionAdminController creation routes', () => {
+  it('creates an RPA platform submission with the admin identity', async () => {
+    const service = { createPlatformRpaSubmission: jest.fn() };
+    const controller = new CapabilityContributionAdminController(service as never);
+    const dto = {
+      name: '发票归档 RPA',
+      description: '自动下载并归档发票文件',
+      type: 'rpa' as const,
+      industry: [],
+      position: [],
+      rpaConfig: {
+        platform: 'yingdao' as const,
+        executionMode: 'download' as const,
+        packageSha256: 'a'.repeat(64),
+        packageFilename: 'invoice.zip',
+        configDoc: '使用前请配置发票目录和影刀客户端环境',
+      },
+    };
+    const expected = { id: 'cap-rpa', platformReviewStatus: 'PENDING_REVIEW' };
+    service.createPlatformRpaSubmission.mockResolvedValue(expected);
+
+    const result = await controller.createRpa(
+      { user: { id: 'platform-admin-1' } },
+      dto,
+    );
+
+    expect(result).toBe(expected);
+    expect(service.createPlatformRpaSubmission).toHaveBeenCalledWith(
+      'platform-admin-1',
+      expect.objectContaining({ type: 'rpa', name: '发票归档 RPA' }),
+    );
+  });
+});
 
 describe('CapabilityReviewAdminController version routes', () => {
   function makeController() {

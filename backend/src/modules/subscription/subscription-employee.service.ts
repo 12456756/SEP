@@ -60,6 +60,10 @@ export class SubscriptionEmployeeService {
         createdAt: true,
         updatedAt: true,
         bindings: {
+          where: {
+            enabled: true,
+            capability: { status: 'APPROVED' },
+          },
           orderBy: { priority: 'asc' },
           select: {
             id: true,

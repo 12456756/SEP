@@ -24,9 +24,19 @@ const contributionFormSchema = ContributionCapabilityCreateDtoSchema.innerType()
 type ContributionType = 'rpa';
 type Step = 1 | 2 | 3;
 
-export function ContributionCreateDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+export function ContributionCreateDialog({
+  open,
+  onOpenChange,
+  mode = 'draft',
+  onSuccess,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  mode?: 'draft' | 'platform-review';
+  onSuccess?: (capability: { id: string }) => void;
+}) {
   const hasEnterprise = Boolean(useAuthStore((state) => state.enterprise));
-  const create = useCreateContribution();
+  const create = useCreateContribution({ submitToPlatformReview: mode === 'platform-review' });
   const [step, setStep] = useState<Step>(1);
   const [type, setType] = useState<ContributionType>('rpa');
   const [rpaPkg, setRpaPkg] = useState<RpaPackageParseResult | null>(null);
@@ -64,7 +74,15 @@ export function ContributionCreateDialog({ open, onOpenChange }: { open: boolean
     });
     if (!validated.success) { toast.error(validated.error.issues[0]?.message || '请检查能力信息'); return; }
     create.mutate(validated.data, {
-      onSuccess: () => { toast.success('能力草稿已创建', '接下来可以提交企业审核'); close(false); },
+      onSuccess: (capability) => {
+        if (mode === 'platform-review') {
+          toast.success('RPA 已提交平台审核', '可在投稿审核队列中继续处理');
+        } else {
+          toast.success('能力草稿已创建', '接下来可以提交企业审核');
+        }
+        close(false);
+        onSuccess?.(capability);
+      },
       onError: (error) => toast.error(error instanceof Error ? error.message : '创建失败，请稍后重试'),
     });
   };
@@ -72,7 +90,7 @@ export function ContributionCreateDialog({ open, onOpenChange }: { open: boolean
   return <Dialog open={open} onOpenChange={close}>
     <DialogContent glass className="max-w-3xl overflow-hidden p-0">
       <DialogHeader className="border-b border-glassline px-6 py-5">
-        <div className="flex items-start justify-between gap-4"><div><DialogTitle className="text-gtext-primary">创建能力贡献</DialogTitle><DialogDescription className="mt-1 max-w-xl text-gtext-muted">{hasEnterprise ? '先保存为企业私有草稿，企业管理员通过后才可申请进入平台审核。' : '先保存为个人草稿，自动校验通过后可直接进入平台审核。'}</DialogDescription></div><span className="rounded-full border border-glassline bg-glass-1 px-2.5 py-1 text-[11px] text-gtext-muted">草稿模式</span></div>
+        <div className="flex items-start justify-between gap-4"><div><DialogTitle className="text-gtext-primary">创建能力贡献</DialogTitle><DialogDescription className="mt-1 max-w-xl text-gtext-muted">{mode === 'platform-review' ? '创建平台 RPA 投稿并直接送入审核队列。' : hasEnterprise ? '先保存为企业私有草稿，企业管理员通过后才可申请进入平台审核。' : '先保存为个人草稿，自动校验通过后可直接进入平台审核。'}</DialogDescription></div><span className="rounded-full border border-glassline bg-glass-1 px-2.5 py-1 text-[11px] text-gtext-muted">{mode === 'platform-review' ? '平台投稿' : '草稿模式'}</span></div>
         <div className="mt-5 flex items-center gap-2" aria-label="创建步骤"><StepIndicator step={1} current={step} label="选择类型" /><StepLine active={step > 1} /><StepIndicator step={2} current={step} label="能力内容" /><StepLine active={step > 2} /><StepIndicator step={3} current={step} label="能力信息" /></div>
       </DialogHeader>
       <div className="max-h-[min(560px,calc(100vh-230px))] overflow-y-auto px-6 py-5 scroll-thin">
@@ -80,7 +98,7 @@ export function ContributionCreateDialog({ open, onOpenChange }: { open: boolean
         {step === 2 && <ConfigStep rpaPkg={rpaPkg} rpaPlatform={rpaPlatform} rpaDoc={rpaDoc} onRpaPackageChange={setRpaPkg} onRpaPlatformChange={setRpaPlatform} onRpaDocChange={setRpaDoc} />}
         {step === 3 && <InfoStep prefilled={false} name={name} description={description} industry={industry} position={position} onNameChange={setName} onDescriptionChange={setDescription} onIndustryChange={setIndustry} onPositionChange={setPosition} />}
       </div>
-      <DialogFooter className="border-t border-glassline bg-glass-1/40 px-6 py-4"><Button variant="glass" onClick={() => step === 1 ? close(false) : setStep((current) => Math.max(1, current - 1) as Step)}>{step === 1 ? '取消' : <><ArrowLeft className="h-4 w-4" />上一步</>}</Button>{step < 3 ? <Button variant="glass-primary" disabled={!canContinue} onClick={next}>下一步<ArrowRight className="h-4 w-4" /></Button> : <Button variant="glass-primary" loading={create.isPending} onClick={submit}><Plus className="h-4 w-4" />创建草稿</Button>}</DialogFooter>
+      <DialogFooter className="border-t border-glassline bg-glass-1/40 px-6 py-4"><Button variant="glass" onClick={() => step === 1 ? close(false) : setStep((current) => Math.max(1, current - 1) as Step)}>{step === 1 ? '取消' : <><ArrowLeft className="h-4 w-4" />上一步</>}</Button>{step < 3 ? <Button variant="glass-primary" disabled={!canContinue} onClick={next}>下一步<ArrowRight className="h-4 w-4" /></Button> : <Button variant="glass-primary" loading={create.isPending} onClick={submit}><Plus className="h-4 w-4" />{mode === 'platform-review' ? '提交平台审核' : '创建草稿'}</Button>}</DialogFooter>
     </DialogContent>
   </Dialog>;
 }

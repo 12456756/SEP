@@ -136,6 +136,53 @@ describe('CapabilityContributionService', () => {
     }));
   });
 
+  it('creates an admin RPA outside enterprise context and submits it for platform review', async () => {
+    const created = { ...capability, id: 'rpa-1', type: 'RPA', enterpriseId: null, contributorId: 'admin-1' };
+    rpaPackage.read.mockResolvedValue({ key: 'rpa/aa.zip', sha256: 'a'.repeat(64), fileCount: 2, totalBytes: 100 });
+    prisma.capability.create.mockResolvedValue(created);
+
+    await service.createPlatformRpaSubmission('admin-1', {
+      name: '报表流程', description: '报表流程包创建', type: 'rpa',
+      industry: [], position: [], inputSchema: {}, outputSchema: {},
+      rpaConfig: { platform: 'yingdao', executionMode: 'download', packageSha256: 'a'.repeat(64),
+        packageFilename: 'report.zip', configDoc: '使用前请先配置报表目录和浏览器环境' },
+    });
+
+    expect(enterpriseContext.resolveOrNull).not.toHaveBeenCalled();
+    expect(prisma.capability.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        type: 'RPA', contributorId: 'admin-1', enterpriseId: null,
+        platformReviewStatus: 'PENDING_REVIEW',
+        platformSubmittedById: 'admin-1',
+        rpaVersions: { create: expect.objectContaining({ status: 'PENDING_PLATFORM_REVIEW' }) },
+      }),
+    }));
+    expect(prisma.capability.update).not.toHaveBeenCalled();
+    expect(prisma.rpaVersion.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('does not leave an admin RPA draft when pre-submission validation fails', async () => {
+    rpaPackage.read.mockResolvedValue({ key: 'rpa/aa.zip', sha256: 'a'.repeat(64), fileCount: 2, totalBytes: 100 });
+
+    await expect(service.createPlatformRpaSubmission('admin-1', {
+      name: '报表流程', description: '报表流程包创建', type: 'rpa',
+      industry: [], position: [], inputSchema: {}, outputSchema: {},
+      rpaConfig: { platform: 'yingdao', executionMode: 'download', packageSha256: 'a'.repeat(64),
+        packageFilename: 'report.zip', configDoc: '太短' },
+    })).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(prisma.capability.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-RPA payloads at the admin RPA creation boundary', async () => {
+    await expect(service.createPlatformRpaSubmission('admin-1', {
+      name: 'Agent', description: '错误类型', type: 'agent',
+      industry: [], position: [], inputSchema: {}, outputSchema: {},
+      agentConfig: { platform: 'coze', botId: 'bot-1' },
+    })).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.capability.create).not.toHaveBeenCalled();
+  });
+
   it('lets an enterprise admin inspect another member contribution in the same enterprise', async () => {
     enterpriseContext.resolveOrNull.mockResolvedValue({ enterpriseId: 'enterprise-1', role: 'ENTERPRISE_ADMIN' });
     prisma.capability.findFirst.mockResolvedValue({ ...capability, contributorId: 'member-2' });
@@ -661,6 +708,72 @@ describe('CapabilityContributionService', () => {
   });
 });
 
+describe('CapabilityContributionService admin RPA publication lifecycle', () => {
+  it('keeps the package unavailable until capability and version approval complete', async () => {
+    const sha256 = 'a'.repeat(64);
+    let capability: any;
+    let version: any;
+    const prisma = {
+      capability: {
+        create: jest.fn(async ({ data }) => {
+          const { rpaVersions, rpaConfig, ...fields } = data;
+          capability = { id: 'rpa-1', status: 'PENDING', visibility: 'ENTERPRISE_PRIVATE', ...fields };
+          version = { id: 'version-1', capabilityId: capability.id, ...rpaVersions.create };
+          return capability;
+        }),
+        findUnique: jest.fn(async () => capability),
+        update: jest.fn(async ({ data }) => {
+          capability = { ...capability, ...data };
+          return capability;
+        }),
+      },
+      rpaVersion: {
+        findMany: jest.fn(async ({ where }) => version.status === where.status ? [version] : []),
+        updateMany: jest.fn(async ({ where, data }) => {
+          if (version.status !== where.status) return { count: 0 };
+          version = { ...version, ...data };
+          return { count: 1 };
+        }),
+        findFirst: jest.fn(async ({ where }) => where.status.in.includes(version.status) ? version : null),
+      },
+      rpaVersionReview: { createMany: jest.fn() },
+      user: { findUnique: jest.fn().mockResolvedValue({ role: 'ADMIN' }), findMany: jest.fn().mockResolvedValue([]) },
+      $transaction: jest.fn(),
+    };
+    prisma.$transaction.mockImplementation(async (callback) => callback(prisma));
+    const service = new CapabilityContributionService(
+      prisma as never,
+      { resolveOrNull: jest.fn().mockResolvedValue(null) } as never,
+      new CapabilityValidatorService(),
+      {} as never,
+      { getEffectiveValue: jest.fn().mockResolvedValue('false') } as never,
+      { create: jest.fn() } as never,
+      { read: jest.fn().mockResolvedValue({ key: `rpa/${sha256}.zip`, sha256, fileCount: 2, totalBytes: 100 }) } as never,
+    );
+
+    await service.createPlatformRpaSubmission('admin-1', {
+      name: '报表流程', description: '报表流程包创建', type: 'rpa',
+      industry: [], position: [], inputSchema: {}, outputSchema: {},
+      rpaConfig: { platform: 'yingdao', executionMode: 'download', packageSha256: sha256,
+        packageFilename: 'report.zip', configDoc: '使用前请先配置报表目录和浏览器环境' },
+    });
+    expect(capability.platformReviewStatus).toBe('PENDING_REVIEW');
+    expect(version.status).toBe('PENDING_PLATFORM_REVIEW');
+    await expect(service.getRpaPackage('customer-1', 'rpa-1')).rejects.toBeInstanceOf(NotFoundException);
+
+    await service.reviewPlatform('reviewer-1', 'rpa-1', { decision: 'APPROVE' });
+
+    expect(capability).toMatchObject({ status: 'APPROVED', visibility: 'MARKET_PUBLIC', platformReviewStatus: 'APPROVED' });
+    expect(version.status).toBe('PLATFORM_APPROVED');
+    expect(prisma.rpaVersionReview.createMany).toHaveBeenCalledWith({ data: [expect.objectContaining({
+      versionId: 'version-1', decision: 'APPROVE', reviewerId: 'reviewer-1', packageSha256: sha256,
+    })] });
+    await expect(service.getRpaPackage('customer-1', 'rpa-1')).resolves.toEqual({
+      key: `rpa/${sha256}.zip`, sha256, version: '1.0.0', filename: 'report.zip',
+    });
+  });
+});
+
 describe('CapabilityContributionService RPA download access', () => {
   function makeService() {
     const prisma = {
@@ -773,6 +886,7 @@ describe('CapabilityContributionService download audit', () => {
       capability: {
         id: 'cap-1',
         name: '销售分析',
+        status: 'APPROVED',
         contributorId: 'author-1',
         enterpriseId: null,
         visibility: 'MARKET_PUBLIC',

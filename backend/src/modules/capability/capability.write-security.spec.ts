@@ -186,6 +186,15 @@ describe('CapabilityService write security', () => {
     expect(result).toBe(cap);
   });
 
+  it('prevents legacy generic approval from publishing an RPA without its reviewed version', async () => {
+    const { service, prisma } = harness('RPA');
+
+    await expect(service.approve('cap-1', 'admin-1', 'ADMIN')).rejects.toThrow('投稿审核队列');
+
+    expect(prisma.capability.update).not.toHaveBeenCalled();
+    expect(prisma.$transaction).not.toHaveBeenCalled();
+  });
+
   it.each(['approve', 'reject'] as const)('refuses %s with zero or multiple pending versions', async (method) => {
     for (const pending of [[], [{ id: 'v1', updatedAt }, { id: 'v2', updatedAt }]]) {
       const { service, prisma, versions } = harness();

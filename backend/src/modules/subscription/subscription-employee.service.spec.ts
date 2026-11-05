@@ -70,6 +70,10 @@ describe('SubscriptionEmployeeService', () => {
       status: true,
       description: true,
     });
+    expect(select.bindings.where).toEqual({
+      enabled: true,
+      capability: { status: 'APPROVED' },
+    });
     expect(select.systemPrompt).toBeUndefined();
     expect(select.config).toBeUndefined();
     expect(prisma.employeeGrant.findFirst).not.toHaveBeenCalled();

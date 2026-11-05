@@ -50,6 +50,18 @@ describe('贡献 SKILL no-write guards', () => {
     expect(uploadForm).toHaveBeenCalledWith('/contributions/rpa-package', expect.any(FormData));
     expect(post).toHaveBeenCalledWith('/contributions', expect.objectContaining({ type: 'rpa' }));
   });
+  it('运营 RPA 创建使用受保护的直接送审端点', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    const invalidateQueries = vi.spyOn(client, 'invalidateQueries');
+    const localWrapper = ({ children }: { children: React.ReactNode }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    const { result } = renderHook(() => useCreateContribution({ submitToPlatformReview: true }), { wrapper: localWrapper });
+    await act(async () => {
+      await result.current.mutateAsync({ name: '测试 RPA', description: '自动归档发票', type: 'rpa', industry: [], position: [], rpaConfig: { platform: 'shizai', executionMode: 'download', packageSha256: 'a'.repeat(64), configDoc: '完整的使用与环境说明' } });
+    });
+    expect(post).toHaveBeenCalledWith('/admin/contributions/rpa', expect.objectContaining({ type: 'rpa' }));
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['capabilities'] });
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['admin', 'contributions'] });
+  });
   it('已有版本正文和差异仍可读取', async () => {
     const { result } = renderHook(() => ({ author: useAuthorVersion('v1'), diff: useVersionDiff('v1') }), { wrapper });
     await waitFor(() => expect(result.current.author.isSuccess && result.current.diff.isSuccess).toBe(true));

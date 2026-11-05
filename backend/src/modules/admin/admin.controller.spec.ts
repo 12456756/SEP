@@ -72,6 +72,13 @@ describe('AdminController shared form contracts', () => {
     expect(service.updateEmployee).toHaveBeenCalledWith('employee-1', { includedComputeCNY: 0 }, 'admin-1');
   });
 
+  it('accepts optional capability changes in the employee update request', () => {
+    expect(parseBody('updateEmployee', { name: '更新员工', capabilityIds: ['cap-1'] }))
+      .toMatchObject({ name: '更新员工', capabilityIds: ['cap-1'] });
+    expect(parseBody('updateEmployee', { name: '仅修改资料' })).not.toHaveProperty('capabilityIds');
+    expect(() => parseBody('updateEmployee', { capabilityIds: [] })).toThrow(BadRequestException);
+  });
+
   it('forwards normalized avatar and short employee description without changing the approval flow', () => {
     const service = { createEmployee: jest.fn(), approveEmployee: jest.fn(), updateEmployee: jest.fn() };
     const controller = new AdminController(service as never, {} as never, {} as never);

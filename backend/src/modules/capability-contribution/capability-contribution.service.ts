@@ -44,6 +44,14 @@ import { assertActiveRewardRecipientInTx } from '../personal-wallet/personal-wal
 
 const DEFAULT_REWARD_CNY = { enterprise: "10", platform: "50" } as const;
 
+type ResolvedRpaSource = {
+  sha256: string;
+  key: string;
+  filename: string;
+  fileCount: number;
+  totalBytes: number;
+};
+
 const VERSION_REVIEW_SELECT = {
   id: true,
   actorType: true,
@@ -458,6 +466,60 @@ export class CapabilityContributionService {
       throw new ForbiddenException("SKILL 首次创建仅支持运营后台，已有技能请通过客户端修改");
     }
     const ctx = await this.enterpriseContext.resolveOrNull(userId);
+    return this.createCapability(userId, dto, ctx?.enterpriseId ?? null);
+  }
+
+  async createPlatformRpaSubmission(
+    userId: string,
+    dto: ContributionCapabilityCreateDto,
+  ) {
+    if (dto.type !== "rpa" || dto.skillConfig) {
+      throw new BadRequestException("运营创建入口仅支持 RPA 能力");
+    }
+    if (!dto.rpaConfig) {
+      throw new BadRequestException("RPA 能力必须上传 ZIP 包并填写平台说明");
+    }
+    const rpa = await this.resolveRpaSource(
+      dto.rpaConfig.packageSha256,
+      dto.rpaConfig.packageFilename,
+    );
+    const validation = this.validator.validateRpa({
+      platform: dto.rpaConfig.platform.toUpperCase() as "SHIZAI" | "YINGDAO",
+      executionMode: "DOWNLOAD",
+      packageSha256: rpa.sha256,
+      configDoc: dto.rpaConfig.configDoc,
+    });
+    if (!validation.valid) {
+      throw new BadRequestException({
+        message: "自动校验未通过，暂不能申请平台投稿",
+        validation,
+      });
+    }
+    await this.security?.assertReviewable(rpa.sha256, "RPA");
+    const submittedAt = new Date();
+    const created = await this.createCapability(userId, dto, null, {
+      rpa,
+      platformSubmission: { validation, submittedAt },
+    });
+    await this.notifyPlatformReviewers(
+      created.id,
+      `能力「${created.name}」已提交平台审核，请及时处理。`,
+    );
+    return created;
+  }
+
+  private async createCapability(
+    userId: string,
+    dto: ContributionCapabilityCreateDto,
+    enterpriseId: string | null,
+    options?: {
+      rpa?: ResolvedRpaSource;
+      platformSubmission?: {
+        validation: ReturnType<CapabilityValidatorService["validateRpa"]>;
+        submittedAt: Date;
+      };
+    },
+  ) {
     if (dto.type === "agent" && !dto.agentConfig) {
       throw new BadRequestException("Agent 能力必须提供执行平台配置");
     }
@@ -465,12 +527,13 @@ export class CapabilityContributionService {
       throw new BadRequestException("RPA 能力必须上传 ZIP 包并填写平台说明");
     }
 
-    const rpa = dto.rpaConfig
+    const rpa = options?.rpa ?? (dto.rpaConfig
       ? await this.resolveRpaSource(
           dto.rpaConfig.packageSha256,
           dto.rpaConfig.packageFilename,
         )
-      : null;
+      : null);
+    const platformSubmission = options?.platformSubmission;
     return this.prisma.capability.create({
       data: {
         name: dto.name,
@@ -481,7 +544,15 @@ export class CapabilityContributionService {
         inputSchema: dto.inputSchema,
         outputSchema: dto.outputSchema,
         contributorId: userId,
-        enterpriseId: ctx?.enterpriseId ?? null,
+        enterpriseId,
+        ...(platformSubmission && {
+          platformReviewStatus: "PENDING_REVIEW",
+          platformSubmittedById: userId,
+          platformSubmittedAt: platformSubmission.submittedAt,
+          platformRejectionReason: null,
+          validationResult: platformSubmission.validation,
+          validatedAt: platformSubmission.submittedAt,
+        }),
         ...(rpa &&
           dto.rpaConfig && {
             rpaConfig: {
@@ -503,7 +574,13 @@ export class CapabilityContributionService {
                 packageFileCount: rpa.fileCount,
                 packageBytes: rpa.totalBytes,
                 configDoc: dto.rpaConfig.configDoc,
-                status: "DRAFT",
+                status: platformSubmission ? "PENDING_PLATFORM_REVIEW" : "DRAFT",
+                ...(platformSubmission && {
+                  submittedAt: platformSubmission.submittedAt,
+                  validationResult: platformSubmission.validation,
+                  validatedAt: platformSubmission.submittedAt,
+                  rejectionReason: null,
+                }),
                 createdById: userId,
               },
             },

@@ -43,6 +43,7 @@ describe('AdminService', () => {
     },
     digitalEmployee: {
       findMany: jest.fn(),
+      findUnique: jest.fn(),
       count: jest.fn(),
     },
     skillVersion: {
@@ -93,6 +94,22 @@ describe('AdminService', () => {
   });
 
   describe('listEmployees', () => {
+    it('filters archived and disabled bindings from employee results, counts and search', async () => {
+      mockPrismaService.digitalEmployee.findMany.mockResolvedValue([]);
+      mockPrismaService.digitalEmployee.count.mockResolvedValue(0);
+
+      await service.listEmployees({ capabilityKeyword: '分析' });
+
+      const activeBinding = { enabled: true, capability: { status: 'APPROVED' } };
+      expect(mockPrismaService.digitalEmployee.findMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: { AND: [{ bindings: { some: { enabled: true, capability: { status: 'APPROVED', name: { contains: '分析', mode: 'insensitive' } } } } }] },
+        include: expect.objectContaining({
+          bindings: expect.objectContaining({ where: activeBinding }),
+          _count: { select: { bindings: { where: activeBinding } } },
+        }),
+      }));
+    });
+
     it('applies the requested sort field and direction', async () => {
       mockPrismaService.digitalEmployee.findMany.mockResolvedValue([]);
       mockPrismaService.digitalEmployee.count.mockResolvedValue(0);
@@ -103,6 +120,18 @@ describe('AdminService', () => {
         orderBy: { name: 'asc' },
       }));
     });
+  });
+
+  it('shows only usable bindings in the employee detail summary', async () => {
+    mockPrismaService.digitalEmployee.findUnique.mockResolvedValue({ id: 'emp-1', bindings: [] });
+
+    await service.getEmployeeDetail('emp-1');
+
+    expect(mockPrismaService.digitalEmployee.findUnique).toHaveBeenCalledWith(expect.objectContaining({
+      include: expect.objectContaining({ bindings: expect.objectContaining({
+        where: { enabled: true, capability: { status: 'APPROVED' } },
+      }) }),
+    }));
   });
 
   describe('listCapabilities', () => {
@@ -256,7 +285,7 @@ describe('AdminService', () => {
       expect(mockPrismaService.contributionRewardEvent.create).not.toHaveBeenCalled();
     });
 
-    it.each(['AGENT', 'RPA', 'AI_APP'])('preserves inline review for %s', async (type) => {
+    it.each(decision === 'approve' ? ['AGENT', 'AI_APP'] : ['AGENT', 'RPA', 'AI_APP'])('preserves inline review for %s', async (type) => {
       mockPrismaService.capability.findUnique.mockResolvedValue({ id: 'cap', type, status: 'PENDING' });
       const updated = { id: 'cap', type, status: decision === 'approve' ? 'APPROVED' : 'REJECTED' };
       mockPrismaService.capability.update.mockResolvedValue(updated);
@@ -273,7 +302,7 @@ describe('AdminService', () => {
     it('preserves enterprise contribution status, visibility and reward behavior', async () => {
       mockSettingService.getEffectiveValue.mockImplementation(async (key) => key === 'CONTRIBUTION_REWARDS_ENABLED' ? 'true' : undefined);
       mockPrismaService.capability.findUnique.mockResolvedValue({
-        id: 'cap', type: 'RPA', status: 'PENDING', platformReviewStatus: 'PENDING_REVIEW',
+        id: 'cap', type: 'AGENT', status: 'PENDING', platformReviewStatus: 'PENDING_REVIEW',
         contributorId: 'contributor', enterpriseId: 'enterprise',
       });
       mockPrismaService.contributionRewardEvent.findUnique.mockResolvedValue(null);
@@ -298,7 +327,7 @@ describe('AdminService', () => {
     it('preserves missing capability and non-pending errors for non-skills', async () => {
       mockPrismaService.capability.findUnique.mockResolvedValue(null);
       await expect(review()).rejects.toThrow(NotFoundException);
-      mockPrismaService.capability.findUnique.mockResolvedValue({ id: 'cap', type: 'RPA', status: 'APPROVED' });
+      mockPrismaService.capability.findUnique.mockResolvedValue({ id: 'cap', type: 'AGENT', status: 'APPROVED' });
       await expect(review()).rejects.toThrow('只能审核待审核状态的能力');
       expect(mockPrismaService.$transaction).not.toHaveBeenCalled();
     });
@@ -307,7 +336,7 @@ describe('AdminService', () => {
   describe('approveCapability reward switch', () => {
     beforeEach(() => {
       mockPrismaService.capability.findUnique.mockResolvedValue({
-        id: 'cap', type: 'RPA', status: 'PENDING', platformReviewStatus: 'PENDING_REVIEW',
+        id: 'cap', type: 'AGENT', status: 'PENDING', platformReviewStatus: 'PENDING_REVIEW',
         contributorId: 'contributor', enterpriseId: 'enterprise',
       });
       mockPrismaService.capability.update.mockResolvedValue({ id: 'cap', status: 'APPROVED', platformReviewStatus: 'APPROVED', visibility: 'MARKET_PUBLIC' });
@@ -343,6 +372,15 @@ describe('AdminService', () => {
         mockPrismaService, 'contributor', new Prisma.Decimal(expected), 'reward', expect.any(String),
       );
     });
+  });
+
+  it.each(['NOT_SUBMITTED', 'PENDING_REVIEW'])('blocks generic RPA approval with %s so draft versions cannot be falsely published', async (platformReviewStatus) => {
+    mockPrismaService.capability.findUnique.mockResolvedValue({ id: 'rpa', type: 'RPA', status: 'PENDING', platformReviewStatus });
+
+    await expect(service.approveCapability('rpa', 'admin')).rejects.toThrow('投稿审核队列');
+
+    expect(mockPrismaService.capability.update).not.toHaveBeenCalled();
+    expect(mockPrismaService.$transaction).not.toHaveBeenCalled();
   });
 
   describe('getComputeSummary', () => {

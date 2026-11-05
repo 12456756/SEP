@@ -189,6 +189,52 @@ describe('Employee publication and binding readiness protection', () => {
     expect(prisma.employeeCapabilityBinding.update).not.toHaveBeenCalled();
   });
 
+  it('edits metadata after the last capability is archived without replacing bindings', async () => {
+    state.employee.status = 'APPROVED';
+    capabilities[0].status = 'ARCHIVED';
+    state.bindings[0].enabled = false;
+    const bindings = structuredClone(state.bindings);
+
+    await admin.updateEmployee('emp-1', { name: '新名称' }, 'operator');
+
+    expect(state.employee.name).toBe('新名称');
+    expect(state.employee.status).toBe('APPROVED');
+    expect(state.bindings).toEqual(bindings);
+    expect(prisma.employeeCapabilityBinding.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('saves metadata and changed capabilities together', async () => {
+    state.employee.status = 'APPROVED';
+
+    await admin.updateEmployee('emp-1', { name: '新名称', capabilityIds: ['cap-2'] }, 'operator');
+
+    expect(state.employee.name).toBe('新名称');
+    expect(state.bindings.map((binding) => binding.capabilityId)).toEqual(['cap-2']);
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('rolls back metadata and bindings when the new selection is not runnable', async () => {
+    state.employee.status = 'APPROVED';
+    versions[1].content = '';
+    const snapshot = structuredClone(state);
+
+    await expect(admin.updateEmployee('emp-1', { name: '不能部分保存', capabilityIds: ['cap-2'] }, 'operator'))
+      .rejects.toBeInstanceOf(BadRequestException);
+
+    expect(state).toEqual(snapshot);
+  });
+
+  it('rolls back binding changes if the employee metadata update fails', async () => {
+    state.employee.status = 'APPROVED';
+    const snapshot = structuredClone(state);
+    prisma.digitalEmployee.update.mockRejectedValueOnce(new BadRequestException('资料保存失败'));
+
+    await expect(admin.updateEmployee('emp-1', { name: '不能部分保存', capabilityIds: ['cap-2'] }, 'operator'))
+      .rejects.toThrow('资料保存失败');
+
+    expect(state).toEqual(snapshot);
+  });
+
   it('uses runtime release ordering for admin replacement default versions', async () => {
     await admin.bindCapabilities('emp-1', ['cap-1'], 'operator');
     expect(prisma.skillVersion.findMany).toHaveBeenCalledWith(expect.objectContaining({

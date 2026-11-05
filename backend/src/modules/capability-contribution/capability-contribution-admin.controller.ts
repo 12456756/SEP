@@ -5,7 +5,13 @@ import { z } from 'zod';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { ContributionEmployeeBindSchema, ContributionReviewDecisionSchema } from 'shared';
+import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
+import {
+  ContributionCapabilityCreateDtoSchema,
+  ContributionEmployeeBindSchema,
+  ContributionReviewDecisionSchema,
+  type ContributionCapabilityCreateDto,
+} from 'shared';
 import { CapabilityContributionService } from './capability-contribution.service';
 
 const PLATFORM_STATUSES = ['PENDING_REVIEW', 'APPROVED', 'REJECTED'] as const;
@@ -20,6 +26,17 @@ type AuthRequest = { user: { id: string } };
 @Controller('admin/contributions')
 export class CapabilityContributionAdminController {
   constructor(private readonly service: CapabilityContributionService) {}
+
+  @Post('rpa')
+  @ApiOperation({ summary: '创建 RPA 并直接提交平台审核' })
+  @ApiResponse({ status: 201, description: 'RPA 已进入平台审核队列' })
+  @ApiResponse({ status: 400, description: 'RPA 包或能力配置未通过校验' })
+  createRpa(
+    @Request() req: AuthRequest,
+    @Body(new ZodValidationPipe(ContributionCapabilityCreateDtoSchema)) dto: ContributionCapabilityCreateDto,
+  ) {
+    return this.service.createPlatformRpaSubmission(req.user.id, dto);
+  }
 
   @Get()
   @ApiOperation({ summary: '平台贡献投稿队列' })

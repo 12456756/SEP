@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { ArrowLeft, Workflow } from 'lucide-react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ContributionCreateDialog } from '@/features/contribution/contribution-create-dialog';
@@ -90,6 +91,7 @@ function PlatformSelector({ selected, onSelect }: { selected: CapabilityKind | n
 }
 
 export default function NewCapabilityPage() {
+  const router = useRouter();
   const [selected, setSelected] = useState<CapabilityKind | null>(null);
 
   return (
@@ -124,8 +126,12 @@ export default function NewCapabilityPage() {
 
       <ContributionCreateDialog
         open={selected === 'RPA'}
+        mode="platform-review"
         onOpenChange={(open) => {
           if (!open) setSelected(null);
+        }}
+        onSuccess={(capability) => {
+          router.push(`/admin/contributions?selected=${encodeURIComponent(capability.id)}`);
         }}
       />
     </div>

@@ -20,7 +20,7 @@ import { ApiError } from '@/lib/api-client';
 import {
   useAvailableCapabilities,
   useEmployeeBindings,
-  useBindCapabilities,
+  useSaveAdminEmployee,
   useDefaultEmployeeGiftCNY,
   useDefaultEmployeeGiftPercentage,
 } from '@/features/admin/use-admin';
@@ -57,11 +57,16 @@ export default function EditEmployeePage() {
 
   const { data: capabilities, isLoading: capabilitiesLoading, isError: capabilitiesError } =
     useAvailableCapabilities();
-  const { data: bindings } = useEmployeeBindings(employeeId);
-  const bindCapabilitiesMutation = useBindCapabilities();
+  const { data: bindings, isLoading: bindingsLoading, isError: bindingsError } = useEmployeeBindings(employeeId);
+  const saveEmployee = useSaveAdminEmployee();
+  const boundCapabilities = (bindings ?? [])
+    .filter((binding) => binding.enabled && binding.capability.status === 'APPROVED')
+    .map((binding) => binding.capability.id);
   const selectedCapabilities = capabilitySelection?.employeeId === employeeId
     ? capabilitySelection.ids
-    : bindings?.map((binding) => binding.capability.id) ?? [];
+    : boundCapabilities;
+  const capabilitiesChanged = selectedCapabilities.length !== boundCapabilities.length ||
+    selectedCapabilities.some((id, index) => id !== boundCapabilities[index]);
   const handleCapabilitiesChange = (ids: string[]) => setCapabilitySelection({ employeeId, ids });
 
   const industries = [
@@ -131,12 +136,16 @@ export default function EditEmployeePage() {
   }, [employeeId, router]);
 
   const handleSubmit = async () => {
+    if (bindingsLoading || bindingsError || !bindings) {
+      toast.error('能力绑定尚未加载完成，请刷新后重试');
+      return;
+    }
     if (!formData.name.trim()) {
       toast.error('请输入员工名称');
       return;
     }
 
-    if (selectedCapabilities.length === 0) {
+    if (capabilitiesChanged && selectedCapabilities.length === 0) {
       toast.error('请至少选择一个能力');
       return;
     }
@@ -149,13 +158,13 @@ export default function EditEmployeePage() {
 
     try {
       setIsSubmitting(true);
-      await adminApi.updateEmployee(employeeId, {
-        ...formData,
-        includedComputeCNY: gift,
-      });
-      await bindCapabilitiesMutation.mutateAsync({
-        employeeId,
-        capabilityIds: selectedCapabilities,
+      await saveEmployee.mutateAsync({
+        id: employeeId,
+        data: {
+          ...formData,
+          includedComputeCNY: gift,
+          ...(capabilitiesChanged ? { capabilityIds: selectedCapabilities } : {}),
+        },
       });
       toast.success('员工信息更新成功');
       router.push('/admin/employees');

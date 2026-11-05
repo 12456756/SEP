@@ -332,6 +332,9 @@ export class CapabilityService {
   async approve(id: string, requesterId: string, requesterRole: string) {
     if (requesterRole !== ADMIN_ROLE) throw new ForbiddenException('Admin role required');
     const cap = await this.findOneInternal(id);
+    if (cap.type === 'RPA') {
+      throw new BadRequestException('RPA 请通过投稿审核队列发布版本');
+    }
     if (cap.type === 'SKILL') {
       await this.reviewSkillVersion(cap.id, requesterId, 'APPROVE');
       return this.findOneInternal(cap.id);

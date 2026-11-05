@@ -85,6 +85,10 @@ export class TaskPlanningService {
         industry: true,
         avatar: true,
         bindings: {
+          where: {
+            enabled: true,
+            capability: { status: 'APPROVED' },
+          },
           orderBy: { priority: 'asc' },
           select: {
             capability: {
