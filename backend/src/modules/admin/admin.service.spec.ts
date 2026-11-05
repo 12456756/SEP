@@ -37,6 +37,7 @@ describe('AdminService', () => {
       count: jest.fn(),
       findUnique: jest.fn(),
       update: jest.fn(),
+      delete: jest.fn(),
     },
     employeeCapabilityBinding: {
       updateMany: jest.fn(),
@@ -240,6 +241,47 @@ describe('AdminService', () => {
       };
       expect(mockPrismaService.capability.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expectedWhere }));
       expect(mockPrismaService.capability.count).toHaveBeenCalledWith({ where: expectedWhere });
+    });
+  });
+
+  describe('deleteCapability', () => {
+    it.each(['PENDING', 'REJECTED', 'ARCHIVED'])('deletes an unbound %s capability', async (status) => {
+      mockPrismaService.capability.findUnique.mockResolvedValue({ id: 'cap', status, bindings: [] });
+      await expect(service.deleteCapability('cap')).resolves.toEqual({ success: true });
+      expect(mockPrismaService.capability.delete).toHaveBeenCalledWith({ where: { id: 'cap' } });
+    });
+
+    it('allows archived capabilities with disabled historical bindings', async () => {
+      mockPrismaService.capability.findUnique.mockResolvedValue({
+        id: 'cap', status: 'ARCHIVED', bindings: [{ id: 'binding', enabled: false }],
+      });
+      await expect(service.deleteCapability('cap')).resolves.toEqual({ success: true });
+      expect(mockPrismaService.capability.delete).toHaveBeenCalledWith({ where: { id: 'cap' } });
+    });
+
+    it.each([
+      { status: 'APPROVED', bindings: [] },
+      { status: 'ARCHIVED', bindings: [{ enabled: true }] },
+      { status: 'PENDING', bindings: [{ enabled: false }] },
+      { status: 'REJECTED', bindings: [{ enabled: true }] },
+    ])('protects published or bound capabilities: %j', async (capability) => {
+      mockPrismaService.capability.findUnique.mockResolvedValue({ id: 'cap', ...capability });
+      await expect(service.deleteCapability('cap')).rejects.toThrow(BadRequestException);
+      expect(mockPrismaService.capability.delete).not.toHaveBeenCalled();
+    });
+
+    it('rejects a missing capability', async () => {
+      mockPrismaService.capability.findUnique.mockResolvedValue(null);
+      await expect(service.deleteCapability('missing')).rejects.toThrow(NotFoundException);
+      expect(mockPrismaService.capability.delete).not.toHaveBeenCalled();
+    });
+
+    it('explains when retained usage records prevent deletion', async () => {
+      mockPrismaService.capability.findUnique.mockResolvedValue({ id: 'cap', status: 'ARCHIVED', bindings: [] });
+      mockPrismaService.capability.delete.mockRejectedValueOnce(new Prisma.PrismaClientKnownRequestError(
+        'Foreign key constraint violated', { code: 'P2003', clientVersion: '6.1.0' },
+      ));
+      await expect(service.deleteCapability('cap')).rejects.toThrow('能力仍有关联的使用记录，无法删除');
     });
   });
 

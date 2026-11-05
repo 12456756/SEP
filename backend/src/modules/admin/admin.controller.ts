@@ -737,9 +737,9 @@ export class AdminController {
   }
 
   @Delete('capabilities/:id')
-  @ApiOperation({ summary: '删除能力（仅待审核或已拒绝）' })
+  @ApiOperation({ summary: '删除能力（待审核、已拒绝或已下架）' })
   @ApiResponse({ status: 200, description: '删除成功' })
-  @ApiResponse({ status: 400, description: '已发布或已下架的能力不能删除' })
+  @ApiResponse({ status: 400, description: '已发布、仍被员工绑定或存在关联使用记录的能力不能删除' })
   @ApiResponse({ status: 404, description: '能力不存在' })
   deleteCapabilityAdmin(@Param('id') id: string) {
     return this.adminService.deleteCapability(id);

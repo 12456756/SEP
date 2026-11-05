@@ -416,8 +416,8 @@ export default function CapabilitiesPage() {
                               下架
                             </Button>
                           )}
-                          {cap.status !== 'APPROVED' && cap.status !== 'ARCHIVED' && (
-                            <Button variant="ghost" size="sm" onClick={() => setDeleting(cap)}>
+                          {cap.status !== 'APPROVED' && (
+                            <Button variant="ghost" size="sm" aria-label="删除能力" title="删除能力" disabled={remove.isPending} onClick={() => setDeleting(cap)}>
                               <Trash2 className="h-3.5 w-3.5" />
                             </Button>
                           )}

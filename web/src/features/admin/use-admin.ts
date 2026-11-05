@@ -99,7 +99,7 @@ export function useRejectCapability() {
   });
 }
 
-/** 删除能力。后端只允许删待审核或已拒绝的。 */
+/** 删除待审核、已拒绝或已下架能力，后端校验绑定与使用记录。 */
 export function useDeleteCapability() {
   const qc = useQueryClient();
   return useMutation({

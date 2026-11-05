@@ -2,12 +2,12 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import CapabilitiesPage from './page';
 
-const { list, approve, reject, reviewSkill, archive, preview } = vi.hoisted(() => ({ list: vi.fn(), approve: vi.fn(), reject: vi.fn(), reviewSkill: vi.fn(), archive: vi.fn(), preview: vi.fn() }));
+const { list, approve, reject, remove, reviewSkill, archive, preview } = vi.hoisted(() => ({ list: vi.fn(), approve: vi.fn(), reject: vi.fn(), remove: vi.fn(), reviewSkill: vi.fn(), archive: vi.fn(), preview: vi.fn() }));
 vi.mock('@/features/admin/use-admin', () => ({
   useAllCapabilities: list,
   useApproveCapability: () => ({ mutate: approve }),
   useRejectCapability: () => ({ mutate: reject }),
-  useDeleteCapability: () => ({ mutate: vi.fn() }),
+  useDeleteCapability: () => ({ mutate: remove }),
   useArchiveCapability: () => ({ mutate: archive, isPending: false }),
 }));
 vi.mock('../skills/use-skill-monitor', () => ({ useMonitorReview: () => ({ mutateAsync: reviewSkill, isPending: false }), useMonitorDetail: preview }));
@@ -68,6 +68,30 @@ describe('能力管理监控入口', () => {
     expect(screen.getByRole('dialog')).toHaveTextContent('员工本身不受影响');
     fireEvent.click(screen.getByRole('button', { name: '确认下架' }));
     expect(archive).toHaveBeenCalledWith('skill-1', expect.objectContaining({ onSuccess: expect.any(Function), onError: expect.any(Function) }));
+  });
+
+  it.each([
+    'PENDING', 'REJECTED', 'ARCHIVED',
+  ])('%s 能力可确认删除，取消时不发送请求', (status) => {
+    list.mockReturnValue({ data: { items: [capability({ status })] } });
+    render(<CapabilitiesPage />);
+    const row = within(screen.getByRole('row', { name: /写作技能/ }));
+    fireEvent.click(row.getByRole('button', { name: '删除能力' }));
+    expect(screen.getByRole('dialog')).toHaveTextContent('确定删除「写作技能」');
+    expect(remove).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    expect(remove).not.toHaveBeenCalled();
+    fireEvent.click(row.getByRole('button', { name: '删除能力' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '删除' }));
+    expect(remove).toHaveBeenCalledWith('skill-1', expect.objectContaining({ onSuccess: expect.any(Function), onError: expect.any(Function) }));
+  });
+
+  it('已发布能力必须先下架，不能直接删除', () => {
+    list.mockReturnValue({ data: { items: [capability({ status: 'APPROVED' })] } });
+    render(<CapabilitiesPage />);
+    const row = within(screen.getByRole('row', { name: /写作技能/ }));
+    expect(row.queryByRole('button', { name: '删除能力' })).not.toBeInTheDocument();
+    expect(row.getByRole('button', { name: '下架' })).toBeInTheDocument();
   });
 
   it.each([

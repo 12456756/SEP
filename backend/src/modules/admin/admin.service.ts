@@ -1212,27 +1212,37 @@ export class AdminService {
   }
 
   /**
-   * 删除能力（仅待审核或已拒绝可删除）
+   * 删除未发布能力；已下架能力允许级联清理停用的历史绑定。
    */
   async deleteCapability(capabilityId: string) {
-    const capability = await this.prisma.capability.findUnique({
-      where: { id: capabilityId },
-      include: { bindings: true },
-    });
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM capabilities WHERE id = ${capabilityId} FOR UPDATE`;
+        const capability = await tx.capability.findUnique({
+          where: { id: capabilityId },
+          include: { bindings: true },
+        });
 
-    if (!capability) throw new NotFoundException('能力不存在');
-    if (capability.status === 'APPROVED' || capability.status === 'ARCHIVED') {
-      throw new BadRequestException('已发布或已下架的能力不能删除');
+        if (!capability) throw new NotFoundException('能力不存在');
+        if (capability.status === 'APPROVED') {
+          throw new BadRequestException('已发布的能力请先下架再删除');
+        }
+        const blockingBindings = capability.status === 'ARCHIVED'
+          ? capability.bindings.filter((binding) => binding.enabled)
+          : capability.bindings;
+        if (blockingBindings.length > 0) {
+          throw new BadRequestException('能力已被员工绑定，无法删除');
+        }
+
+        await tx.capability.delete({ where: { id: capabilityId } });
+        return { success: true };
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2003') {
+        throw new BadRequestException('能力仍有关联的使用记录，无法删除');
+      }
+      throw error;
     }
-    if (capability.bindings?.length > 0) {
-      throw new BadRequestException('能力已被员工绑定，无法删除');
-    }
-
-    await this.prisma.capability.delete({
-      where: { id: capabilityId },
-    });
-
-    return { success: true };
   }
 
   /**
