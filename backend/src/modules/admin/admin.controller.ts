@@ -311,6 +311,8 @@ export class AdminController {
   @ApiQuery({ name: 'industry', required: false, type: String })
   @ApiQuery({ name: 'position', required: false, type: String })
   @ApiQuery({ name: 'capabilityKeyword', required: false, type: String })
+  @ApiQuery({ name: 'sortBy', required: false, enum: ['createdAt', 'name', 'annualPriceCNY'] })
+  @ApiQuery({ name: 'sortOrder', required: false, enum: ['asc', 'desc'] })
   @ApiResponse({ status: 200, description: '返回员工列表' })
   listEmployees(
     @Query('status') status?: 'PENDING' | 'APPROVED' | 'REJECTED' | 'DRAFT' | 'ARCHIVED',
@@ -320,6 +322,8 @@ export class AdminController {
     @Query('industry') industry?: string,
     @Query('position') position?: string,
     @Query('capabilityKeyword') capabilityKeyword?: string,
+    @Query('sortBy') sortBy?: string,
+    @Query('sortOrder') sortOrder?: string,
   ) {
     return this.adminService.listEmployees({
       status,
@@ -329,6 +333,8 @@ export class AdminController {
       industry,
       position,
       capabilityKeyword,
+      sortBy: ['createdAt', 'name', 'annualPriceCNY'].includes(sortBy ?? '') ? sortBy as 'createdAt' | 'name' | 'annualPriceCNY' : undefined,
+      sortOrder: sortOrder === 'asc' ? 'asc' : sortOrder === 'desc' ? 'desc' : undefined,
     });
   }
 
@@ -616,6 +622,8 @@ export class AdminController {
   @ApiQuery({ name: 'page', required: false, type: Number, description: '页码，默认1' })
   @ApiQuery({ name: 'pageSize', required: false, type: Number, description: '每页数量，默认20' })
   @ApiQuery({ name: 'keyword', required: false, type: String, description: '按能力名称、描述或来源企业搜索' })
+  @ApiQuery({ name: 'sortBy', required: false, enum: ['createdAt', 'name', 'usageCount'] })
+  @ApiQuery({ name: 'sortOrder', required: false, enum: ['asc', 'desc'] })
   @ApiResponse({ status: 200, description: '返回能力列表' })
   listCapabilitiesAdmin(
     @Query('status') status?: 'PENDING' | 'APPROVED' | 'REJECTED',
@@ -623,6 +631,8 @@ export class AdminController {
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
     @Query('keyword') keyword?: string,
+    @Query('sortBy') sortBy?: string,
+    @Query('sortOrder') sortOrder?: string,
   ) {
     return this.adminService.listCapabilities({
       status,
@@ -630,6 +640,8 @@ export class AdminController {
       page: page ? parseInt(page, 10) : undefined,
       pageSize: pageSize ? parseInt(pageSize, 10) : undefined,
       keyword,
+      sortBy: ['createdAt', 'name', 'usageCount'].includes(sortBy ?? '') ? sortBy as 'createdAt' | 'name' | 'usageCount' : undefined,
+      sortOrder: sortOrder === 'asc' ? 'asc' : sortOrder === 'desc' ? 'desc' : undefined,
     });
   }
 

@@ -37,13 +37,22 @@ export interface AdminCapabilityRow extends Capability {
  *   · PENDING  → 平台自有待审 OR 企业投稿待平台审核
  *   · APPROVED → 平台自有已通过 OR 市场公开已过审
  */
-export function useAllCapabilities(status?: string, page = 1, pageSize = 20, keyword = "") {
+export function useAllCapabilities(
+  status?: string,
+  page = 1,
+  pageSize = 20,
+  keyword = '',
+  sortBy: 'createdAt' | 'name' | 'usageCount' = 'createdAt',
+  sortOrder: 'asc' | 'desc' = 'desc',
+) {
   const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
   if (status) params.set('status', status);
   const normalizedKeyword = keyword.trim();
   if (normalizedKeyword) params.set('keyword', normalizedKeyword);
+  params.set('sortBy', sortBy);
+  params.set('sortOrder', sortOrder);
   return useQuery({
-    queryKey: ['capabilities', { status: status ?? 'ALL', page, pageSize, keyword: normalizedKeyword }],
+    queryKey: ['capabilities', { status: status ?? 'ALL', page, pageSize, keyword: normalizedKeyword, sortBy, sortOrder }],
     queryFn: async () => {
       const response = await api.get<{
         items: AdminCapabilityRow[];

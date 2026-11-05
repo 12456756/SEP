@@ -105,19 +105,34 @@ describe('能力管理监控入口', () => {
       data: { items: keyword ? items.filter((item) => `${item.name} ${item.description} ${item.enterprise?.name ?? ''}`.includes(keyword)) : items },
     }));
     render(<CapabilitiesPage />);
-    expect(list).toHaveBeenLastCalledWith(undefined, 1, 20, '');
+    expect(list).toHaveBeenLastCalledWith(undefined, 1, 20, '', 'createdAt', 'desc');
     for (const [label, value] of [['待审核', 'PENDING'], ['已发布', 'APPROVED'], ['已拒绝', 'REJECTED'], ['全部', undefined]]) {
       fireEvent.click(screen.getByRole('button', { name: label }));
-      expect(list).toHaveBeenLastCalledWith(value, 1, 20, '');
+      expect(list).toHaveBeenLastCalledWith(value, 1, 20, '', 'createdAt', 'desc');
     }
     const search = screen.getByPlaceholderText('搜索能力名称、描述或来源企业');
     for (const keyword of ['自动化', '账务', '示例企业']) {
       fireEvent.change(search, { target: { value: keyword } });
-      expect(list).toHaveBeenLastCalledWith(undefined, 1, 20, keyword);
+      expect(list).toHaveBeenLastCalledWith(undefined, 1, 20, keyword, 'createdAt', 'desc');
       expect(screen.getByRole('row', { name: /自动化/ })).toBeInTheDocument();
       expect(screen.queryByRole('row', { name: /写作技能/ })).not.toBeInTheDocument();
     }
     fireEvent.change(search, { target: { value: '' } });
     expect(screen.getByRole('row', { name: /写作技能/ })).toBeInTheDocument();
+  });
+
+  it('支持按能力名称和使用次数排序，并标记最近上传的能力', () => {
+    const recent = new Date().toISOString();
+    list.mockReturnValue({ data: { items: [capability({ createdAt: recent })] } });
+    render(<CapabilitiesPage />);
+    expect(screen.getByText('NEW')).toBeInTheDocument();
+    expect(list).toHaveBeenLastCalledWith(undefined, 1, 20, '', 'createdAt', 'desc');
+
+    fireEvent.click(screen.getByRole('combobox', { name: '能力排序字段' }));
+    fireEvent.click(screen.getByRole('option', { name: '使用次数' }));
+    expect(list).toHaveBeenLastCalledWith(undefined, 1, 20, '', 'usageCount', 'desc');
+
+    fireEvent.click(screen.getByRole('button', { name: '切换排序方向（当前降序）' }));
+    expect(list).toHaveBeenLastCalledWith(undefined, 1, 20, '', 'usageCount', 'asc');
   });
 });

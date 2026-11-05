@@ -38,6 +38,10 @@ describe('AdminService', () => {
       findUnique: jest.fn(),
       update: jest.fn(),
     },
+    digitalEmployee: {
+      findMany: jest.fn(),
+      count: jest.fn(),
+    },
     skillVersion: {
       findMany: jest.fn(),
       updateMany: jest.fn(),
@@ -83,6 +87,19 @@ describe('AdminService', () => {
     mockWalletService.adminDeduct.mockResolvedValue({ balance: 50 });
     mockPrismaService.skillVersion.findMany.mockResolvedValue([]);
     mockPrismaService.$transaction.mockImplementation((callback) => callback(mockPrismaService));
+  });
+
+  describe('listEmployees', () => {
+    it('applies the requested sort field and direction', async () => {
+      mockPrismaService.digitalEmployee.findMany.mockResolvedValue([]);
+      mockPrismaService.digitalEmployee.count.mockResolvedValue(0);
+
+      await service.listEmployees({ sortBy: 'name', sortOrder: 'asc' });
+
+      expect(mockPrismaService.digitalEmployee.findMany).toHaveBeenCalledWith(expect.objectContaining({
+        orderBy: { name: 'asc' },
+      }));
+    });
   });
 
   describe('listCapabilities', () => {
@@ -142,6 +159,17 @@ describe('AdminService', () => {
       expect(result.items[0].currentPlatformVersion).toEqual(version);
       expect(result.items[0]).not.toHaveProperty('skillVersions');
       expect(result.items[0].pendingPlatformVersion).toBeNull();
+    });
+
+    it('applies the requested sort field and direction', async () => {
+      mockPrismaService.capability.findMany.mockResolvedValue([]);
+      mockPrismaService.capability.count.mockResolvedValue(0);
+
+      await service.listCapabilities({ sortBy: 'usageCount', sortOrder: 'asc' });
+
+      expect(mockPrismaService.capability.findMany).toHaveBeenCalledWith(expect.objectContaining({
+        orderBy: { usageCount: 'asc' },
+      }));
     });
 
     it.each([

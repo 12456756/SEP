@@ -391,6 +391,8 @@ export const adminApi = {
     industry?: string;
     position?: string;
     capabilityKeyword?: string;
+    sortBy?: 'createdAt' | 'name' | 'annualPriceCNY';
+    sortOrder?: 'asc' | 'desc';
   }) => {
     const searchParams = new URLSearchParams();
     if (params?.status) searchParams.set('status', params.status);
@@ -400,6 +402,8 @@ export const adminApi = {
     if (params?.industry) searchParams.set('industry', params.industry);
     if (params?.position) searchParams.set('position', params.position);
     if (params?.capabilityKeyword) searchParams.set('capabilityKeyword', params.capabilityKeyword);
+    if (params?.sortBy) searchParams.set('sortBy', params.sortBy);
+    if (params?.sortOrder) searchParams.set('sortOrder', params.sortOrder);
 
     const query = searchParams.toString();
     return api.get<EmployeeListResponse>(

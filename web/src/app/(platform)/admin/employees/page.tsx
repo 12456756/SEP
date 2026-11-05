@@ -23,9 +23,10 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { adminApi } from '@/features/admin/admin-api';
 import { toast } from '@/components/ui/toast';
 import { employeeStatusMeta } from '@/lib/status-meta';
-import { Plus, Pencil, Trash2, Archive, Upload, Users, Palette, Search } from 'lucide-react';
+import { Plus, Pencil, Trash2, Archive, Upload, Users, Palette, Search, ArrowDown, ArrowUp } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { common } from '@/locales/zh-CN';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 function StatusBadge({ status }: { status: string }) {
   const meta = employeeStatusMeta(status);
@@ -33,12 +34,22 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 const EMPLOYEES_PAGE_SIZE = 20;
+const NEW_ITEM_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+function isNewItem(date: string | null | undefined) {
+  if (!date) return false;
+  const timestamp = new Date(date).getTime();
+  const age = Date.now() - timestamp;
+  return Number.isFinite(timestamp) && age >= 0 && age <= NEW_ITEM_WINDOW_MS;
+}
 
 export default function AdminEmployeesPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [tab, setTab] = useState<'approved' | 'draft' | 'pending'>('approved');
   const [page, setPage] = useState(1);
+  const [sortBy, setSortBy] = useState<'createdAt' | 'name' | 'annualPriceCNY'>('createdAt');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [filters, setFilters] = useState({ keyword: '', industry: '', position: '', capabilityKeyword: '' });
   const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; employeeId: string; employeeName: string }>({
     open: false,
@@ -47,7 +58,7 @@ export default function AdminEmployeesPage() {
   });
 
   const { data: employeesResponse, isLoading, isError, error } = useQuery({
-    queryKey: ['admin-employees', tab, page, filters],
+    queryKey: ['admin-employees', tab, page, filters, sortBy, sortOrder],
     queryFn: async () => {
       const statusMap = {
         approved: 'APPROVED',
@@ -58,6 +69,8 @@ export default function AdminEmployeesPage() {
         status: statusMap[tab] as any,
         page,
         pageSize: EMPLOYEES_PAGE_SIZE,
+        sortBy,
+        sortOrder,
         ...Object.fromEntries(Object.entries(filters).map(([key, value]) => [key, value.trim() || undefined])),
       });
     },
@@ -166,6 +179,29 @@ export default function AdminEmployeesPage() {
               <div className="grid gap-2 pt-2 md:grid-cols-4">
                 {([['keyword', '搜索员工名称'], ['industry', '行业'], ['position', '岗位'], ['capabilityKeyword', '绑定能力']] as const).map(([key, placeholder]) => <div key={key} className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted" /><Input value={filters[key]} onChange={(e) => { setFilters((current) => ({ ...current, [key]: e.target.value })); setPage(1); }} placeholder={placeholder} className="pl-9" /></div>)}
               </div>
+              <div className="flex flex-wrap items-center gap-2 pt-3">
+                <span className="text-sm text-fg-muted">排序</span>
+                <Select value={sortBy} onValueChange={(value: typeof sortBy) => { setSortBy(value); setPage(1); }}>
+                  <SelectTrigger aria-label="员工排序字段" className="h-9 w-36">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="createdAt">创建时间</SelectItem>
+                    <SelectItem value="name">员工名称</SelectItem>
+                    <SelectItem value="annualPriceCNY">年费价格</SelectItem>
+                  </SelectContent>
+                </Select>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  aria-label={`切换排序方向（当前${sortOrder === 'desc' ? '降序' : '升序'}）`}
+                  onClick={() => { setSortOrder((current) => current === 'desc' ? 'asc' : 'desc'); setPage(1); }}
+                >
+                  {sortOrder === 'desc' ? <ArrowDown className="h-4 w-4" /> : <ArrowUp className="h-4 w-4" />}
+                  {sortOrder === 'desc' ? '降序' : '升序'}
+                </Button>
+              </div>
               {!isLoading && !isError && (
                 <p className="text-sm text-fg-muted">
                   共 {totalEmployees} 名{tabLabel}员工，第 {page} / {totalPages} 页
@@ -219,6 +255,9 @@ export default function AdminEmployeesPage() {
                           <div className="flex items-center gap-2">
                             <Avatar name={emp.name} />
                             <span className="font-medium">{emp.name}</span>
+                            {isNewItem(emp.publishedAt ?? emp.createdAt) && (
+                              <Badge className="border-success/30 bg-success/10 text-success">NEW</Badge>
+                            )}
                           </div>
                         </td>
                         <td className="px-5 py-3 text-fg-muted">

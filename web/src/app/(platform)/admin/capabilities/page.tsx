@@ -6,6 +6,8 @@ import { zhCN } from 'date-fns/locale';
 import Link from 'next/link';
 import {
   ArrowUpRight,
+  ArrowDown,
+  ArrowUp,
   Building2,
   Check,
   ChevronLeft,
@@ -22,6 +24,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton, EmptyState } from '@/components/ui/feedback';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import {
@@ -61,6 +64,16 @@ import { common } from '@/locales/zh-CN';
  */
 
 type StatusFilter = 'ALL' | 'APPROVED' | 'PENDING' | 'REJECTED';
+type CapabilitySortBy = 'createdAt' | 'name' | 'usageCount';
+
+const NEW_ITEM_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+function isNewItem(date: string | null | undefined) {
+  if (!date) return false;
+  const timestamp = new Date(date).getTime();
+  const age = Date.now() - timestamp;
+  return Number.isFinite(timestamp) && age >= 0 && age <= NEW_ITEM_WINDOW_MS;
+}
 
 const STATUS_FILTERS: Array<{ key: StatusFilter; label: string }> = [
   { key: 'ALL', label: '全部' },
@@ -84,13 +97,15 @@ export default function CapabilitiesPage() {
   const [status, setStatus] = useState<StatusFilter>('ALL');
   const [keyword, setKeyword] = useState('');
   const [page, setPage] = useState(1);
+  const [sortBy, setSortBy] = useState<CapabilitySortBy>('createdAt');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const pageSize = 20;
   const [rejecting, setRejecting] = useState<AdminCapabilityRow | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [deleting, setDeleting] = useState<AdminCapabilityRow | null>(null);
   const [approvingSkill, setApprovingSkill] = useState<AdminCapabilityRow | null>(null);
 
-  const query = useAllCapabilities(status === 'ALL' ? undefined : status, page, pageSize, keyword);
+  const query = useAllCapabilities(status === 'ALL' ? undefined : status, page, pageSize, keyword, sortBy, sortOrder);
   const approve = useApproveCapability();
   const reject = useRejectCapability();
   const remove = useDeleteCapability();
@@ -191,17 +206,39 @@ export default function CapabilitiesPage() {
               </button>
             ))}
           </div>
-          <div className="relative w-full lg:w-72">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted" />
-            <Input
-              value={keyword}
-              onChange={(e) => {
-                setKeyword(e.target.value);
-                setPage(1);
-              }}
-              placeholder="搜索能力名称、描述或来源企业"
-              className="pl-9"
-            />
+          <div className="flex w-full flex-wrap items-center gap-2 lg:w-auto">
+            <Select value={sortBy} onValueChange={(value: CapabilitySortBy) => { setSortBy(value); setPage(1); }}>
+              <SelectTrigger aria-label="能力排序字段" className="h-9 w-36">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="createdAt">创建时间</SelectItem>
+                <SelectItem value="name">能力名称</SelectItem>
+                <SelectItem value="usageCount">使用次数</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              aria-label={`切换排序方向（当前${sortOrder === 'desc' ? '降序' : '升序'}）`}
+              onClick={() => { setSortOrder((current) => current === 'desc' ? 'asc' : 'desc'); setPage(1); }}
+            >
+              {sortOrder === 'desc' ? <ArrowDown className="h-4 w-4" /> : <ArrowUp className="h-4 w-4" />}
+              {sortOrder === 'desc' ? '降序' : '升序'}
+            </Button>
+            <div className="relative w-full lg:w-72">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted" />
+              <Input
+                value={keyword}
+                onChange={(e) => {
+                  setKeyword(e.target.value);
+                  setPage(1);
+                }}
+                placeholder="搜索能力名称、描述或来源企业"
+                className="pl-9"
+              />
+            </div>
           </div>
         </div>
 
@@ -253,7 +290,10 @@ export default function CapabilitiesPage() {
                       className="border-b border-border transition-colors last:border-0 odd:bg-muted/20 hover:bg-muted/40"
                     >
                       <td className="max-w-[280px] px-5 py-3">
-                        <p className="truncate font-medium">{cap.name}</p>
+                        <p className="flex items-center gap-2 truncate font-medium">
+                          <span className="truncate">{cap.name}</span>
+                          {isNewItem(cap.createdAt) && <Badge className="shrink-0 border-success/30 bg-success/10 text-success">NEW</Badge>}
+                        </p>
                         <p className="truncate text-xs text-fg-subtle">{cap.description}</p>
                       </td>
                       <td className="px-5 py-3">

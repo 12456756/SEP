@@ -429,8 +429,10 @@ export class AdminService {
     industry?: string;
     position?: string;
     capabilityKeyword?: string;
+    sortBy?: 'createdAt' | 'name' | 'annualPriceCNY';
+    sortOrder?: 'asc' | 'desc';
   }) {
-    const { status, page = 1, pageSize = 20, keyword, industry, position, capabilityKeyword } = params || {};
+    const { status, page = 1, pageSize = 20, keyword, industry, position, capabilityKeyword, sortBy = 'createdAt', sortOrder = 'desc' } = params || {};
     const skip = (page - 1) * pageSize;
 
     const where: any = { ...(status ? { status } : {}) };
@@ -465,7 +467,7 @@ export class AdminService {
             },
           },
         },
-        orderBy: { createdAt: 'desc' },
+        orderBy: { [sortBy]: sortOrder },
       }),
       this.prisma.digitalEmployee.count({ where }),
     ]);
@@ -892,8 +894,10 @@ export class AdminService {
     page?: number;
     pageSize?: number;
     keyword?: string;
+    sortBy?: 'createdAt' | 'name' | 'usageCount';
+    sortOrder?: 'asc' | 'desc';
   }) {
-    const { status, type, page = 1, pageSize = 20, keyword } = params || {};
+    const { status, type, page = 1, pageSize = 20, keyword, sortBy = 'createdAt', sortOrder = 'desc' } = params || {};
     const skip = (page - 1) * pageSize;
 
     const where: any = {};
@@ -936,7 +940,7 @@ export class AdminService {
         where,
         skip,
         take: pageSize,
-        orderBy: { createdAt: 'desc' },
+        orderBy: { [sortBy]: sortOrder },
         include: {
           contributor: {
             select: { id: true, email: true, name: true },
