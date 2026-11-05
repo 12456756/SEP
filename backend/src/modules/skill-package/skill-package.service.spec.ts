@@ -215,6 +215,27 @@ describe('SkillPackageService', () => {
   });
 
   describe('upload/install compatibility', () => {
+    it.each([
+      '.sep-package-manifest.json', '.SEP-PACKAGE-MANIFEST.JSON', '．sep-package-manifest.json',
+      'assets/.sep-package-manifest.json', '.sep-package-manifest.json/guide.md',
+      'assets/a\u200bb.txt', 'assets/\u202ereport.txt', 'assets/\u0085file.txt', 'a\u200b/guide.md',
+    ])('rejects client-reserved or invisible paths at upload and installation: %s', async (path) => {
+      const buffer = zipWith([['SKILL.md', installableMarkdown()], [path, 'payload']]);
+      const expected = /保留名|控制字符|不可见格式字符/;
+      await expect(service.store(upload(buffer))).rejects.toThrow(expected);
+      jest.spyOn(service, 'readBytes').mockResolvedValue(buffer);
+      await expect(service.readInstallablePackage(sha256(buffer))).rejects.toThrow(expected);
+    });
+
+    it('preserves safe Unicode attachments and ordinary manifest filenames', async () => {
+      const buffer = zipWith([['SKILL.md', installableMarkdown()],
+        ['资料/ＡＩ指南.md', '中文附件'], ['manifest.json', '{}'], ['assets/.sep-package-manifest.json.example', 'example']]);
+      const stored = await service.store(upload(buffer));
+      const installed = await service.readInstallablePackage(stored.sha256);
+      expect(installed.buffer).toEqual(buffer);
+      expect(new AdmZip(installed.buffer).getEntry('资料/ＡＩ指南.md')!.getData().toString()).toBe('中文附件');
+    });
+
     it.each(['CON.txt', 'com9', 'LPT¹.txt', 'ＮＵＬ.txt', 'dir./file.txt', 'dir /file.txt', 'bad?.txt'])('rejects Windows-unsafe paths at both upload and installation: %s', async (path) => {
       const buffer = zipWith([['SKILL.md', installableMarkdown()], [path, 'payload']]);
       await expect(service.store(upload(buffer))).rejects.toBeInstanceOf(BadRequestException);

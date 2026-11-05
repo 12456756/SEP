@@ -411,6 +411,15 @@ export class SkillPackageService {
 
   private assertInstallableEntryName(entryName: string, isDirectory: boolean) {
     const path = isDirectory && entryName.endsWith('/') ? entryName.slice(0, -1) : entryName;
+    for (const part of path.split('/')) {
+      const normalized = part.normalize('NFKC').toLowerCase();
+      if (normalized === '.sep-package-manifest.json') {
+        throw new BadRequestException('包内路径不能使用客户端缓存清单保留名 .sep-package-manifest.json');
+      }
+      if (/[\p{Cc}\p{Cf}]/u.test(normalized)) {
+        throw new BadRequestException('包内路径不能包含控制字符或不可见格式字符');
+      }
+    }
     if (!entryName || entryName.length > 1024 || !path.split('/').every(isSafeSkillPathComponent)) {
       throw new BadRequestException('包内条目必须为安全相对路径');
     }
