@@ -21,6 +21,7 @@ import { ZodValidationPipe } from "../../shared/zod-validation.pipe";
 import {
   CreateOrderFromCartDtoSchema,
   CreateDirectOrderDtoSchema,
+  CreateBundleOrderDtoSchema,
   GetOrdersQuerySchema,
 } from "./dto/order.dto";
 
@@ -66,6 +67,20 @@ export class OrderController {
     this.enterpriseContext.assertEnterpriseAdmin(ctx);
 
     return this.orderService.createDirect(ctx.enterpriseId, req.user.id, body);
+  }
+
+  @Post("bundles")
+  @ApiOperation({ summary: "创建数字员工套餐订单" })
+  @ApiResponse({ status: 201, description: "套餐订单创建成功" })
+  @ApiResponse({ status: 400, description: "套餐不可购买或企业已有套餐员工订阅" })
+  async createBundle(
+    @Request() req,
+    @Body(new ZodValidationPipe(CreateBundleOrderDtoSchema))
+    body: { bundleId: string },
+  ) {
+    const ctx = await this.enterpriseContext.resolve(req.user.id);
+    this.enterpriseContext.assertEnterpriseAdmin(ctx);
+    return this.orderService.createBundle(ctx.enterpriseId, req.user.id, body.bundleId);
   }
 
   @Get()

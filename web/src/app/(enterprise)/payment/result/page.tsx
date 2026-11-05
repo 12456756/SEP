@@ -84,6 +84,7 @@ export default function PaymentResultPage() {
   const isPaid = order.status === 'PAID';
   const isFailed = order.status === 'FAILED';
   const isPending = order.status === 'PENDING';
+  const marketReturnPath = order.orderType === 'BUNDLE' ? '/marketplace/bundles' : '/cart';
 
   return (
     <div className="mx-auto max-w-2xl space-y-6 p-6">
@@ -127,6 +128,16 @@ export default function PaymentResultPage() {
                 <span className="text-gtext-secondary">订单号</span>
                 <span className="font-mono text-gtext-primary">{order.orderNo}</span>
               </div>
+              <div className="flex justify-between text-sm">
+                <span className="text-gtext-secondary">订单类型</span>
+                <span className="text-gtext-primary">{order.orderType === 'BUNDLE' ? '员工套餐' : '员工订阅'}</span>
+              </div>
+              {order.orderType === 'BUNDLE' && order.bundleName && (
+                <div className="flex justify-between text-sm">
+                  <span className="text-gtext-secondary">套餐名称</span>
+                  <span className="text-gtext-primary">{order.bundleName}</span>
+                </div>
+              )}
               <div className="flex justify-between text-sm">
                 <span className="text-gtext-secondary">订单金额</span>
                 <span className="font-semibold text-gtext-primary">
@@ -185,14 +196,14 @@ export default function PaymentResultPage() {
                   <Button
                     variant="outline"
                     className="flex-1"
-                    onClick={() => router.push('/cart')}
+                    onClick={() => router.push(marketReturnPath)}
                   >
                     返回购物车
                   </Button>
                   <Button
                     variant="primary"
                     className="flex-1"
-                    onClick={() => router.push('/checkout')}
+                    onClick={() => router.push(order.orderType === 'BUNDLE' ? '/marketplace/bundles' : '/checkout')}
                   >
                     重新支付
                   </Button>
@@ -202,7 +213,7 @@ export default function PaymentResultPage() {
                 <Button
                   variant="outline"
                   className="w-full"
-                  onClick={() => router.push('/cart')}
+                  onClick={() => router.push(marketReturnPath)}
                 >
                   返回购物车
                 </Button>
@@ -222,7 +233,7 @@ export default function PaymentResultPage() {
       {order.items && order.items.length > 0 && (
         <Card className="glass-card">
           <CardContent className="p-5">
-            <h2 className="mb-4 font-semibold text-gtext-primary">订单商品</h2>
+            <h2 className="mb-4 font-semibold text-gtext-primary">{order.orderType === 'BUNDLE' ? '套餐内员工' : '订单商品'}</h2>
             <div className="space-y-3">
               {order.items.map((item) => (
                 <div
@@ -244,6 +255,9 @@ export default function PaymentResultPage() {
                       <div className="text-xs text-gtext-secondary">
                         {item.quantity} 位 × {item.periodMonths} 个月
                       </div>
+                      {item.includedComputeCNY !== undefined && (
+                        <div className="text-xs text-gtext-muted">赠送算力 ¥{item.includedComputeCNY.toLocaleString('zh-CN')}</div>
+                      )}
                     </div>
                   </div>
                   <div className="text-sm font-semibold text-gtext-primary">

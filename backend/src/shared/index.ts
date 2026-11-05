@@ -2175,3 +2175,4 @@ export * from './media-gateway.dto';
 export * from './media-real.dto';
 export * from './skill-import-schema';
 export * from './employee-copy.dto';
+export * from './employee-bundle.dto';

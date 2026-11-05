@@ -469,6 +469,7 @@ model DigitalEmployee {
   packages             EmployeePackage[]
   orderItems           OrderItem[]
   cartItems            CartItem[]
+  bundleItems          EmployeeBundleItem[]
   subscriptionCredits  SubscriptionCredit[]
   computeUsageRecords  ComputeUsageRecord[]
 
@@ -1228,6 +1229,55 @@ model Subscription {
   @@unique([enterpriseId, employeeId])
   @@index([enterpriseId])
   @@map("subscriptions")
+}
+
+// ============================================================================
+// Employee Bundle（数字员工套餐）
+// ============================================================================
+
+/// 平台运营预先定义的一组数字员工及其统一成交价。
+/// 套餐购买后会展开为多条 Subscription；套餐本身不承担运行时权限。
+model EmployeeBundle {
+  id           String               @id @default(cuid())
+  code         String               @unique
+  name         String
+  description  String?              @db.Text
+  cover        String?
+  status       EmployeeBundleStatus @default(DRAFT)
+  priceCNY     Decimal              @db.Decimal(12, 2)
+  periodMonths Int                  @default(12)
+  publishedAt  DateTime?
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+
+  items        EmployeeBundleItem[]
+  orders       Order[]
+
+  @@index([status, publishedAt])
+  @@map("employee_bundles")
+}
+
+enum EmployeeBundleStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+/// 套餐中的一个数字员工。includedComputeCNY 为套餐项覆盖值；null 表示
+/// 沿用员工级配置和系统默认比例，0 表示该套餐项明确不赠送。
+model EmployeeBundleItem {
+  id                 String           @id @default(cuid())
+  bundleId           String
+  employeeId         String
+  periodMonths       Int              @default(12)
+  includedComputeCNY Decimal?         @db.Decimal(12, 2)
+
+  bundle             EmployeeBundle  @relation(fields: [bundleId], references: [id], onDelete: Cascade)
+  employee           DigitalEmployee @relation(fields: [employeeId], references: [id], onDelete: Restrict)
+
+  @@unique([bundleId, employeeId])
+  @@index([employeeId])
+  @@map("employee_bundle_items")
 }
 
 /// 成员自己的选版：空 versionId 明确跟随企业；无记录兼容存量个人副本。
@@ -3156,6 +3206,11 @@ enum OrderStatus {
   REFUNDED // 已退款
 }
 
+enum OrderType {
+  EMPLOYEE
+  BUNDLE
+}
+
 /// 充值订单状态
 enum RechargeOrderStatus {
   PENDING // 待支付
@@ -3184,6 +3239,7 @@ model Order {
   /// 下单人（EnterpriseMember.id 或 User.id，这里简化存 User.id）
   createdBy String
 
+  orderType OrderType @default(EMPLOYEE)
   status OrderStatus @default(PENDING)
 
   /// 订单总金额（元）
@@ -3200,6 +3256,13 @@ model Order {
 
   /// 订单关闭时间（超时/取消/退款）
   closedAt DateTime?
+
+  /// 套餐关联与下单快照。套餐被下架或修改后，历史订单仍可独立对账。
+  bundleId           String?
+  bundle             EmployeeBundle? @relation(fields: [bundleId], references: [id], onDelete: SetNull)
+  bundleName         String?
+  bundlePriceCNY     Decimal? @db.Decimal(12, 2)
+  bundlePeriodMonths Int?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -3236,6 +3299,11 @@ model OrderItem {
 
   /// 快照字段：该订阅赠送的算力额度（元）
   includedComputeCNY Decimal @default(0) @db.Decimal(12, 2)
+
+  /// 下单时锁定的员工模板版本和实际成交金额。
+  employeeVersion String?
+  purchaseAmountCNY Decimal? @db.Decimal(12, 2)
+  fulfilledSubscriptionId String? @unique
 
   @@index([orderId])
   @@map("order_items")

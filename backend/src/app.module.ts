@@ -50,6 +50,7 @@ import { GatewayLifecycleModule } from './common/lifecycle/gateway-lifecycle.mod
 import { MediaConfigModule } from './modules/media-config/media-config.module';
 import { MediaGatewayModule } from './modules/media-gateway/media-gateway.module';
 import { SkillImportModule } from './modules/skill-import/skill-import.module';
+import { EmployeeBundleModule } from './modules/employee-bundle/employee-bundle.module';
 import { validateSkillImportEnvironment } from './skill-import-environment';
 
 @Module({
@@ -89,6 +90,7 @@ import { validateSkillImportEnvironment } from './skill-import-environment';
     MediaConfigModule,
     MediaGatewayModule,
     SkillImportModule,
+    EmployeeBundleModule,
     CostAnalyticsModule,
     EnterpriseSettingsModule,
     CartModule,

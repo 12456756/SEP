@@ -3,12 +3,14 @@ import {
   NotFoundException,
   BadRequestException,
   Logger,
+  Optional,
 } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
 import { Prisma } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
 import { assertActiveEnterpriseInTx, assertActiveUserInTx } from '../../common/enterprise-write-lock';
 import { SubscriptionFulfillmentService } from "../subscription-fulfillment/subscription-fulfillment.service";
+import { EmployeeBundleService } from "../employee-bundle/employee-bundle.service";
 
 type FulfillmentOrder = Prisma.OrderGetPayload<{
   include: { items: { include: { employee: true } } };
@@ -21,6 +23,7 @@ export class OrderService {
   constructor(
     private prisma: PrismaService,
     private fulfillment: SubscriptionFulfillmentService,
+    @Optional() private bundles?: EmployeeBundleService,
   ) {}
 
   /**
@@ -221,19 +224,86 @@ export class OrderService {
     });
   }
 
+  /** 从已发布套餐创建订单。价格、员工和算力均由服务端重新读取并固化快照。 */
+  async createBundle(enterpriseId: string, createdBy: string, bundleId: string) {
+    if (!this.bundles) throw new BadRequestException('套餐服务不可用');
+    const bundle = await this.bundles.getForPurchase(bundleId);
+    const employeeIds = bundle.items.map((item) => item.employeeId);
+    const subscriptions = await this.prisma.subscription.findMany({
+      where: { enterpriseId, employeeId: { in: employeeIds }, status: 'ACTIVE' },
+      select: { employeeId: true },
+    });
+    if (subscriptions.length > 0) {
+      throw new BadRequestException(`企业已订阅套餐中的员工：${subscriptions.map((item) => item.employeeId).join('、')}`);
+    }
+
+    const orderNo = this.generateOrderNo();
+    const rawItems = await Promise.all(bundle.items.map(async (item) => {
+      const periodMonths = item.periodMonths || bundle.periodMonths;
+      const unitPrice = item.employee.annualPriceCNY ?? new Decimal(0);
+      const includedComputeCNY = await this.bundles.resolveGiftCNY(item);
+      return {
+        employeeId: item.employeeId,
+        employeeName: item.employee.name,
+        employeeVersion: item.employee.version,
+        unitPrice,
+        periodMonths,
+        quantity: 1,
+        includedComputeCNY: new Decimal(includedComputeCNY),
+        listedSubtotal: unitPrice.mul(new Decimal(periodMonths).div(12)),
+      };
+    }));
+    const listedTotal = rawItems.reduce((sum, item) => sum.add(item.listedSubtotal), new Decimal(0));
+    let allocated = new Decimal(0);
+    const items = rawItems.map((item, index) => {
+      const remaining = Decimal.max(bundle.priceCNY.sub(allocated), new Decimal(0));
+      const proportionalAmount = bundle.priceCNY.mul(item.listedSubtotal)
+        .div(listedTotal)
+        .toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+      const purchaseAmountCNY = index === rawItems.length - 1
+        ? remaining
+        : Decimal.min(proportionalAmount, remaining);
+      allocated = allocated.add(purchaseAmountCNY);
+      const { listedSubtotal: _listedSubtotal, ...snapshot } = item;
+      return { ...snapshot, purchaseAmountCNY };
+    });
+
+    return this.prisma.$transaction(async (tx) => {
+      await assertActiveUserInTx(tx, createdBy);
+      await assertActiveEnterpriseInTx(tx, enterpriseId);
+      return tx.order.create({
+        data: {
+          orderNo,
+          enterpriseId,
+          createdBy,
+          orderType: 'BUNDLE',
+          bundleId: bundle.id,
+          bundleName: bundle.name,
+          bundlePriceCNY: bundle.priceCNY,
+          bundlePeriodMonths: bundle.periodMonths,
+          status: 'PENDING',
+          totalAmount: bundle.priceCNY,
+          items: { create: items },
+        },
+        include: { items: { include: { employee: true } } },
+      });
+    });
+  }
+
   /**
    * 查询订单列表
    */
   async findAll(
     enterpriseId: string,
-    query: { page?: number; limit?: number; status?: string },
+    query: { page?: number; limit?: number; status?: string; orderType?: 'EMPLOYEE' | 'BUNDLE' },
   ) {
-    const { page = 1, limit = 20, status } = query;
+    const { page = 1, limit = 20, status, orderType } = query;
     const skip = (page - 1) * limit;
 
     const where: any = {
       enterpriseId,
       ...(status && { status }),
+      ...(orderType && { orderType }),
     };
 
     const [orders, total] = await Promise.all([
@@ -415,7 +485,7 @@ export class OrderService {
 
       // 赠送金额用**下单时的快照**，不是当前员工配置：订单已经成交，
       // 运营事后改默认值不该改变已付款订单的赠送金额。
-      await this.fulfillment.fulfill(tx, {
+      const result = await this.fulfillment.fulfill(tx, {
         enterpriseId: order.enterpriseId,
         employeeId: item.employeeId,
         purchaserMemberId: purchaser.id,
@@ -424,12 +494,19 @@ export class OrderService {
         endDate,
         sourceType: "order",
         sourceId: order.id,
-        purchaseAmountCNY: new Decimal(item.unitPrice ?? item.employee?.annualPriceCNY ?? 0)
-          .mul(new Decimal(item.periodMonths).div(12))
-          .toNumber(),
+        purchaseAmountCNY: item.purchaseAmountCNY?.toNumber() ?? new Decimal(item.unitPrice ?? item.employee?.annualPriceCNY ?? 0)
+          .mul(new Decimal(item.periodMonths).div(12)).toNumber(),
         purchasePeriodMonths: item.periodMonths,
+        templateVersion: item.employeeVersion ?? undefined,
         grantedCNY: item.includedComputeCNY.toNumber(),
       });
+      // 历史测试替身可能没有 orderItem delegate；真实 Prisma 事务始终具备它。
+      if (tx.orderItem) {
+        await tx.orderItem.update({
+          where: { id: item.id },
+          data: { fulfilledSubscriptionId: result.subscriptionId },
+        });
+      }
     }
 
     // 3. 仅清理本订单对应员工的购物车项，避免直接订阅误清空其他商品

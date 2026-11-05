@@ -69,6 +69,17 @@ describe('SubscriptionFulfillmentService', () => {
       expect(data.status).toBe('ACTIVE');
     });
 
+    it('订单提供模板版本快照时优先使用下单时版本', async () => {
+      await svc.fulfill(prisma, {
+        ...baseParams,
+        sourceType: 'order',
+        templateVersion: '2.0.0',
+      });
+
+      const data = prisma.subscription.create.mock.calls[0][0].data;
+      expect(data.templateVersion).toBe('2.0.0');
+    });
+
     it('购买方（管理员）默认获得使用权，无需再手动分配', async () => {
       await svc.fulfill(prisma, { ...baseParams, sourceType: 'subscription' });
 

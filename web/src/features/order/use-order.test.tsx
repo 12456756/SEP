@@ -27,12 +27,12 @@ const rawOrder = {
   items: [
     {
       id: 'item-1', employeeName: 'Employee One', unitPrice: '12000',
-      periodMonths: 6, quantity: 1,
+      periodMonths: 6, quantity: 1, includedComputeCNY: '30',
       employee: { avatar: '/employee-one.png', annualPriceCNY: '99999' },
     },
     {
       id: 'item-2', employeeName: 'Employee Two', unitPrice: '24000',
-      periodMonths: 12, quantity: 1, employee: { avatar: null },
+      periodMonths: 12, quantity: 1, includedComputeCNY: '0', employee: { avatar: null },
     },
   ],
 };
@@ -77,6 +77,27 @@ describe('order API normalization', () => {
     const { result } = renderHook(() => useOrder('paid-order'), { wrapper: wrapper() });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(result.current.data?.items[0].subtotal).toBe(50.05);
+  });
+
+  it('uses the actual allocated bundle price stored on each order item', async () => {
+    respond({
+      ...rawOrder,
+      orderType: 'BUNDLE',
+      bundleName: 'Operations bundle',
+      bundlePriceCNY: '800.00',
+      totalAmount: '800.00',
+      items: [
+        { ...rawOrder.items[0], purchaseAmountCNY: '400.00' },
+        { ...rawOrder.items[1], purchaseAmountCNY: '400.00' },
+      ],
+    });
+    const { result } = renderHook(() => useOrder('paid-order'), { wrapper: wrapper() });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data).toMatchObject({
+      orderType: 'BUNDLE',
+      bundleName: 'Operations bundle',
+      items: [{ subtotal: 400, includedComputeCNY: 30 }, { subtotal: 400, includedComputeCNY: 0 }],
+    });
   });
 
   it('unwraps the paginated list and normalizes each order', async () => {
@@ -127,6 +148,26 @@ describe('payment result page', () => {
     expect(screen.getByRole('img', { name: 'Employee One' })).toHaveAttribute('src', '/employee-one.png');
     expect(screen.queryByText('缺少订单号')).not.toBeInTheDocument();
     expect(fetch).toHaveBeenCalledWith(expect.stringContaining('/orders/paid-order'), expect.anything());
+  });
+
+  it('renders bundle snapshots using the bundle total and allocated employee amounts', async () => {
+    respond({
+      ...rawOrder,
+      orderType: 'BUNDLE',
+      bundleName: 'Operations bundle',
+      bundlePriceCNY: '800.00',
+      totalAmount: '800.00',
+      items: [
+        { ...rawOrder.items[0], purchaseAmountCNY: '400.00' },
+        { ...rawOrder.items[1], purchaseAmountCNY: '400.00' },
+      ],
+    });
+    render(<PaymentResultPage />, { wrapper: wrapper() });
+    expect(await screen.findByText('Operations bundle')).toBeInTheDocument();
+    expect(screen.getByText('员工套餐')).toBeInTheDocument();
+    expect(screen.getByText('¥800')).toBeInTheDocument();
+    expect(screen.getAllByText('¥400')).toHaveLength(2);
+    expect(screen.getByText('套餐内员工')).toBeInTheDocument();
   });
 
   it('shows a query error instead of an endless loading state', async () => {

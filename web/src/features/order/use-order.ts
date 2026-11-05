@@ -12,6 +12,11 @@ export interface Order {
   items: OrderItem[];
   createdAt: string;
   paidAt: string | null;
+  orderType?: "EMPLOYEE" | "BUNDLE";
+  bundleName?: string | null;
+  bundlePriceCNY?: number | null;
+  bundlePeriodMonths?: number | null;
+  bundleId?: string | null;
 }
 
 export interface OrderItem {
@@ -22,6 +27,8 @@ export interface OrderItem {
   periodMonths: number;
   quantity: number;
   subtotal: number;
+  includedComputeCNY?: number;
+  employeeVersion?: string | null;
 }
 
 export interface CreateOrderResponse {
@@ -35,8 +42,10 @@ type BalancePaymentResponse = Omit<Order, "items">;
 
 type OrderApiResponse = Omit<Order, "totalAmount" | "items"> & {
   totalAmount: string | number;
-  items: (Omit<OrderItem, "unitPrice" | "subtotal" | "employeeAvatar"> & {
+  items: (Omit<OrderItem, "unitPrice" | "subtotal" | "employeeAvatar" | "includedComputeCNY"> & {
     unitPrice: string | number;
+    purchaseAmountCNY?: string | number | null;
+    includedComputeCNY: string | number;
     employee: { avatar: string | null } | null;
   })[];
 };
@@ -61,9 +70,12 @@ function normalizeOrder(order: OrderApiResponse): Order {
       return {
         ...item,
         unitPrice,
+        includedComputeCNY: parseAmount(item.includedComputeCNY),
         employeeAvatar: item.employee?.avatar ?? null,
-        // Use the purchased snapshot, never the employee's current price.
-        subtotal: unitPrice * (item.periodMonths / 12) * item.quantity,
+        // Bundle line amounts are allocated from the bundle price and stored on the order item.
+        subtotal: item.purchaseAmountCNY == null
+          ? unitPrice * (item.periodMonths / 12) * item.quantity
+          : parseAmount(item.purchaseAmountCNY),
       };
     }),
   };
@@ -72,6 +84,10 @@ function normalizeOrder(order: OrderApiResponse): Order {
 export interface CreateDirectOrderDto {
   employeeId: string;
   periodMonths?: number;
+}
+
+export interface CreateBundleOrderDto {
+  bundleId: string;
 }
 
 export interface AlipayPaymentResponse {
@@ -124,6 +140,23 @@ async function createDirectOrder(
   if (!res.ok) {
     const err = await res.json();
     throw new Error(err.message || "Failed to create direct order");
+  }
+  return normalizeOrder(await res.json());
+}
+
+async function createBundleOrder(body: CreateBundleOrderDto): Promise<CreateOrderResponse> {
+  const token = authAccessor.getToken();
+  const res = await fetch(`${API_BASE}/orders/bundles`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.json();
+    throw new Error(err.message || "Failed to create bundle order");
   }
   return normalizeOrder(await res.json());
 }
@@ -201,6 +234,10 @@ export function useCreateOrder() {
 
 export function useCreateDirectOrder() {
   return useMutation({ mutationFn: createDirectOrder });
+}
+
+export function useCreateBundleOrder() {
+  return useMutation({ mutationFn: createBundleOrder });
 }
 
 export function useCreateAlipayPayment() {

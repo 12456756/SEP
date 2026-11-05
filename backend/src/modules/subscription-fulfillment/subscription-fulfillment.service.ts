@@ -25,6 +25,8 @@ export interface FulfillSubscriptionParams {
   /** 实际成交金额快照；市场订单和直接订阅都必须显式传入。 */
   purchaseAmountCNY?: number;
   purchasePeriodMonths?: number;
+  /** 下单时锁定的员工模板版本；未提供时取履约时当前版本。 */
+  templateVersion?: string;
   /**
    * 赠送金额（元）。**由调用方显式传入**：市场订单要用下单时的快照，
    * 直接订阅要用当前员工配置，两者不能在这里替对方猜。
@@ -135,7 +137,7 @@ export class SubscriptionFulfillmentService {
             status: 'ACTIVE',
             startDate,
             endDate,
-            templateVersion: employee.version,
+            templateVersion: params.templateVersion ?? employee.version,
             name: params.displayName ?? employee.name,
             config: params.config,
             purchaseAmountCNY: params.purchaseAmountCNY,

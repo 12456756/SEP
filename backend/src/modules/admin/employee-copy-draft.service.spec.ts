@@ -30,6 +30,10 @@ describe('EmployeeCopyDraftService', () => {
     `data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\ndata: [DONE]\n\n`,
     { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
   );
+  const responsesStreamed = (content: string) => new Response(
+    `event: response.output_text.delta\ndata: ${JSON.stringify({ type: 'response.output_text.delta', delta: content })}\n\nevent: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: { output: [] } })}\n\n`,
+    { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+  );
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -72,6 +76,22 @@ describe('EmployeeCopyDraftService', () => {
     expect(requestBody.messages[0].content).toContain('system prompt');
     expect(requestBody.messages[0].content).toContain('工作步骤');
     expect(requestBody.messages[0].content).toContain('250 到 600 个汉字');
+  });
+
+  it('uses the API prefix when the relay is configured with a site root', async () => {
+    const readSetting = settings.getEffectiveValue.getMockImplementation()!;
+    settings.getEffectiveValue.mockImplementation(async (key: string) => key === 'SUB2API_BASE_URL' ? 'https://relay.example' : readSetting(key));
+    await service.generateBundle({ name: '客服套餐', employees: [{ name: '客服助手', description: '查询订单', industry: '电商', position: '客服', capabilities: [] }] });
+    expect(fetchSpy.mock.calls[0][0]).toBe('https://relay.example/v1/chat/completions');
+    const body = JSON.parse(fetchSpy.mock.calls[0][1].body as string);
+    expect(body.messages[0].content).toContain('套餐说明');
+    expect(body.messages[1].content).toContain('查询订单');
+  });
+
+  it('reads text deltas from Responses API event streams', async () => {
+    fetchSpy.mockResolvedValueOnce(responsesStreamed('Responses 格式草稿'));
+
+    await expect(service.generate(input)).resolves.toMatchObject({ draft: 'Responses 格式草稿' });
   });
 
   it('falls back to the first enabled platform chat model when the configured default is unavailable', async () => {

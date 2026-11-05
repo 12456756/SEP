@@ -164,6 +164,7 @@ export interface EmployeeListItem {
   description: string;
   industry: string;
   position: string;
+  functionalCategory?: import('@/lib/employee-categories').EmployeeCategory;
   avatar: string | null;
   avatarAsset?: EmployeeAvatarAsset | null;
   avatarStyle?: string | null;

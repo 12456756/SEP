@@ -18,6 +18,12 @@ export const CreateDirectOrderDtoSchema = z.object({
   periodMonths: z.number().int().min(1).max(36).default(12),
 });
 
+export const CreateBundleOrderDtoSchema = z.object({
+  bundleId: z.string().trim().min(1),
+});
+
+export type CreateBundleOrderDto = z.infer<typeof CreateBundleOrderDtoSchema>;
+
 export type CreateDirectOrderDto = z.infer<typeof CreateDirectOrderDtoSchema>;
 
 /**
@@ -27,6 +33,7 @@ export const GetOrdersQuerySchema = z.object({
   page: z.coerce.number().int().min(1).optional().default(1),
   limit: z.coerce.number().int().min(1).max(100).optional().default(20),
   status: z.enum(["PENDING", "PAID", "CLOSED", "REFUNDED"]).optional(),
+  orderType: z.enum(["EMPLOYEE", "BUNDLE"]).optional(),
 });
 
 export type GetOrdersQuery = z.infer<typeof GetOrdersQuerySchema>;

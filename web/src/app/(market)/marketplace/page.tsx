@@ -34,6 +34,7 @@ import {
   INITIAL_FILTERS,
   type FilterState,
 } from "./_components/filter-panel";
+import Link from "next/link";
 
 const CATEGORY_KEYS = EMPLOYEE_CATEGORIES.map((category) => category.value);
 
@@ -329,6 +330,9 @@ export default function MarketplacePage() {
             )}
           />
         </div>
+        <Link href="/marketplace/bundles" className="inline-flex items-center gap-2 rounded-glass-md border border-glassline bg-glass-2 px-4 py-2 text-sm font-medium text-gtext-primary transition-colors hover:bg-glass-3">
+          <Users className="h-4 w-4" />浏览员工套餐
+        </Link>
       </header>
 
       {/* ── tabs ─────────────────────────────────────────────────────── */}

@@ -2,6 +2,7 @@ import { Test, TestingModule } from "@nestjs/testing";
 import { OrderService } from "./order.service";
 import { PrismaService } from "../../prisma/prisma.service";
 import { SubscriptionFulfillmentService } from "../subscription-fulfillment/subscription-fulfillment.service";
+import { EmployeeBundleService } from "../employee-bundle/employee-bundle.service";
 import { BadRequestException, ConflictException, NotFoundException } from "@nestjs/common";
 import { Decimal } from "@prisma/client/runtime/library";
 
@@ -9,6 +10,7 @@ describe("OrderService", () => {
   let service: OrderService;
   let prisma: any;
   let creditService: any;
+  let bundleService: any;
 
   beforeEach(async () => {
     prisma = {
@@ -25,6 +27,7 @@ describe("OrderService", () => {
         update: jest.fn(),
       },
       subscription: {
+        findMany: jest.fn().mockResolvedValue([]),
         findUnique: jest.fn(),
         create: jest.fn().mockResolvedValue({ id: "sub-1" }),
         update: jest.fn().mockResolvedValue({ id: "sub-1" }),
@@ -61,11 +64,16 @@ describe("OrderService", () => {
       ),
       expireSubscriptionCredit: jest.fn(),
     };
+    bundleService = {
+      getForPurchase: jest.fn(),
+      resolveGiftCNY: jest.fn(async (item: any) => item.includedComputeCNY?.toNumber() ?? 20),
+    };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         OrderService,
         { provide: PrismaService, useValue: prisma },
+        { provide: EmployeeBundleService, useValue: bundleService },
         // 用真实履约服务：建订阅、自动授权、发赠送额度都是它的职责，
         // mock 掉就等于不测「支付成功后企业到底拿到了什么」
         {
@@ -286,6 +294,89 @@ describe("OrderService", () => {
           periodMonths: 12,
         }),
       ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('createBundle', () => {
+    const bundle = {
+      id: 'bundle-1',
+      name: 'Operations bundle',
+      priceCNY: new Decimal(300),
+      periodMonths: 12,
+      items: [
+        {
+          id: 'bundle-item-1', employeeId: 'emp-1', periodMonths: 12, includedComputeCNY: null,
+          employee: { id: 'emp-1', name: 'Sales', version: '1.0.0', annualPriceCNY: new Decimal(100), includedComputeCNY: null },
+        },
+        {
+          id: 'bundle-item-2', employeeId: 'emp-2', periodMonths: 12, includedComputeCNY: new Decimal(0),
+          employee: { id: 'emp-2', name: 'Support', version: '2.1.0', annualPriceCNY: new Decimal(300), includedComputeCNY: null },
+        },
+      ],
+    };
+
+    it('creates a pending bundle order with server-calculated employee price and compute snapshots', async () => {
+      bundleService.getForPurchase.mockResolvedValue(bundle);
+      prisma.order.create.mockResolvedValue({ id: 'order-bundle-1', totalAmount: new Decimal(300) });
+
+      await service.createBundle('ent-1', 'user-1', 'bundle-1');
+
+      const create = prisma.order.create.mock.calls[0][0];
+      expect(create.data).toMatchObject({
+        enterpriseId: 'ent-1',
+        createdBy: 'user-1',
+        orderType: 'BUNDLE',
+        bundleId: 'bundle-1',
+        bundleName: 'Operations bundle',
+        totalAmount: new Decimal(300),
+        status: 'PENDING',
+      });
+      expect(create.data.items.create.map((item: any) => ({
+        employeeId: item.employeeId,
+        employeeVersion: item.employeeVersion,
+        purchaseAmountCNY: item.purchaseAmountCNY.toString(),
+        includedComputeCNY: item.includedComputeCNY.toString(),
+      }))).toEqual([
+        { employeeId: 'emp-1', employeeVersion: '1.0.0', purchaseAmountCNY: '75', includedComputeCNY: '20' },
+        { employeeId: 'emp-2', employeeVersion: '2.1.0', purchaseAmountCNY: '225', includedComputeCNY: '0' },
+      ]);
+    });
+
+    it('rejects the bundle if the enterprise already has an active bundle employee', async () => {
+      bundleService.getForPurchase.mockResolvedValue(bundle);
+      prisma.subscription.findMany.mockResolvedValueOnce([{ employeeId: 'emp-2' }]);
+
+      await expect(service.createBundle('ent-1', 'user-1', 'bundle-1')).rejects.toThrow(BadRequestException);
+      expect(prisma.order.create).not.toHaveBeenCalled();
+    });
+
+    it('keeps rounded employee allocations non-negative and within a low bundle price', async () => {
+      const tinyBundle = {
+        ...bundle,
+        priceCNY: new Decimal('0.02'),
+        items: Array.from({ length: 4 }, (_, index) => ({
+          id: `item-${index}`,
+          employeeId: `emp-${index}`,
+          periodMonths: 12,
+          includedComputeCNY: null,
+          employee: {
+            id: `emp-${index}`,
+            name: `Employee ${index}`,
+            version: '1.0.0',
+            annualPriceCNY: new Decimal(1),
+            includedComputeCNY: null,
+          },
+        })),
+      };
+      bundleService.getForPurchase.mockResolvedValue(tinyBundle);
+      prisma.order.create.mockResolvedValue({ id: 'tiny-order' });
+
+      await service.createBundle('ent-1', 'user-1', 'bundle-tiny');
+
+      const amounts = prisma.order.create.mock.calls[0][0].data.items.create
+        .map((item: any) => item.purchaseAmountCNY);
+      expect(amounts.every((amount: Decimal) => amount.greaterThanOrEqualTo(0))).toBe(true);
+      expect(amounts.reduce((sum: Decimal, amount: Decimal) => sum.add(amount), new Decimal(0)).toString()).toBe('0.02');
     });
   });
 

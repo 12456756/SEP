@@ -12,6 +12,7 @@ import { ComputeModule } from "../compute/compute.module";
 import { WalletModule } from "../wallet/wallet.module";
 import { SubscriptionFulfillmentModule } from "../subscription-fulfillment/subscription-fulfillment.module";
 import { PersonalWalletModule } from "../personal-wallet/personal-wallet.module";
+import { EmployeeBundleModule } from "../employee-bundle/employee-bundle.module";
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { PersonalWalletModule } from "../personal-wallet/personal-wallet.module"
     // 单向依赖：PersonalWalletModule 只 import PrismaModule，不会回头依赖这里。
     // 不用 forwardRef —— 加了会掩盖将来真的成环。
     PersonalWalletModule,
+    EmployeeBundleModule,
   ],
   // WalletController 依赖 PaymentService 创建充值订单，因此由已导入 PaymentModule 负责装配，
   // 避免 WalletModule 与 PaymentModule 互相 import 造成 Nest DI 循环。
