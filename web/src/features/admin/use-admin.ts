@@ -111,6 +111,21 @@ export function useDeleteCapability() {
   });
 }
 
+/** 下架已发布能力，并停用它与所有硅基员工的绑定。 */
+export function useArchiveCapability() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.post(`/admin/capabilities/${id}/archive`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['capabilities'] });
+      qc.invalidateQueries({ queryKey: ['digital-employees'] });
+      qc.invalidateQueries({ queryKey: ['market', 'employees'] });
+      qc.invalidateQueries({ queryKey: ['capability-iteration', 'list'] });
+      qc.invalidateQueries({ queryKey: ['available-capabilities'] });
+    },
+  });
+}
+
 export function useImportCozeBot() {
   const qc = useQueryClient();
   return useMutation({

@@ -24,7 +24,7 @@ describe('CapabilityService public projection', () => {
         where: {
           id: 'capability-1',
           OR: [
-            { visibility: 'MARKET_PUBLIC', platformReviewStatus: 'APPROVED' },
+            { visibility: 'MARKET_PUBLIC', platformReviewStatus: 'APPROVED', status: 'APPROVED' },
             { enterpriseId: null, status: 'APPROVED' },
           ],
         },

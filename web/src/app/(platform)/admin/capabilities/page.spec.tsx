@@ -2,12 +2,13 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import CapabilitiesPage from './page';
 
-const { list, approve, reject, reviewSkill } = vi.hoisted(() => ({ list: vi.fn(), approve: vi.fn(), reject: vi.fn(), reviewSkill: vi.fn() }));
+const { list, approve, reject, reviewSkill, archive } = vi.hoisted(() => ({ list: vi.fn(), approve: vi.fn(), reject: vi.fn(), reviewSkill: vi.fn(), archive: vi.fn() }));
 vi.mock('@/features/admin/use-admin', () => ({
   useAllCapabilities: list,
   useApproveCapability: () => ({ mutate: approve }),
   useRejectCapability: () => ({ mutate: reject }),
   useDeleteCapability: () => ({ mutate: vi.fn() }),
+  useArchiveCapability: () => ({ mutate: archive, isPending: false }),
 }));
 vi.mock('../skills/use-skill-monitor', () => ({ useMonitorReview: () => ({ mutateAsync: reviewSkill, isPending: false }) }));
 
@@ -58,6 +59,16 @@ describe('能力管理监控入口', () => {
     expect(within(nonSkill).queryByRole('link', { name: /^v/ })).not.toBeInTheDocument();
   });
 
+  it('已发布能力提供下架操作并说明解除员工绑定', () => {
+    list.mockReturnValue({ data: { items: [capability({ status: 'APPROVED', _count: { bindings: 2 } })] } });
+    render(<CapabilitiesPage />);
+    const row = within(screen.getByRole('row', { name: /写作技能/ }));
+    fireEvent.click(row.getByRole('button', { name: '下架' }));
+    expect(screen.getByRole('dialog')).toHaveTextContent('员工本身不受影响');
+    fireEvent.click(screen.getByRole('button', { name: '确认下架' }));
+    expect(archive).toHaveBeenCalledWith('skill-1', expect.objectContaining({ onSuccess: expect.any(Function), onError: expect.any(Function) }));
+  });
+
   it.each([
     { enterpriseId: null, platformReviewStatus: 'NOT_SUBMITTED' },
     { enterpriseId: 'enterprise', enterprise: { name: '测试企业' }, platformReviewStatus: 'PENDING_REVIEW' },
@@ -106,7 +117,7 @@ describe('能力管理监控入口', () => {
     }));
     render(<CapabilitiesPage />);
     expect(list).toHaveBeenLastCalledWith(undefined, 1, 20, '', 'createdAt', 'desc');
-    for (const [label, value] of [['待审核', 'PENDING'], ['已发布', 'APPROVED'], ['已拒绝', 'REJECTED'], ['全部', undefined]]) {
+    for (const [label, value] of [['待审核', 'PENDING'], ['已发布', 'APPROVED'], ['已拒绝', 'REJECTED'], ['已下架', 'ARCHIVED'], ['全部', undefined]]) {
       fireEvent.click(screen.getByRole('button', { name: label }));
       expect(list).toHaveBeenLastCalledWith(value, 1, 20, '', 'createdAt', 'desc');
     }

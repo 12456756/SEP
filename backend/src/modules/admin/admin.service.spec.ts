@@ -38,6 +38,9 @@ describe('AdminService', () => {
       findUnique: jest.fn(),
       update: jest.fn(),
     },
+    employeeCapabilityBinding: {
+      updateMany: jest.fn(),
+    },
     digitalEmployee: {
       findMany: jest.fn(),
       count: jest.fn(),
@@ -123,6 +126,8 @@ describe('AdminService', () => {
       expect(mockPrismaService.capability.findMany).toHaveBeenCalledWith(expect.objectContaining({
         where: { type: 'SKILL' }, skip: 10, take: 10,
         include: expect.objectContaining({
+          _count: { select: { bindings: { where: { enabled: true } } } },
+          bindings: expect.objectContaining({ where: { enabled: true } }),
           skillVersions: {
             where: { scope: 'PLATFORM', status: 'PLATFORM_APPROVED' },
             orderBy: [
@@ -174,8 +179,9 @@ describe('AdminService', () => {
 
     it.each([
       ['PENDING', { OR: [{ enterpriseId: null, status: 'PENDING' }, { platformReviewStatus: 'PENDING_REVIEW' }] }],
-      ['APPROVED', { OR: [{ visibility: 'MARKET_PUBLIC', platformReviewStatus: 'APPROVED' }, { enterpriseId: null, status: 'APPROVED' }] }],
+      ['APPROVED', { OR: [{ visibility: 'MARKET_PUBLIC', platformReviewStatus: 'APPROVED', status: 'APPROVED' }, { enterpriseId: null, status: 'APPROVED' }] }],
       ['REJECTED', { status: 'REJECTED' }],
+      ['ARCHIVED', { status: 'ARCHIVED' }],
     ] as const)('preserves the %s filter', async (status, where) => {
       mockPrismaService.capability.findMany.mockResolvedValue([]);
       mockPrismaService.capability.count.mockResolvedValue(0);
@@ -205,6 +211,32 @@ describe('AdminService', () => {
       };
       expect(mockPrismaService.capability.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expectedWhere }));
       expect(mockPrismaService.capability.count).toHaveBeenCalledWith({ where: expectedWhere });
+    });
+  });
+
+  describe('archiveCapability', () => {
+    it('disables employee bindings and archives the capability in one transaction', async () => {
+      mockPrismaService.capability.findUnique.mockResolvedValue({ id: 'cap', status: 'APPROVED' });
+      mockPrismaService.capability.update.mockResolvedValue({ id: 'cap', status: 'ARCHIVED' });
+
+      await expect(service.archiveCapability('cap')).resolves.toEqual({ id: 'cap', status: 'ARCHIVED' });
+
+      expect(mockPrismaService.$transaction).toHaveBeenCalledTimes(1);
+      expect(mockPrismaService.employeeCapabilityBinding.updateMany).toHaveBeenCalledWith({
+        where: { capabilityId: 'cap', enabled: true }, data: { enabled: false },
+      });
+      expect(mockPrismaService.capability.update).toHaveBeenCalledWith({
+        where: { id: 'cap' }, data: { status: 'ARCHIVED' },
+      });
+    });
+
+    it('rejects missing or unpublished capabilities without changing bindings', async () => {
+      mockPrismaService.capability.findUnique.mockResolvedValue(null);
+      await expect(service.archiveCapability('missing')).rejects.toThrow(NotFoundException);
+      mockPrismaService.capability.findUnique.mockResolvedValue({ id: 'cap', status: 'PENDING' });
+      await expect(service.archiveCapability('cap')).rejects.toThrow(BadRequestException);
+      expect(mockPrismaService.$transaction).toHaveBeenCalledTimes(2);
+      expect(mockPrismaService.employeeCapabilityBinding.updateMany).not.toHaveBeenCalled();
     });
   });
 

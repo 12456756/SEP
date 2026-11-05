@@ -39,7 +39,7 @@ export class EnterpriseSkillDefaultService {
         status: 'ACTIVE',
         OR: [{ endDate: null }, { endDate: { gt: now } }],
         employee: {
-          bindings: { some: { capabilityId, enabled: true, capability: { type: 'SKILL' } } },
+          bindings: { some: { capabilityId, enabled: true, capability: { type: 'SKILL', status: 'APPROVED' } } },
         },
       },
       select: { id: true },

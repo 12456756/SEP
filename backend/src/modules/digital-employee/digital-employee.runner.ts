@@ -54,6 +54,7 @@ export class DigitalEmployeeRunner {
       where: { id: employeeId },
       include: {
         bindings: {
+          where: { enabled: true, capability: { status: 'APPROVED' } },
           include: {
             capability: {
               select: {

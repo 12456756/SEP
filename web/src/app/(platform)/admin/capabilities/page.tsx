@@ -17,6 +17,7 @@ import {
   Search,
   ShieldCheck,
   Trash2,
+  Archive,
   X,
 } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
@@ -40,6 +41,7 @@ import {
   useApproveCapability,
   useRejectCapability,
   useDeleteCapability,
+  useArchiveCapability,
   type AdminCapabilityRow,
 } from '@/features/admin/use-admin';
 import { useMonitorReview } from '../skills/use-skill-monitor';
@@ -63,7 +65,7 @@ import { common } from '@/locales/zh-CN';
  *     且走的是 `reviewPlatform`（企业快照版本也会一起推进）
  */
 
-type StatusFilter = 'ALL' | 'APPROVED' | 'PENDING' | 'REJECTED';
+type StatusFilter = 'ALL' | 'APPROVED' | 'PENDING' | 'REJECTED' | 'ARCHIVED';
 type CapabilitySortBy = 'createdAt' | 'name' | 'usageCount';
 
 const NEW_ITEM_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -80,12 +82,14 @@ const STATUS_FILTERS: Array<{ key: StatusFilter; label: string }> = [
   { key: 'APPROVED', label: '已发布' },
   { key: 'PENDING', label: common.status.pendingReview },
   { key: 'REJECTED', label: '已拒绝' },
+  { key: 'ARCHIVED', label: '已下架' },
 ];
 
 const STATUS_META: Record<string, { label: string; tone: string }> = {
   PENDING: { label: common.status.pendingReview, tone: 'border border-glassline bg-glass-2 text-gwarning' },
   APPROVED: { label: '已发布', tone: 'border border-glassline bg-glass-2 text-gsuccess' },
   REJECTED: { label: '已拒绝', tone: 'border border-glassline bg-glass-2 text-gdanger' },
+  ARCHIVED: { label: '已下架', tone: 'border border-glassline bg-glass-2 text-fg-subtle' },
 };
 
 /** 企业投稿走投稿详情页审核，平台自有能力行内审 */
@@ -103,12 +107,14 @@ export default function CapabilitiesPage() {
   const [rejecting, setRejecting] = useState<AdminCapabilityRow | null>(null);
   const [rejectReason, setRejectReason] = useState('');
   const [deleting, setDeleting] = useState<AdminCapabilityRow | null>(null);
+  const [archiving, setArchiving] = useState<AdminCapabilityRow | null>(null);
   const [approvingSkill, setApprovingSkill] = useState<AdminCapabilityRow | null>(null);
 
   const query = useAllCapabilities(status === 'ALL' ? undefined : status, page, pageSize, keyword, sortBy, sortOrder);
   const approve = useApproveCapability();
   const reject = useRejectCapability();
   const remove = useDeleteCapability();
+  const archive = useArchiveCapability();
   const reviewSkill = useMonitorReview();
 
   const visible = query.data?.items ?? [];
@@ -164,6 +170,16 @@ export default function CapabilitiesPage() {
         setDeleting(null);
       },
       onError: (e) => toast.error(e instanceof Error ? e.message : '删除失败'),
+    });
+  };
+
+  const handleArchive = () => {
+    if (!archiving) return;
+    const capability = archiving;
+    archive.mutate(capability.id, {
+      onSuccess: () => toast.success(`能力「${capability.name}」已下架`, '已从所有硅基员工中移除'),
+      onError: (e) => toast.error(e instanceof Error ? e.message : '下架失败'),
+      onSettled: () => setArchiving(null),
     });
   };
 
@@ -386,7 +402,18 @@ export default function CapabilitiesPage() {
                               </Button>
                             </>
                           )}
-                          {cap.status !== 'APPROVED' && (
+                          {cap.status === 'APPROVED' && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              disabled={archive.isPending}
+                              onClick={() => setArchiving(cap)}
+                            >
+                              <Archive className="h-3.5 w-3.5" />
+                              下架
+                            </Button>
+                          )}
+                          {cap.status !== 'APPROVED' && cap.status !== 'ARCHIVED' && (
                             <Button variant="ghost" size="sm" onClick={() => setDeleting(cap)}>
                               <Trash2 className="h-3.5 w-3.5" />
                             </Button>
@@ -456,10 +483,23 @@ export default function CapabilitiesPage() {
         open={Boolean(deleting)}
         onOpenChange={(open) => !open && setDeleting(null)}
         title="删除能力"
-        description={`确定删除「${deleting?.name}」？该操作不可恢复。已发布的能力无法删除。`}
+        description={`确定删除「${deleting?.name}」？该操作不可恢复。`}
         confirmText="删除"
         variant="danger"
         onConfirm={handleDelete}
+      />
+
+      <ConfirmDialog
+        open={Boolean(archiving)}
+        onOpenChange={(open) => !open && !archive.isPending && setArchiving(null)}
+        title="下架能力"
+        description={archiving
+          ? `确定下架「${archiving.name}」？它会从所有硅基员工的可用技能中移除，员工本身不受影响。`
+          : ''}
+        confirmText="确认下架"
+        variant="danger"
+        loading={archive.isPending}
+        onConfirm={handleArchive}
       />
 
       <ConfirmDialog

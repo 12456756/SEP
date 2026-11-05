@@ -4,7 +4,7 @@ import { NotFoundException } from '@nestjs/common';
 
 /** 通过真实解析器核对传入适配器的正文及执行归因，不能只测试选版记录。 */
 describe('技能实际执行统一采用企业启用版本', () => {
-  const capability = { id: 'cap-1', type: 'SKILL', agentConfig: { platform: 'OPENCODE', skillName: 'skill' } };
+  const capability = { id: 'cap-1', type: 'SKILL', status: 'APPROVED', agentConfig: { platform: 'OPENCODE', skillName: 'skill' } };
   const enterprise = { id: 'enterprise-v', capabilityId: 'cap-1', scope: 'ENTERPRISE', enterpriseId: 'ent-1', status: 'ENTERPRISE_APPROVED', content: '企业默认正文' };
   const personal = { id: 'personal-v', capabilityId: 'cap-1', scope: 'PERSONAL', enterpriseId: 'ent-1', ownerId: 'user-1', status: 'PERSONAL_ACTIVE', content: '本人副本正文' };
   const platform = { id: 'platform-v', capabilityId: 'cap-1', scope: 'PLATFORM', enterpriseId: null, ownerId: null, status: 'PLATFORM_APPROVED', content: '我选的旧平台正文' };
@@ -101,6 +101,14 @@ describe('技能实际执行统一采用企业启用版本', () => {
     expect(resolveEffectiveVersion).toHaveBeenCalledWith('sub-a', 'cap-1');
     expect(factory.create).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();
+  });
+  it('已下架能力不能继续执行', async () => {
+    const prisma = { capability: { findUnique: jest.fn().mockResolvedValue({ ...capability, status: 'ARCHIVED' }) } };
+    const factory = { create: jest.fn() };
+    const service = new CapabilityService(prisma as never, factory as never, {} as never);
+
+    await expect(service.execute('cap-1', { userMessage: '执行', sessionId: 'session' })).rejects.toBeInstanceOf(NotFoundException);
+    expect(factory.create).not.toHaveBeenCalled();
   });
   it('真实解析器没有已通过版本时，不允许 adapter 回退到本地技能', async () => {
     const { service, prisma, factory, execute } = build();

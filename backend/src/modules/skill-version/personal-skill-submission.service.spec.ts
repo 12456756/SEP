@@ -221,7 +221,7 @@ describe('PersonalSkillSubmissionService', () => {
       expect(where).toEqual({
         enterpriseId: 'ent-1', status: 'ACTIVE',
         OR: [{ endDate: null }, { endDate: { gt: expect.any(Date) } }],
-        employee: { bindings: { some: { capabilityId: 'cap-1', enabled: true, capability: { type: 'SKILL' } } } },
+        employee: { bindings: { some: { capabilityId: 'cap-1', enabled: true, capability: { type: 'SKILL', status: 'APPROVED' } } } },
         grants: { some: {
           OR: [{ memberId: 'member-1' }, { departmentId: 'dept-1' }],
           AND: [{ OR: [{ expiresAt: null }, { expiresAt: { gt: expect.any(Date) } }] }],
@@ -247,7 +247,7 @@ describe('PersonalSkillSubmissionService', () => {
       expect(prisma.subscription.findFirst).toHaveBeenCalledWith({ where: {
         enterpriseId: 'ent-1', status: 'ACTIVE',
         OR: [{ endDate: null }, { endDate: { gt: expect.any(Date) } }],
-        employee: { bindings: { some: { capabilityId: 'cap-1', enabled: true, capability: { type: 'SKILL' } } } },
+        employee: { bindings: { some: { capabilityId: 'cap-1', enabled: true, capability: { type: 'SKILL', status: 'APPROVED' } } } },
         grants: { some: {
           OR: [{ memberId: 'member-1' }, { departmentId: 'dept-1' }],
           AND: [{ OR: [{ expiresAt: null }, { expiresAt: { gt: expect.any(Date) } }] }],

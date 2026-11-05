@@ -34,7 +34,7 @@ export class ClientSkillArtifactService {
     const subscription = await this.prisma.subscription.findFirst({
       where: clientSubscriptionAccessWhere(ctx, params.subscriptionId),
       select: { id: true, employee: { select: { bindings: {
-        where: { enabled: true, capabilityId: params.capabilityId, capability: { type: 'SKILL' } },
+        where: { enabled: true, capabilityId: params.capabilityId, capability: { type: 'SKILL', status: 'APPROVED' } },
         select: { capabilityId: true },
       } } } },
     });

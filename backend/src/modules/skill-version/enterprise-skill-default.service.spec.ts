@@ -146,7 +146,7 @@ describe('EnterpriseSkillDefaultService', () => {
           enterpriseId: 'ent-1', status: 'ACTIVE',
           OR: [{ endDate: null }, { endDate: { gt: now } }],
           employee: { bindings: { some: {
-            capabilityId: 'cap-1', enabled: true, capability: { type: 'SKILL' },
+            capabilityId: 'cap-1', enabled: true, capability: { type: 'SKILL', status: 'APPROVED' },
           } } },
         },
         select: { id: true },

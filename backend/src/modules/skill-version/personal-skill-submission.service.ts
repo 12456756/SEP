@@ -27,7 +27,7 @@ export class PersonalSkillSubmissionService {
       where: {
         enterpriseId: ctx.enterpriseId, status: 'ACTIVE',
         OR: [{ endDate: null }, { endDate: { gt: now } }],
-        employee: { bindings: { some: { capabilityId, enabled: true, capability: { type: 'SKILL' } } } },
+        employee: { bindings: { some: { capabilityId, enabled: true, capability: { type: 'SKILL', status: 'APPROVED' } } } },
         grants: { some: {
           OR: [{ memberId: ctx.memberId }, ...(ctx.departmentId ? [{ departmentId: ctx.departmentId }] : [])],
           AND: [{ OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] }],
@@ -95,7 +95,7 @@ export class PersonalSkillSubmissionService {
     const visible = await this.prisma.subscription.findFirst({ where: {
       enterpriseId: ctx.enterpriseId, status: 'ACTIVE',
       OR: [{ endDate: null }, { endDate: { gt: now } }],
-      employee: { bindings: { some: { capabilityId, enabled: true, capability: { type: 'SKILL' } } } },
+      employee: { bindings: { some: { capabilityId, enabled: true, capability: { type: 'SKILL', status: 'APPROVED' } } } },
       ...(ctx.role === 'ENTERPRISE_ADMIN' ? {} : { grants: { some: {
         OR: [{ memberId: ctx.memberId }, ...(ctx.departmentId ? [{ departmentId: ctx.departmentId }] : [])],
         AND: [{ OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] }],

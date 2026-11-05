@@ -1431,7 +1431,7 @@ export class CapabilityContributionService {
     const q = input.q?.trim();
     const publishedFilter: Prisma.CapabilityWhereInput = {
       OR: [
-        { visibility: 'MARKET_PUBLIC', platformReviewStatus: 'APPROVED' },
+        { visibility: 'MARKET_PUBLIC', platformReviewStatus: 'APPROVED', status: 'APPROVED' },
         { enterpriseId: null, status: 'APPROVED' },
       ],
     };
@@ -1499,7 +1499,7 @@ export class CapabilityContributionService {
     const [capability, employee] = await Promise.all([
       this.prisma.capability.findFirst({
         where: { id: capabilityId, OR: [
-          { visibility: 'MARKET_PUBLIC', platformReviewStatus: 'APPROVED' },
+          { visibility: 'MARKET_PUBLIC', platformReviewStatus: 'APPROVED', status: 'APPROVED' },
           { enterpriseId: null, status: 'APPROVED' },
         ] },
         select: { id: true, type: true },
@@ -1736,6 +1736,7 @@ export class CapabilityContributionService {
         id: true,
         name: true,
         type: true,
+        status: true,
         contributorId: true,
         enterpriseId: true,
         visibility: true,
@@ -1748,6 +1749,7 @@ export class CapabilityContributionService {
     }
 
     const publicReady =
+      capability.status === 'APPROVED' &&
       capability.visibility === "MARKET_PUBLIC" &&
       capability.platformReviewStatus === "APPROVED";
     const enterpriseReady = Boolean(
@@ -1843,6 +1845,7 @@ export class CapabilityContributionService {
           select: {
             id: true,
             name: true,
+            status: true,
             contributorId: true,
             enterpriseId: true,
             visibility: true,
@@ -1861,6 +1864,7 @@ export class CapabilityContributionService {
     const platformReady =
       version.scope === "PLATFORM" &&
       version.status === "PLATFORM_APPROVED" &&
+      version.capability.status === "APPROVED" &&
       version.capability.visibility === "MARKET_PUBLIC" &&
       version.capability.platformReviewStatus === "APPROVED";
     const enterpriseReady = Boolean(

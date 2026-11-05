@@ -989,7 +989,7 @@ describe('CapabilityContributionService market visibility', () => {
     expect(where.AND).toHaveLength(2);
     expect(where.AND[0]).toEqual({
       OR: [
-        { visibility: 'MARKET_PUBLIC', platformReviewStatus: 'APPROVED' },
+        { visibility: 'MARKET_PUBLIC', platformReviewStatus: 'APPROVED', status: 'APPROVED' },
         { enterpriseId: null, status: 'APPROVED' },
       ],
     });

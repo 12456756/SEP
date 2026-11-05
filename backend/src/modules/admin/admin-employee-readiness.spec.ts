@@ -37,7 +37,10 @@ describe('Employee publication and binding readiness protection', () => {
         create: jest.fn(async ({ data }) => { state.employee = { ...data, id: 'new-emp', status: 'DRAFT' }; return state.employee; }),
         update: jest.fn(async ({ data }) => { state.employee = { ...state.employee, ...data }; return state.employee; }),
       },
-      capability: { findMany: jest.fn(async ({ where }) => capabilities.filter((item) => where.id.in.includes(item.id))) },
+      capability: {
+        findMany: jest.fn(async ({ where }) => capabilities.filter((item) => where.id.in.includes(item.id))),
+        findUnique: jest.fn(async ({ where }) => capabilities.find((item) => item.id === where.id) ?? null),
+      },
       skillVersion: {
         findFirst: jest.fn(async ({ where }) => versions.find((item) => item.capabilityId === where.capabilityId && item.scope === where.scope && item.status === where.status) ?? null),
         findMany: jest.fn(async ({ where }) => versions.filter((item) => where.capabilityId.in.includes(item.capabilityId) && item.scope === where.scope && item.status === where.status)),
@@ -171,6 +174,19 @@ describe('Employee publication and binding readiness protection', () => {
     state.bindings.push(makeBinding('cap-2'));
     await admin.removeBinding('binding-cap-1');
     expect(state.bindings.map((item) => item.capabilityId)).toEqual(['cap-2']);
+  });
+
+  it('does not rebind or re-enable an archived capability', async () => {
+    capabilities[0].status = 'ARCHIVED';
+    state.bindings[0].enabled = false;
+    const snapshot = structuredClone(state);
+
+    await expect(admin.bindCapabilities('emp-1', ['cap-1'], 'operator')).rejects.toBeInstanceOf(BadRequestException);
+    await expect(admin.updateBinding('binding-cap-1', { enabled: true })).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(state).toEqual(snapshot);
+    expect(prisma.employeeCapabilityBinding.createMany).not.toHaveBeenCalled();
+    expect(prisma.employeeCapabilityBinding.update).not.toHaveBeenCalled();
   });
 
   it('uses runtime release ordering for admin replacement default versions', async () => {

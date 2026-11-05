@@ -617,7 +617,7 @@ export class AdminController {
 
   @Get('capabilities')
   @ApiOperation({ summary: '获取能力列表（运营端）' })
-  @ApiQuery({ name: 'status', required: false, enum: ['PENDING', 'APPROVED', 'REJECTED'], description: '能力状态；PENDING 仅返回平台待审投稿和历史平台草稿' })
+  @ApiQuery({ name: 'status', required: false, enum: ['PENDING', 'APPROVED', 'REJECTED', 'ARCHIVED'], description: '能力状态；PENDING 仅返回平台待审投稿和历史平台草稿' })
   @ApiQuery({ name: 'type', required: false, enum: ['AGENT', 'RPA', 'SKILL', 'AI_APP'], description: '能力类型' })
   @ApiQuery({ name: 'page', required: false, type: Number, description: '页码，默认1' })
   @ApiQuery({ name: 'pageSize', required: false, type: Number, description: '每页数量，默认20' })
@@ -626,7 +626,7 @@ export class AdminController {
   @ApiQuery({ name: 'sortOrder', required: false, enum: ['asc', 'desc'] })
   @ApiResponse({ status: 200, description: '返回能力列表' })
   listCapabilitiesAdmin(
-    @Query('status') status?: 'PENDING' | 'APPROVED' | 'REJECTED',
+    @Query('status') status?: 'PENDING' | 'APPROVED' | 'REJECTED' | 'ARCHIVED',
     @Query('type') type?: 'AGENT' | 'RPA' | 'SKILL' | 'AI_APP',
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
@@ -726,10 +726,19 @@ export class AdminController {
     return this.adminService.rejectCapability(id, req.user.id, dto.reason);
   }
 
+  @Post('capabilities/:id/archive')
+  @ApiOperation({ summary: '下架能力并停用员工绑定' })
+  @ApiResponse({ status: 200, description: '下架成功；员工不再展示或调用该能力，员工本身不受影响' })
+  @ApiResponse({ status: 400, description: '只能下架已发布的能力' })
+  @ApiResponse({ status: 404, description: '能力不存在' })
+  archiveCapabilityAdmin(@Param('id') id: string) {
+    return this.adminService.archiveCapability(id);
+  }
+
   @Delete('capabilities/:id')
   @ApiOperation({ summary: '删除能力（仅待审核或已拒绝）' })
   @ApiResponse({ status: 200, description: '删除成功' })
-  @ApiResponse({ status: 400, description: '已审核通过的能力无法删除' })
+  @ApiResponse({ status: 400, description: '已发布或已下架的能力不能删除' })
   @ApiResponse({ status: 404, description: '能力不存在' })
   deleteCapabilityAdmin(@Param('id') id: string) {
     return this.adminService.deleteCapability(id);

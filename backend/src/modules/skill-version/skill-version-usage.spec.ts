@@ -45,7 +45,7 @@ describe('SkillVersionService 使用记录与统计', () => {
         findMany: jest.fn().mockResolvedValue([]),
         findUnique:
           overrides.capabilityFindUnique ??
-          jest.fn().mockResolvedValue({ id: 'cap-1', name: '电商运营', description: '' }),
+          jest.fn().mockResolvedValue({ id: 'cap-1', name: '电商运营', description: '', status: 'APPROVED' }),
       },
       skillVersion: {
         findFirst: jest.fn().mockResolvedValue(null),
@@ -76,7 +76,7 @@ describe('SkillVersionService 使用记录与统计', () => {
         expect(prisma.subscription.findFirst).toHaveBeenCalledWith({ where: {
           enterpriseId: 'ent-1', status: 'ACTIVE',
           OR: [{ endDate: null }, { endDate: { gt: expect.any(Date) } }],
-          employee: { bindings: { some: { capabilityId: 'cap-1', enabled: true, capability: { type: 'SKILL' } } } },
+          employee: { bindings: { some: { capabilityId: 'cap-1', enabled: true, capability: { type: 'SKILL', status: 'APPROVED' } } } },
           grants: { some: { OR: [{ memberId: 'mem-admin' }, { departmentId: 'dept-1' }],
             AND: [{ OR: [{ expiresAt: null }, { expiresAt: { gt: expect.any(Date) } }] }],
           } },
@@ -141,7 +141,7 @@ describe('SkillVersionService 使用记录与统计', () => {
       expect(findFirst).toHaveBeenCalledWith(
         expect.objectContaining({
           where: expect.objectContaining({
-            employee: { bindings: { some: { capabilityId: 'cap-1', enabled: true, capability: { type: 'SKILL' } } } },
+            employee: { bindings: { some: { capabilityId: 'cap-1', enabled: true, capability: { type: 'SKILL', status: 'APPROVED' } } } },
           }),
         }),
       );
@@ -364,7 +364,7 @@ describe('SkillVersionService 使用记录与统计', () => {
           } },
         });
         expect(prisma.subscription.findMany.mock.calls[0][0].select.employee.select.bindings.where)
-          .toEqual({ enabled: true, capability: { type: 'SKILL' } });
+          .toEqual({ enabled: true, capability: { type: 'SKILL', status: 'APPROVED' } });
         expect(prisma.capability.findMany.mock.calls[0][0].where).toEqual({ type: 'SKILL', skillVersions: { some: {
           enterpriseId: 'ent-1', OR: [{ scope: 'ENTERPRISE', status: 'ENTERPRISE_APPROVED' }],
         } } });

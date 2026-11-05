@@ -81,6 +81,7 @@ export class ConversationStreamService {
         employee: {
           include: {
             bindings: {
+              where: { enabled: true, capability: { status: 'APPROVED' } },
               include: {
                 capability: {
                   select: {
@@ -124,6 +125,7 @@ export class ConversationStreamService {
         where: { id: targetEmployeeId },
         include: {
           bindings: {
+            where: { enabled: true, capability: { status: 'APPROVED' } },
             include: {
               capability: {
                 select: {

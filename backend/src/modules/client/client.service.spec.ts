@@ -449,7 +449,7 @@ describe('ClientService', () => {
       versionId: 'enterprise-enabled', version: '2.0.0', content: 'exact enabled content' }]);
     expect(skillVersions.resolveEffectiveVersion.mock.calls).toEqual([['sub-1', 'cap-1'], ['sub-1', 'cap-2']]);
     expect(prisma.subscription.findFirst.mock.calls[0][0].include.employee.select.bindings.where)
-      .toEqual({ enabled: true, capability: { type: 'SKILL' } });
+      .toEqual({ enabled: true, capability: { type: 'SKILL', status: 'APPROVED' } });
   });
 
   it('does not read media configuration when subscription authorization fails', async () => {

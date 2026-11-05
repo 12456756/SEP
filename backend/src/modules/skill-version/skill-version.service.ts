@@ -117,7 +117,7 @@ export class SkillVersionService {
     );
 
     const bindings = await this.prisma.employeeCapabilityBinding.findMany({
-      where: { employeeId, enabled: true, capability: { type: 'SKILL' } },
+      where: { employeeId, enabled: true, capability: { type: 'SKILL', status: 'APPROVED' } },
       select: {
         capability: {
           select: { id: true, name: true, description: true, type: true },
@@ -347,11 +347,16 @@ export class SkillVersionService {
       select: {
         enterpriseId: true,
         employee: { select: { bindings: {
-          where: { capabilityId, enabled: true }, select: { defaultSkillVersion: true }, take: 1,
+          where: { capabilityId, enabled: true, capability: { status: 'APPROVED' } }, select: { defaultSkillVersion: true }, take: 1,
         } } },
       },
     });
     if (!subscription) return null;
+    const capability = await this.prisma.capability.findUnique({
+      where: { id: capabilityId },
+      select: { status: true },
+    });
+    if (!capability || capability.status !== 'APPROVED') return null;
     const approved = (version: { capabilityId: string; scope: string; status: string; enterpriseId?: string | null } | null | undefined) =>
       version?.capabilityId === capabilityId && (
         (version.scope === 'PLATFORM' && version.status === 'PLATFORM_APPROVED') ||
@@ -1250,7 +1255,7 @@ export class SkillVersionService {
       where: {
         enterpriseId,
         status: 'ACTIVE',
-        employee: { bindings: { some: { capabilityId, enabled: true, capability: { type: 'SKILL' } } } },
+        employee: { bindings: { some: { capabilityId, enabled: true, capability: { type: 'SKILL', status: 'APPROVED' } } } },
         OR: [{ endDate: null }, { endDate: { gt: new Date() } }],
         grants: { some: this.activeGrantWhere(memberId, departmentId) },
       },
@@ -1270,7 +1275,7 @@ export class SkillVersionService {
 
   private async assertCapabilityBound(employeeId: string, capabilityId: string) {
     const binding = await this.prisma.employeeCapabilityBinding.findFirst({
-      where: { employeeId, capabilityId, enabled: true, capability: { type: 'SKILL' } },
+      where: { employeeId, capabilityId, enabled: true, capability: { type: 'SKILL', status: 'APPROVED' } },
       select: { id: true },
     });
     if (!binding) throw new BadRequestException('该技能未绑定到当前员工');
@@ -1307,7 +1312,7 @@ export class SkillVersionService {
         status: 'ACTIVE',
         OR: [{ endDate: null }, { endDate: { gt: new Date() } }],
         grants: { some: this.activeGrantWhere(ctx.memberId, ctx.departmentId) },
-        employee: { bindings: { some: { capabilityId, enabled: true, capability: { type: 'SKILL' } } } },
+        employee: { bindings: { some: { capabilityId, enabled: true, capability: { type: 'SKILL', status: 'APPROVED' } } } },
       },
       select: { id: true },
     });
@@ -1322,7 +1327,7 @@ export class SkillVersionService {
     const subscription = await this.prisma.subscription.findFirst({ where: {
       enterpriseId: ctx.enterpriseId, status: 'ACTIVE',
       OR: [{ endDate: null }, { endDate: { gt: new Date() } }],
-      employee: { bindings: { some: { capabilityId, enabled: true, capability: { type: 'SKILL' } } } },
+      employee: { bindings: { some: { capabilityId, enabled: true, capability: { type: 'SKILL', status: 'APPROVED' } } } },
       ...(ctx.role === 'ENTERPRISE_ADMIN' ? {} : {
         grants: { some: this.activeGrantWhere(ctx.memberId, ctx.departmentId) },
       }),
@@ -1377,7 +1382,7 @@ export class SkillVersionService {
             industry: true,
             functionalCategory: true,
             bindings: {
-              where: { enabled: true, capability: { type: 'SKILL' } },
+              where: { enabled: true, capability: { type: 'SKILL', status: 'APPROVED' } },
               select: {
                 capability: { select: { id: true, name: true, description: true } },
                 defaultSkillVersion: { select: VERSION_SUMMARY_SELECT },
@@ -1590,7 +1595,7 @@ export class SkillVersionService {
         enterpriseId: ctx.enterpriseId, status: 'ACTIVE',
         OR: [{ endDate: null }, { endDate: { gt: new Date() } }],
         ...(ctx.role === 'ENTERPRISE_ADMIN' ? {} : { grants: { some: this.activeGrantWhere(ctx.memberId, ctx.departmentId) } }),
-        employee: { bindings: { some: { capabilityId, enabled: true, capability: { type: 'SKILL' } } } },
+        employee: { bindings: { some: { capabilityId, enabled: true, capability: { type: 'SKILL', status: 'APPROVED' } } } },
       }, select: {
         id: true, employee: { select: { id: true, name: true } },
         skillVersionSelections: { where: { capabilityId }, select: { versionId: true, selectedAt: true } },

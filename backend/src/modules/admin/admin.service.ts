@@ -741,6 +741,9 @@ export class AdminService {
       if (capabilities.length !== capabilityIds.length) {
         throw new BadRequestException('部分能力不存在');
       }
+      if (capabilities.some((capability) => capability.status !== 'APPROVED')) {
+        throw new BadRequestException('只能绑定已发布的能力');
+      }
 
       const approvedSkillVersions = await tx.skillVersion.findMany({
         where: {
@@ -790,6 +793,15 @@ export class AdminService {
     if (!binding) throw new NotFoundException('能力绑定不存在');
     const readiness = this.employeeReadiness();
     return readiness.withEmployeeLock(binding.employeeId, async (tx, employee) => {
+      if (data.enabled === true) {
+        const capability = await tx.capability.findUnique({
+          where: { id: binding.capabilityId },
+          select: { status: true },
+        });
+        if (capability?.status !== 'APPROVED') {
+          throw new BadRequestException('已下架或未发布的能力不能重新启用');
+        }
+      }
       const updated = await tx.employeeCapabilityBinding.update({ where: { id: bindingId }, data });
       if (employee.status === 'APPROVED') await readiness.assertReady(employee.id, tx);
       return updated;
@@ -889,7 +901,7 @@ export class AdminService {
    * 获取能力列表（运营端）
    */
   async listCapabilities(params?: {
-    status?: 'PENDING' | 'APPROVED' | 'REJECTED';
+    status?: 'PENDING' | 'APPROVED' | 'REJECTED' | 'ARCHIVED';
     type?: 'AGENT' | 'RPA' | 'SKILL' | 'AI_APP';
     page?: number;
     pageSize?: number;
@@ -911,9 +923,11 @@ export class AdminService {
         ];
       } else if (status === 'APPROVED') {
         where.OR = [
-          { visibility: 'MARKET_PUBLIC', platformReviewStatus: 'APPROVED' },
+          { visibility: 'MARKET_PUBLIC', platformReviewStatus: 'APPROVED', status: 'APPROVED' },
           { enterpriseId: null, status: 'APPROVED' },
         ];
+      } else if (status === 'ARCHIVED') {
+        where.status = 'ARCHIVED';
       } else {
         where.status = status;
       }
@@ -953,8 +967,9 @@ export class AdminService {
           // 能力审核通过后到底有没有用上，看的是它被哪几位硅基员工带着 ——
           // 平台没有能力市场页面，「已收录」的真实去处就是绑定到员工。
           // 已通过但 0 绑定 = 审了但没人用，这是运营需要看见的信号。
-          _count: { select: { bindings: true } },
+          _count: { select: { bindings: { where: { enabled: true } } } },
           bindings: {
+            where: { enabled: true },
             take: 6,
             orderBy: { createdAt: 'asc' },
             select: { employee: { select: { id: true, name: true } } },
@@ -1193,8 +1208,8 @@ export class AdminService {
     });
 
     if (!capability) throw new NotFoundException('能力不存在');
-    if (capability.status === 'APPROVED') {
-      throw new BadRequestException('已审核通过的能力无法删除，请先将其从所有员工中解绑');
+    if (capability.status === 'APPROVED' || capability.status === 'ARCHIVED') {
+      throw new BadRequestException('已发布或已下架的能力不能删除');
     }
     if (capability.bindings?.length > 0) {
       throw new BadRequestException('能力已被员工绑定，无法删除');
@@ -1205,6 +1220,31 @@ export class AdminService {
     });
 
     return { success: true };
+  }
+
+  /**
+   * 下架能力并停用所有员工绑定。保留绑定和版本选择供审计，员工记录不受影响。
+   */
+  async archiveCapability(capabilityId: string) {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM capabilities WHERE id = ${capabilityId} FOR UPDATE`;
+      const capability = await tx.capability.findUnique({
+        where: { id: capabilityId },
+        select: { id: true, status: true },
+      });
+      if (!capability) throw new NotFoundException('能力不存在');
+      if (capability.status !== 'APPROVED') {
+        throw new BadRequestException('只能下架已发布的能力');
+      }
+      await tx.employeeCapabilityBinding.updateMany({
+        where: { capabilityId, enabled: true },
+        data: { enabled: false },
+      });
+      return tx.capability.update({
+        where: { id: capabilityId },
+        data: { status: 'ARCHIVED' },
+      });
+    });
   }
 
   /**

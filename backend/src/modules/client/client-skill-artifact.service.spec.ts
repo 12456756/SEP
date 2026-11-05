@@ -108,7 +108,7 @@ describe('ClientSkillArtifactService', () => {
       OR: [{ endDate: null }, { endDate: { gt: expect.any(Date) } }],
     });
     expect(prisma.subscription.findFirst.mock.calls[0][0].select.employee.select.bindings.where).toEqual({
-      enabled: true, capabilityId: 'cap-1', capability: { type: 'SKILL' },
+      enabled: true, capabilityId: 'cap-1', capability: { type: 'SKILL', status: 'APPROVED' },
     });
   });
 

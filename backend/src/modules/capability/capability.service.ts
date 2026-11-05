@@ -116,7 +116,7 @@ export class CapabilityService {
     // 新贡献能力必须经过平台审核并明确进入市场；历史能力在迁移前没有
     // enterpriseId/visibility 语义，保留旧的 APPROVED 公开行为以兼容存量数据。
     where.OR = [
-      { visibility: 'MARKET_PUBLIC', platformReviewStatus: 'APPROVED' },
+      { visibility: 'MARKET_PUBLIC', platformReviewStatus: 'APPROVED', status: APPROVED },
       { enterpriseId: null, status: APPROVED },
     ];
 
@@ -143,7 +143,7 @@ export class CapabilityService {
       where: {
         id,
         OR: [
-          { visibility: 'MARKET_PUBLIC', platformReviewStatus: 'APPROVED' },
+          { visibility: 'MARKET_PUBLIC', platformReviewStatus: 'APPROVED', status: APPROVED },
           { enterpriseId: null, status: APPROVED },
         ],
       },
@@ -310,9 +310,19 @@ export class CapabilityService {
   }
 
   async remove(id: string, requesterId: string, requesterRole: string) {
-    const cap = await this.findOneInternal(id);
+    const cap = await this.prisma.capability.findUnique({
+      where: { id },
+      include: { bindings: true },
+    });
+    if (!cap) throw new NotFoundException(`Capability ${id} not found`);
     if (cap.contributorId !== requesterId && requesterRole !== ADMIN_ROLE) {
       throw new ForbiddenException('Only the contributor or admin can delete this capability');
+    }
+    if (cap.status === APPROVED || cap.status === 'ARCHIVED') {
+      throw new BadRequestException('已发布或已下架的能力不能删除');
+    }
+    if (cap.bindings.length > 0) {
+      throw new BadRequestException('能力已被员工绑定，无法删除');
     }
     await this.prisma.capability.delete({ where: { id } });
   }
@@ -428,7 +438,7 @@ export class CapabilityService {
   async findOneForDownload(id: string, userId: string, userRole: string) {
     const cap = await this.findOneInternal(id);
     const isPubliclyApproved =
-      (cap.visibility === 'MARKET_PUBLIC' && cap.platformReviewStatus === 'APPROVED') ||
+      (cap.status === APPROVED && cap.visibility === 'MARKET_PUBLIC' && cap.platformReviewStatus === 'APPROVED') ||
       // 存量能力在迁移前没有贡献中心的公开状态，继续兼容旧的 APPROVED 公开语义。
       (cap.enterpriseId == null && cap.status === APPROVED);
 
@@ -454,7 +464,7 @@ export class CapabilityService {
         subscription: {
           enterpriseId: member.enterpriseId,
           status: 'ACTIVE',
-          employee: { bindings: { some: { capabilityId: id } } },
+          employee: { bindings: { some: { capabilityId: id, enabled: true, capability: { status: APPROVED } } } },
         },
       },
       select: { id: true },
@@ -477,7 +487,7 @@ export class CapabilityService {
     }
 
     const publicReady =
-      (capability.visibility === 'MARKET_PUBLIC' && capability.platformReviewStatus === 'APPROVED') ||
+      (capability.status === APPROVED && capability.visibility === 'MARKET_PUBLIC' && capability.platformReviewStatus === 'APPROVED') ||
       (capability.enterpriseId == null && capability.status === APPROVED);
 
     const version = publicReady
@@ -544,6 +554,7 @@ export class CapabilityService {
     });
 
     if (!capability) throw new NotFoundException(`Capability ${capabilityId} not found`);
+    if (capability.status !== APPROVED) throw new NotFoundException(`Capability ${capabilityId} not found`);
     if (!capability.agentConfig) {
       throw new NotFoundException(`No agent config for capability ${capabilityId}`);
     }

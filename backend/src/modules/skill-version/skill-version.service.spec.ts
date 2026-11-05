@@ -49,7 +49,7 @@ function createPrismaMock() {
       findUnique: jest.fn().mockResolvedValue({ enterpriseId: 'enterprise-1', employee: { bindings: [] } }),
       findMany: jest.fn().mockResolvedValue([]),
     },
-    capability: { findUnique: jest.fn().mockResolvedValue({ name: '测试能力' }) },
+    capability: { findUnique: jest.fn().mockResolvedValue({ id: 'capability-1', name: '测试能力', status: 'APPROVED' }) },
     enterpriseMember: { findMany: jest.fn().mockResolvedValue([]) },
     notification: { createMany: jest.fn() },
     employeeCapabilityBinding: {

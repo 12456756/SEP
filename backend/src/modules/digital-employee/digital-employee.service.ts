@@ -186,6 +186,7 @@ export class DigitalEmployeeService {
       version: true,
       publishedAt: true,
       bindings: {
+        where: { enabled: true, capability: { status: 'APPROVED' as const } },
         select: {
           id: true,
           priority: true,
@@ -207,6 +208,7 @@ export class DigitalEmployeeService {
       where: { id },
       include: {
         bindings: {
+            where: { enabled: true, capability: { status: 'APPROVED' as const } },
           include: {
             capability: {
               select: {
@@ -452,6 +454,7 @@ export class DigitalEmployeeService {
   private defaultInclude() {
     return {
       bindings: {
+        where: { enabled: true, capability: { status: 'APPROVED' as const } },
         include: {
           capability: { select: { id: true, name: true, type: true } },
         },

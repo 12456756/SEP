@@ -6,7 +6,7 @@ export type { EmployeeAvatarAsset } from '../../../backend/src/shared/employee-a
 export type CapabilityType = 'AGENT' | 'RPA' | 'SKILL' | 'AI_APP';
 export type EmployeeStatus = 'DRAFT' | 'PENDING' | 'APPROVED' | 'REJECTED' | 'ARCHIVED';
 export type SubscriptionStatus = 'ACTIVE' | 'PAUSED' | 'EXPIRED' | 'TERMINATED';
-export type CapabilityStatus = 'PENDING' | 'APPROVED' | 'REJECTED';
+export type CapabilityStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'ARCHIVED';
 export type CapabilityVisibility = 'ENTERPRISE_PRIVATE' | 'MARKET_PUBLIC';
 export type ContributionReviewStatus = 'NOT_SUBMITTED' | 'PENDING' | 'APPROVED' | 'REJECTED';
 export type ContributionPlatformStatus = 'NOT_SUBMITTED' | 'REQUESTED' | 'PENDING_REVIEW' | 'APPROVED' | 'REJECTED';

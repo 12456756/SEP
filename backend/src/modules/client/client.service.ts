@@ -760,7 +760,7 @@ export class ClientService {
             maxSteps: true,
             version: true,
             bindings: {
-              where: { enabled: true, capability: { type: 'SKILL' } },
+              where: { enabled: true, capability: { type: 'SKILL', status: 'APPROVED' } },
               orderBy: { priority: 'asc' },
               select: {
                 capability: { select: { id: true, name: true, description: true } },
