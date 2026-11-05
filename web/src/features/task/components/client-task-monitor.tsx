@@ -296,7 +296,7 @@ export function ClientTaskMonitor({ taskId, subscriptionId }: { taskId?: string;
   return <section className="glass-card overflow-hidden">
     <div className="flex flex-wrap items-center justify-between gap-3 border-b border-glassline px-4 py-3 sm:px-5">
       <div><h2 className="flex items-center gap-2 text-sm font-medium text-gtext-primary"><Monitor className="h-4 w-4 text-gbrand-text" />客户端任务监控</h2>
-        <p className="mt-1 text-xs text-gtext-muted">仅显示已同步到云端的记录{result ? ` · 当前结果 ${result.total} 条` : ''}{options.data?.scopeTotal !== undefined ? ` · 当前权限范围共 ${options.data.scopeTotal} 条` : ''}</p>
+        {(result || options.data?.scopeTotal !== undefined) && <p className="mt-1 text-xs text-gtext-muted">{result ? `结果 ${result.total} 条` : ''}{result && options.data?.scopeTotal !== undefined ? ' · ' : ''}{options.data?.scopeTotal !== undefined ? `权限范围 ${options.data.scopeTotal} 条` : ''}</p>}
         {scopeSubscriptionId && <p className="mt-1 text-xs text-gtext-muted">固定员工范围：{options.data?.subscriptions.find((employee) => employee.subscriptionId === scopeSubscriptionId)?.subscriptionName || scopeSubscriptionId}</p>}
       </div>
       <Button variant="glass" size="sm" disabled={query.isFetching || options.isFetching} onClick={() => { void query.refetch(); void options.refetch(); }}><RefreshCw className="h-3.5 w-3.5" />刷新</Button>
@@ -314,14 +314,23 @@ export function ClientTaskMonitor({ taskId, subscriptionId }: { taskId?: string;
             {Object.entries(CLIENT_TASK_STATUS_LABELS).map(([status, label]) => <option key={status} value={status}>{label}{options.data?.counts.byStatus?.[status] !== undefined ? ` · ${options.data.counts.byStatus[status]}` : ''}</option>)}
           </select></label>
         </div>
-        <details><summary className="cursor-pointer text-xs text-gtext-secondary">高级筛选</summary><div className="mt-3 grid gap-3 sm:grid-cols-3">
-          <label className="min-w-0 text-xs text-gtext-muted">发起成员<select aria-label="成员筛选" className={controlClass} value={filters.userId ?? ''} onChange={(event) => updateFilter('userId', event.target.value)}><option value="">全部成员</option>{filters.userId && !options.data?.users.some((item) => item.id === filters.userId) && <option value={filters.userId}>已选成员</option>}{options.data?.users.map((item) => <option key={item.id} value={item.id}>{item.name ?? '名称未知'}</option>)}</select></label>
-          <label className="min-w-0 text-xs text-gtext-muted">任务类型<select aria-label="任务类型筛选" className={controlClass} value={filters.taskType ?? ''} onChange={(event) => updateFilter('taskType', event.target.value)}><option value="">全部类型</option>{filters.taskType && !options.data?.taskTypes.includes(filters.taskType) && <option value={filters.taskType}>{taskTypes[filters.taskType] ?? filters.taskType}</option>}{options.data?.taskTypes.map((item) => <option key={item} value={item}>{taskTypes[item] ?? item}</option>)}</select></label>
-          <label className="min-w-0 text-xs text-gtext-muted">排序<select aria-label="任务排序" className={controlClass} value={filters.sort} onChange={(event) => updateFilter('sort', event.target.value)}>{Object.entries(sorts).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
-          <div className="flex flex-wrap items-center gap-2 sm:col-span-3"><span className="text-xs text-gtext-muted">时间范围（UTC+8）</span>{[[1, '今天'], [7, '近 7 天'], [30, '近 30 天']].map(([days, label]) => <Button key={days} variant="ghost" size="sm" onClick={() => quickDates(Number(days))}>{label}</Button>)}<span className="text-xs text-gtext-muted">自定义：</span></div>
-          <label className="min-w-0 text-xs text-gtext-muted">时间范围起点（含）<input aria-label="时间范围起点" className={controlClass} type="datetime-local" value={dateDraft.from} onChange={(event) => updateDates({ ...dateDraft, from: event.target.value })} /></label>
-          <label className="min-w-0 text-xs text-gtext-muted">时间范围终点（不含）<input aria-label="时间范围终点" className={controlClass} type="datetime-local" value={dateDraft.to} onChange={(event) => updateDates({ ...dateDraft, to: event.target.value })} /></label>
-        </div></details>
+        <div className="space-y-3 border-t border-glassline/70 pt-3">
+          <div className="grid gap-3 sm:grid-cols-3">
+            <label className="min-w-0 text-xs text-gtext-muted">发起成员<select aria-label="成员筛选" className={controlClass} value={filters.userId ?? ''} onChange={(event) => updateFilter('userId', event.target.value)}><option value="">全部成员</option>{filters.userId && !options.data?.users.some((item) => item.id === filters.userId) && <option value={filters.userId}>已选成员</option>}{options.data?.users.map((item) => <option key={item.id} value={item.id}>{item.name ?? '名称未知'}</option>)}</select></label>
+            <label className="min-w-0 text-xs text-gtext-muted">任务类型<select aria-label="任务类型筛选" className={controlClass} value={filters.taskType ?? ''} onChange={(event) => updateFilter('taskType', event.target.value)}><option value="">全部类型</option>{filters.taskType && !options.data?.taskTypes.includes(filters.taskType) && <option value={filters.taskType}>{taskTypes[filters.taskType] ?? filters.taskType}</option>}{options.data?.taskTypes.map((item) => <option key={item} value={item}>{taskTypes[item] ?? item}</option>)}</select></label>
+            <label className="min-w-0 text-xs text-gtext-muted">排序<select aria-label="任务排序" className={controlClass} value={filters.sort} onChange={(event) => updateFilter('sort', event.target.value)}>{Object.entries(sorts).map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
+          </div>
+          <div className="grid gap-3 border-t border-glassline/70 pt-3 lg:grid-cols-[auto_minmax(0,1fr)] lg:items-end">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="mr-1 text-xs text-gtext-muted">时间范围（UTC+8）</span>
+              {[[1, '今天'], [7, '近 7 天'], [30, '近 30 天']].map(([days, label]) => <Button key={days} variant="glass" size="sm" onClick={() => quickDates(Number(days))}>{label}</Button>)}
+            </div>
+            <div className="grid min-w-0 gap-3 sm:grid-cols-2">
+              <label className="min-w-0 text-xs text-gtext-muted">起始时间（含）<input aria-label="时间范围起点" className={controlClass} type="datetime-local" value={dateDraft.from} onChange={(event) => updateDates({ ...dateDraft, from: event.target.value })} /></label>
+              <label className="min-w-0 text-xs text-gtext-muted">结束时间（不含）<input aria-label="时间范围终点" className={controlClass} type="datetime-local" value={dateDraft.to} onChange={(event) => updateDates({ ...dateDraft, to: event.target.value })} /></label>
+            </div>
+          </div>
+        </div>
         <div className="flex flex-wrap items-center gap-2 text-xs text-gtext-muted">
           {selectedFilters.map(([key, value]) => <button key={key} type="button" className="inline-flex max-w-full items-center gap-1 rounded border border-glassline px-2 py-1" aria-label={`移除${filterNames[key]}筛选`} onClick={() => { if (key === 'q') setSearchText(''); updateFilter(key as keyof ClientTaskMirrorListOptions, ''); }}><span className="break-all">{filterNames[key]}：{filterValue(key, String(value))}</span><X className="h-3 w-3 shrink-0" /></button>)}
           <Button variant="ghost" size="sm" aria-label="重置筛选" onClick={() => { setSearchText(''); setDateDraft({ from: '', to: '' }); setFilterError(''); writeFilters({ sort: 'activityAt_desc' }); }}><RotateCcw className="h-3.5 w-3.5" />清空筛选</Button>

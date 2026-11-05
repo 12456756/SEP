@@ -129,7 +129,7 @@ describe('client monitor', () => {
     expect(screen.getByText('另一个成员的任务')).toBeInTheDocument();
     expect(within(taskRow()).getByText(/用户甲/)).toBeInTheDocument();
     expect(within(taskRow()).getByText('研究助手 · 1 次执行')).toBeInTheDocument();
-    expect(screen.getByText(/当前结果 2 条 · 当前权限范围共 33 条/)).toBeInTheDocument();
+    expect(screen.getByText(/结果 2 条 · 权限范围 33 条/)).toBeInTheDocument();
   });
   it('displays complete multiline input/output, creator and update time on expansion', () => {
     mocks.detail.mockReturnValue({ data: detail([event(1, 'user_input', '输入\n第二行'), event(2, 'model_output', '答复'.repeat(600), 'content:v1:m:0:2'), event(3, 'model_output', '末尾', 'content:v1:m:1:2')]) });
@@ -208,7 +208,11 @@ describe('client monitor', () => {
   it('applies dropdowns immediately and debounces title search with UTC+8 date bounds', () => {
     vi.useFakeTimers();
     render(<ClientTaskMonitor />);
-    expect(screen.getByText('高级筛选').closest('details')).not.toHaveAttribute('open');
+    expect(screen.queryByText('高级筛选')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('成员筛选')).toBeVisible();
+    expect(screen.getByLabelText('任务类型筛选')).toBeVisible();
+    expect(screen.getByLabelText('任务排序')).toBeVisible();
+    expect(screen.getByLabelText('时间范围起点')).toBeVisible();
     fireEvent.change(screen.getByLabelText('搜索任务标题'), { target: { value: '  报告  ' } });
     fireEvent.change(screen.getByLabelText('员工筛选'), { target: { value: 'sub-1' } });
     fireEvent.change(screen.getByLabelText('成员筛选'), { target: { value: 'u-2' } });
