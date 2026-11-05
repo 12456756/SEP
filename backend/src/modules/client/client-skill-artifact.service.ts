@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException, 
 import { SkillVersion } from '@prisma/client';
 import { createHash } from 'crypto';
 import {
+  CLIENT_SKILL_ARTIFACT_MAX_BYTES, CLIENT_SKILL_ARTIFACT_MAX_FILES,
   ClientSkillArtifact, ClientSkillArtifactAvailable, ClientSkillArtifactBlocked, ClientSkillArtifactParams, ClientSkillArtifactAvailableSchema,
   SkillArtifactBlockedReason,
 } from 'shared';
@@ -54,8 +55,14 @@ export class ClientSkillArtifactService {
 
   private async prepare(subscriptionId: string, capabilityId: string, version: SkillVersion): Promise<PreparedArtifact> {
     const identity = { protocolVersion: 1 as const, capabilityId, versionId: version.id, approvedContentSha256: sha256(version.content) };
-    const blocked = (reason: SkillArtifactBlockedReason): PreparedArtifact => ({ descriptor: { ...identity, status: 'BLOCKED', reason } });
+    const blocked = (
+      reason: SkillArtifactBlockedReason,
+      metadata?: { byteLength?: number; fileCount?: number },
+    ): PreparedArtifact => ({ descriptor: { ...identity, status: 'BLOCKED', reason, ...metadata } });
     const available = (buffer: Buffer, fields: Pick<AvailableArtifact, 'format' | 'installationDirectory' | 'entryPath' | 'entrySha256' | 'fileCount'>): PreparedArtifact => {
+      if (buffer.length > CLIENT_SKILL_ARTIFACT_MAX_BYTES || fields.fileCount > CLIENT_SKILL_ARTIFACT_MAX_FILES) {
+        return blocked('CLIENT_LIMIT_EXCEEDED', { byteLength: buffer.length, fileCount: fields.fileCount });
+      }
       const result = ClientSkillArtifactAvailableSchema.safeParse({ ...identity, status: 'AVAILABLE', ...fields,
         artifactSha256: sha256(buffer), byteLength: buffer.length,
         downloadPath: `/client/subscriptions/${encodeURIComponent(subscriptionId)}/skills/${encodeURIComponent(capabilityId)}/versions/${encodeURIComponent(version.id)}/artifact`,

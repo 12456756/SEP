@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { SKILL_PACKAGE_MAX_BYTES, SKILL_PACKAGE_MAX_ENTRIES } from './skill-content-schema';
+import {
+  CLIENT_SKILL_ARTIFACT_MAX_BYTES,
+  CLIENT_SKILL_ARTIFACT_MAX_FILES,
+  SKILL_PACKAGE_MAX_BYTES,
+  SKILL_PACKAGE_MAX_ENTRIES,
+} from './skill-content-schema';
 
 export const SkillArtifactSha256Schema = z.string().regex(/^[0-9a-f]{64}$/);
 export function isSafeSkillPathComponent(value: string): boolean {
@@ -31,7 +36,7 @@ const identity = {
 };
 
 export const SkillArtifactBlockedReasonSchema = z.enum([
-  'INVALID_ENTRY', 'PACKAGE_REQUIRED', 'PACKAGE_UNAVAILABLE', 'PACKAGE_CONTENT_MISMATCH',
+  'INVALID_ENTRY', 'PACKAGE_REQUIRED', 'PACKAGE_UNAVAILABLE', 'PACKAGE_CONTENT_MISMATCH', 'CLIENT_LIMIT_EXCEEDED',
 ]);
 
 export const ClientSkillArtifactAvailableSchema = z.object({
@@ -45,15 +50,29 @@ export const ClientSkillArtifactAvailableSchema = z.object({
     }, '入口必须为安全相对路径'),
     entrySha256: SkillArtifactSha256Schema,
     artifactSha256: SkillArtifactSha256Schema,
-    byteLength: z.number().int().positive().max(SKILL_PACKAGE_MAX_BYTES),
-    fileCount: z.number().int().positive().max(SKILL_PACKAGE_MAX_ENTRIES),
+    byteLength: z.number().int().positive().max(CLIENT_SKILL_ARTIFACT_MAX_BYTES),
+    fileCount: z.number().int().positive().max(CLIENT_SKILL_ARTIFACT_MAX_FILES),
     downloadPath: z.string().regex(/^\/client\/subscriptions\/[a-zA-Z0-9_-]{1,128}\/skills\/[a-zA-Z0-9_-]{1,128}\/versions\/[a-zA-Z0-9_-]{1,128}\/artifact$/),
   }).strict();
-export const ClientSkillArtifactBlockedSchema = z.object({ ...identity, status: z.literal('BLOCKED'), reason: SkillArtifactBlockedReasonSchema }).strict();
-export const ClientSkillArtifactSchema = z.discriminatedUnion('status', [
+export const ClientSkillArtifactBlockedSchema = z.object({
+  ...identity,
+  status: z.literal('BLOCKED'),
+  reason: SkillArtifactBlockedReasonSchema,
+  byteLength: z.number().int().positive().max(SKILL_PACKAGE_MAX_BYTES).optional(),
+  fileCount: z.number().int().positive().max(SKILL_PACKAGE_MAX_ENTRIES).optional(),
+}).strict();
+export const ClientSkillArtifactSchema = z.union([
   ClientSkillArtifactAvailableSchema,
   ClientSkillArtifactBlockedSchema,
-]);
+]).superRefine((artifact, ctx) => {
+  if (artifact.status !== 'BLOCKED') return;
+  const hasMetadata = artifact.byteLength !== undefined || artifact.fileCount !== undefined;
+  const exceedsClientLimit = (artifact.byteLength ?? 0) > CLIENT_SKILL_ARTIFACT_MAX_BYTES ||
+    (artifact.fileCount ?? 0) > CLIENT_SKILL_ARTIFACT_MAX_FILES;
+  if (artifact.reason === 'CLIENT_LIMIT_EXCEEDED' ? !exceedsClientLimit : hasMetadata) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reason'], message: 'Blocked artifact metadata does not match its reason.' });
+  }
+});
 export type ClientSkillArtifact = z.infer<typeof ClientSkillArtifactSchema>;
 export type ClientSkillArtifactAvailable = z.infer<typeof ClientSkillArtifactAvailableSchema>;
 export type ClientSkillArtifactBlocked = z.infer<typeof ClientSkillArtifactBlockedSchema>;

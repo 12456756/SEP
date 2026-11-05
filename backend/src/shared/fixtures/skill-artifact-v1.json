@@ -84,5 +84,18 @@
       "status": "BLOCKED",
       "reason": "PACKAGE_CONTENT_MISMATCH"
     }
+  },
+  {
+    "name": "mock-blocked-client-limit-exceeded",
+    "mock": true,
+    "artifact": {
+      "protocolVersion": 1,
+      "capabilityId": "cap-mock-blocked",
+      "versionId": "ver-mock-blocked",
+      "approvedContentSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "status": "BLOCKED",
+      "reason": "CLIENT_LIMIT_EXCEEDED",
+      "fileCount": 501
+    }
   }
 ]

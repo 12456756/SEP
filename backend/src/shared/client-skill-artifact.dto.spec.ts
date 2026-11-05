@@ -71,7 +71,9 @@ describe('client skill artifact v1 schemas', () => {
   });
 
   it('accepts inclusive ZIP size and entry-count boundaries', () => {
-    expect(ClientSkillArtifactSchema.safeParse({ ...available, byteLength: 100 * 1024 * 1024, fileCount: 10000 }).success).toBe(true);
+    expect(ClientSkillArtifactSchema.safeParse({ ...available, byteLength: 20 * 1024 * 1024, fileCount: 500 }).success).toBe(true);
+    expect(ClientSkillArtifactSchema.safeParse({ ...available, byteLength: 20 * 1024 * 1024 + 1 }).success).toBe(false);
+    expect(ClientSkillArtifactSchema.safeParse({ ...available, fileCount: 501 }).success).toBe(false);
   });
 
   it('requires all AVAILABLE fields and forbids a blocked reason on AVAILABLE', () => {
@@ -85,7 +87,10 @@ describe('client skill artifact v1 schemas', () => {
 
   it('keeps BLOCKED descriptors download-free and accepts only known reasons', () => {
     for (const reason of SkillArtifactBlockedReasonSchema.options) {
-      expect(ClientSkillArtifactSchema.safeParse({ ...blocked, reason }).success).toBe(true);
+      const descriptor = reason === 'CLIENT_LIMIT_EXCEEDED'
+        ? { ...blocked, reason, fileCount: 501 }
+        : { ...blocked, reason };
+      expect(ClientSkillArtifactSchema.safeParse(descriptor).success).toBe(true);
     }
     for (const override of [
       { reason: 'INTERNAL_ERROR' }, { reason: undefined }, { protocolVersion: 2 }, { approvedContentSha256: 'bad' },
@@ -95,6 +100,7 @@ describe('client skill artifact v1 schemas', () => {
     ]) {
       expect(ClientSkillArtifactSchema.safeParse({ ...blocked, ...override }).success).toBe(false);
     }
+    expect(ClientSkillArtifactSchema.safeParse({ ...blocked, reason: 'CLIENT_LIMIT_EXCEEDED' }).success).toBe(false);
   });
 
   it.each(['a', 'a0', 'weekly-report-1', 'a'.repeat(64), 'A', '中文', '電商-分析', 'ＡＩ', '𐐀'.repeat(64),

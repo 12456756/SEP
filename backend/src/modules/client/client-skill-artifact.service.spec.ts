@@ -202,6 +202,35 @@ describe('ClientSkillArtifactService', () => {
       .toMatchObject({ status: 'BLOCKED', reason });
   });
 
+  it.each([
+    [{ byteLength: 1024, fileCount: 821 }, { reason: 'CLIENT_LIMIT_EXCEEDED', byteLength: 1024, fileCount: 821 }],
+    [{ byteLength: 20 * 1024 * 1024 + 1, fileCount: 42 }, { reason: 'CLIENT_LIMIT_EXCEEDED', byteLength: 20 * 1024 * 1024 + 1, fileCount: 42 }],
+  ])('blocks a valid stored package outside the SEP client limits', async (packageMeta, expected) => {
+    const hash = 'a'.repeat(64);
+    const entry = Buffer.from('---\nname: product-image\ndescription: Make a product image\n---\nApproved body.\n');
+    const version = makeVersion({ packageKey: `skills/${hash}.zip`, packageSha256: hash });
+    packages.readInstallablePackage.mockResolvedValue({
+      buffer: Buffer.alloc(packageMeta.byteLength), content: version.content, skillName: 'product-image',
+      entryPath: 'product-image/SKILL.md', entrySha256: digest(entry), fileCount: packageMeta.fileCount,
+    });
+    expect(await service.describe('sub-1', 'cap-1', version)).toMatchObject({
+      status: 'BLOCKED', capabilityId: 'cap-1', versionId: 'sv-1', ...expected,
+    });
+  });
+
+  it('allows a package at the inclusive SEP client size and file-count limits', async () => {
+    const hash = 'b'.repeat(64);
+    const entry = Buffer.from('---\nname: product-image\ndescription: Make a product image\n---\nApproved body.\n');
+    const version = makeVersion({ packageKey: `skills/${hash}.zip`, packageSha256: hash });
+    packages.readInstallablePackage.mockResolvedValue({
+      buffer: Buffer.alloc(20 * 1024 * 1024), content: version.content, skillName: 'product-image',
+      entryPath: 'product-image/SKILL.md', entrySha256: digest(entry), fileCount: 500,
+    });
+    expect(await service.describe('sub-1', 'cap-1', version)).toMatchObject({
+      status: 'AVAILABLE', byteLength: 20 * 1024 * 1024, fileCount: 500,
+    });
+  });
+
   it('reports temporary storage failure without exposing raw upstream exceptions', async () => {
     const hash = 'a'.repeat(64);
     packages.readInstallablePackage.mockRejectedValue(new Error('storage unavailable'));
