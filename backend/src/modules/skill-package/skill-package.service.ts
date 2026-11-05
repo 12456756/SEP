@@ -164,9 +164,14 @@ export class SkillPackageService {
       throw error;
     }
     const pkg = this.validatePackage(buffer, sha256);
+    const incompatibility = pkg.warnings.find(({ code }) =>
+      ['MULTIPLE_ENTRIES', 'DIRECTORY_NAME_MISMATCH', 'RESOURCE_REFERENCE'].includes(code));
+    if (incompatibility) throw new BadRequestException(incompatibility.message);
+    this.assertInstallablePaths(buffer);
     const zip = new AdmZip(buffer);
     const original = zip.getEntry(pkg.entryPath)!.getData();
-    const prepared = prepareSkillMarkdown(original.toString('utf8'), pkg.skillName);
+    // Approved package bodies use LF; deliver the same body to byte-sensitive installers.
+    const prepared = prepareSkillMarkdown(original.toString('utf8').replace(/\r\n?/g, '\n'), pkg.skillName);
     if (prepared.status !== 'AVAILABLE') throw new BadRequestException('技能正文不能为空');
     const entryPath = posix.join(posix.dirname(pkg.entryPath), SKILL_ENTRY_NAME);
     if (prepared.content === original.toString('utf8') && entryPath === pkg.entryPath) return pkg;
@@ -175,9 +180,35 @@ export class SkillPackageService {
     const entryBytes = Buffer.from(prepared.content, 'utf8');
     zip.addFile(entryPath, entryBytes).header.time = entryTime;
     const normalized = zip.toBuffer();
-    return { ...pkg, buffer: normalized, sha256: crypto.createHash('sha256').update(normalized).digest('hex'),
-      skillName: prepared.skillName, entryPath, totalBytes: normalized.length,
-      entrySha256: crypto.createHash('sha256').update(entryBytes).digest('hex') };
+    const normalizedSha256 = crypto.createHash('sha256').update(normalized).digest('hex');
+    const finalPackage = this.validatePackage(normalized, normalizedSha256);
+    this.assertInstallablePaths(normalized);
+    if (finalPackage.content !== pkg.content) throw new BadRequestException('规范化后的技能正文不一致');
+    return { ...finalPackage, warnings: pkg.warnings };
+  }
+
+  private assertInstallablePaths(buffer: Buffer): void {
+    const paths = new Map<string, { path: string; directory: boolean; explicit: boolean }>();
+    for (const entry of new AdmZip(buffer).getEntries()) {
+      if ((entry.header.flags & 1) || ![0, 8].includes(entry.header.method)) {
+        throw new BadRequestException('ZIP 包含加密条目或不支持的压缩方式');
+      }
+      const type = (entry.attr >>> 16) & 0xf000;
+      if (type && type !== 0x8000 && type !== 0x4000) throw new BadRequestException('ZIP 包含特殊文件');
+      const parts = (entry.entryName.endsWith('/') ? entry.entryName.slice(0, -1) : entry.entryName).split('/');
+      for (let index = 0; index < parts.length; index += 1) {
+        const path = parts.slice(0, index + 1).join('/');
+        const key = path.normalize('NFKC').toLowerCase();
+        const explicit = index === parts.length - 1;
+        const directory = !explicit || entry.isDirectory;
+        const previous = paths.get(key);
+        if (previous && (previous.path !== path || previous.directory !== directory ||
+          (previous.explicit && explicit))) {
+          throw new BadRequestException('ZIP 包含大小写、Unicode 或文件目录冲突');
+        }
+        paths.set(key, { path, directory, explicit: explicit || previous?.explicit === true });
+      }
+    }
   }
 
   private validatePackage(buffer: Buffer, sha256: string): InstallableSkillPackage {
@@ -240,8 +271,8 @@ export class SkillPackageService {
       if (!parsed.hasFrontmatter || !frontmatter.success) warnings.push({ code: 'METADATA_NORMALIZED', message: '元数据缺失或格式不规范，安装时会自动补齐兼容信息。' });
       const entryPath = skillEntry.entryName;
       const directory = posix.dirname(entryPath);
-      if (directory !== '.' && posix.basename(directory).normalize('NFKC') !== name.normalize('NFKC')) {
-        warnings.push({ code: 'DIRECTORY_NAME_MISMATCH', message: '技能名称与包目录名称不同，已兼容处理。' });
+      if (directory !== '.' && posix.basename(directory).normalize('NFKC').toLowerCase() !== name.normalize('NFKC').toLowerCase()) {
+        warnings.push({ code: 'DIRECTORY_NAME_MISMATCH', message: '技能名称与包目录名称不同，请修正目录或技能名称后再安装。' });
       }
       const paths = new Set(files.map((entry) => entry.entryName.normalize('NFKC')));
       for (const reference of skillLocalResourceReferences(parsed.content)) {

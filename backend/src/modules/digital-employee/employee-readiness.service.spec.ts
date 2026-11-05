@@ -33,7 +33,7 @@ describe('EmployeeReadinessService', () => {
     prisma.digitalEmployee.findUnique.mockResolvedValue({ id: 'emp-1', status: 'DRAFT' });
     prisma.employeeCapabilityBinding.findMany.mockResolvedValue([binding()]);
     prisma.skillVersion.findFirst.mockResolvedValue(version());
-    artifacts = new ClientSkillArtifactService(prisma as any, {} as any, {} as any, packages as any);
+    artifacts = new ClientSkillArtifactService(prisma as any, {} as any, { assertEmployeeSubscriptionsReady: jest.fn().mockResolvedValue(undefined) } as any, packages as any);
     service = new EmployeeReadinessService(prisma as any, artifacts);
   });
 
@@ -55,9 +55,16 @@ describe('EmployeeReadinessService', () => {
     await expect(service.assertReady('emp-1')).rejects.toThrow('能力-cap-1：技能制品不可安装 (INVALID_ENTRY)');
   });
 
-  it('accepts unresolved documentation references without blocking readiness', async () => {
+  it('blocks a single-file skill whose referenced local resource has no package', async () => {
     prisma.skillVersion.findFirst.mockResolvedValue(version('cap-1', { content: '[Checklist](./checklist.md)' }));
-    await expect(service.assertReady('emp-1')).resolves.toBeUndefined();
+    await expect(service.assertReady('emp-1')).rejects.toThrow('PACKAGE_REQUIRED');
+  });
+
+  it('checks actual subscription overrides in the same transaction after template readiness', async () => {
+    const check = jest.spyOn(artifacts, 'assertEmployeeSubscriptionsReady')
+      .mockRejectedValue(new BadRequestException('企业生效版本目录冲突'));
+    await expect(service.assertReady('emp-1', prisma as any)).rejects.toThrow('企业生效版本目录冲突');
+    expect(check).toHaveBeenCalledWith('emp-1', prisma);
   });
 
   it('accepts Chinese AVAILABLE entries without renaming approved content', async () => {

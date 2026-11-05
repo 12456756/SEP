@@ -69,7 +69,7 @@ describe('Employee publication and binding readiness protection', () => {
         try { return await action(prisma); } catch (error) { state = snapshot; throw error; }
       }),
     };
-    const artifact = new ClientSkillArtifactService(prisma, {} as any, {} as any, {} as any);
+    const artifact = new ClientSkillArtifactService(prisma, {} as any, { assertEmployeeSubscriptionsReady: jest.fn().mockResolvedValue(undefined) } as any, {} as any);
     readiness = new EmployeeReadinessService(prisma, artifact);
     admin = new AdminService(prisma, {} as any, undefined, undefined, readiness);
     digital = new DigitalEmployeeService(prisma, {} as any, readiness);
@@ -111,10 +111,11 @@ describe('Employee publication and binding readiness protection', () => {
       expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
     });
 
-    it('publishes instructions with unresolved documentation references', async () => {
+    it('rejects instructions with missing local resources and rolls back publication', async () => {
       versions[0].content = '[Checklist](./checklist.md)';
-      await publish(entry);
-      expect(state.employee.status).toBe('APPROVED');
+      const snapshot = structuredClone(state);
+      await expect(publish(entry)).rejects.toThrow('PACKAGE_REQUIRED');
+      expect(state).toEqual(snapshot);
     });
   });
 

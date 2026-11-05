@@ -11,6 +11,7 @@ import {
   Prisma,
   SkillVersionScope,
   SkillVersionStatus,
+  SkillVersion,
 } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -28,6 +29,7 @@ import {
 import { CapabilityValidatorService } from '../capability-contribution/capability-validator.service';
 import { PackageSecurityService } from '../capability-contribution/package-security.service';
 import { SkillPackageService } from '../skill-package/skill-package.service';
+import { prepareSkillArtifact } from '../skill-package/skill-artifact-preparation';
 import { PersonalWalletService, assertActiveRewardRecipientInTx } from '../personal-wallet/personal-wallet.service';
 import { SettingService } from '../setting/setting.service';
 import { nextSemver } from './skill-version-numbering';
@@ -322,12 +324,32 @@ export class SkillVersionService {
         version.status === 'ENTERPRISE_APPROVED');
     if (!selectable) throw new BadRequestException('该版本尚未审核通过或无权使用');
 
-    await this.prisma.$transaction(async (tx) => {
+    const activatedVersion = await this.prisma.$transaction(async (tx) => {
       await this.defaults.lock(tx, enterpriseId, capabilityId);
+      const current = await tx.skillVersion.findUnique({ where: { id: versionId } });
+      if (!current || current.capabilityId !== capabilityId || !(
+        (current.scope === 'PLATFORM' && current.status === 'PLATFORM_APPROVED') ||
+        (current.scope === 'ENTERPRISE' && current.enterpriseId === enterpriseId && current.status === 'ENTERPRISE_APPROVED')
+      )) throw new BadRequestException('所选版本已发生变化，请重新选择');
+      await this.installationDirectory('activation', capabilityId, current);
+      const subscriptions = await tx.subscription.findMany({
+        where: { enterpriseId, status: 'ACTIVE', OR: [{ endDate: null }, { endDate: { gt: new Date() } }],
+          employee: { bindings: { some: { capabilityId, enabled: true } } } },
+        select: { id: true, employeeId: true },
+      });
+      for (const subscription of subscriptions) {
+        await this.assertSubscriptionInstallable(subscription, tx, current);
+      }
       await this.defaults.set(tx, enterpriseId, capabilityId, versionId, userId);
+      return current;
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, timeout: 30_000 }).catch((error) => {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034') {
+        throw new ConflictException('员工绑定或企业生效版本已发生变化，请重新检查后再提交');
+      }
+      throw error;
     });
-    await this.notifySkillVersionUpdated(enterpriseId, capabilityId, version.version);
-    return { capabilityId, versionId, version };
+    await this.notifySkillVersionUpdated(enterpriseId, capabilityId, activatedVersion.version);
+    return { capabilityId, versionId, version: activatedVersion };
   }
 
   /** 兼容旧路由并拒绝写入，保留历史个人偏好供审计。 */
@@ -341,8 +363,9 @@ export class SkillVersionService {
   }
 
   /** 正式执行统一跟随企业启用版本，历史个人选择和工作副本仅供审计。 */
-  async resolveEffectiveVersion(subscriptionId: string, capabilityId: string, _userId?: string) {
-    const subscription = await this.prisma.subscription.findUnique({
+  async resolveEffectiveVersion(subscriptionId: string, capabilityId: string, _userId?: string, db?: Prisma.TransactionClient) {
+    const reader = db ?? this.prisma;
+    const subscription = await reader.subscription.findUnique({
       where: { id: subscriptionId },
       select: {
         enterpriseId: true,
@@ -352,7 +375,7 @@ export class SkillVersionService {
       },
     });
     if (!subscription) return null;
-    const capability = await this.prisma.capability.findUnique({
+    const capability = await reader.capability.findUnique({
       where: { id: capabilityId },
       select: { status: true },
     });
@@ -362,19 +385,59 @@ export class SkillVersionService {
         (version.scope === 'PLATFORM' && version.status === 'PLATFORM_APPROVED') ||
         (version.scope === 'ENTERPRISE' && version.status === 'ENTERPRISE_APPROVED' && version.enterpriseId === subscription.enterpriseId)
       );
-    const enterpriseDefault = await this.defaults.get(subscription.enterpriseId, capabilityId);
+    const enterpriseDefault = db
+      ? await this.defaults.get(subscription.enterpriseId, capabilityId, db)
+      : await this.defaults.get(subscription.enterpriseId, capabilityId);
     if (approved(enterpriseDefault?.version)) return enterpriseDefault!.version;
-    const selection = await this.prisma.subscriptionSkillVersion.findUnique({
+    const selection = await reader.subscriptionSkillVersion.findUnique({
       where: { subscriptionId_capabilityId: { subscriptionId, capabilityId } },
       include: { version: true },
     });
     if (approved(selection?.version)) return selection!.version;
     const defaultVersion = subscription.employee.bindings[0]?.defaultSkillVersion;
     if (approved(defaultVersion)) return defaultVersion!;
-    return this.prisma.skillVersion.findFirst({
+    return reader.skillVersion.findFirst({
       where: { capabilityId, scope: 'PLATFORM', status: 'PLATFORM_APPROVED' },
       orderBy: PLATFORM_RELEASE_ORDER,
     });
+  }
+
+  async assertEmployeeSubscriptionsReady(employeeId: string, db: Prisma.TransactionClient): Promise<void> {
+    const subscriptions = await db.subscription.findMany({
+      where: { employeeId, status: 'ACTIVE', OR: [{ endDate: null }, { endDate: { gt: new Date() } }] },
+      select: { id: true, employeeId: true },
+    });
+    for (const subscription of subscriptions) await this.assertSubscriptionInstallable(subscription, db);
+  }
+
+  private async installationDirectory(subscriptionId: string, capabilityId: string, version: SkillVersion): Promise<string> {
+    const { descriptor } = await prepareSkillArtifact(this.platformPackages, subscriptionId, capabilityId, version);
+    if (descriptor.status === 'BLOCKED') {
+      throw new BadRequestException({ code: 'SKILL_ARTIFACT_BLOCKED', reason: descriptor.reason,
+        message: `技能制品不可安装 (${descriptor.reason})`, capabilityId, versionId: version.id });
+    }
+    return descriptor.installationDirectory.normalize('NFKC').toLowerCase();
+  }
+
+  private async assertSubscriptionInstallable(
+    subscription: { id: string; employeeId: string }, db: Prisma.TransactionClient, replacement?: SkillVersion,
+  ): Promise<void> {
+    const bindings = await db.employeeCapabilityBinding.findMany({
+      where: { employeeId: subscription.employeeId, enabled: true, capability: { type: 'SKILL', status: 'APPROVED' } },
+      select: { capabilityId: true },
+    });
+    const directories = new Map<string, string>();
+    for (const binding of bindings) {
+      const version = replacement?.capabilityId === binding.capabilityId ? replacement
+        : await this.resolveEffectiveVersion(subscription.id, binding.capabilityId, undefined, db);
+      if (!version) throw new BadRequestException(`技能缺少已批准的生效版本 (${binding.capabilityId})`);
+      const directory = await this.installationDirectory(subscription.id, binding.capabilityId, version);
+      const previous = directories.get(directory);
+      if (previous) throw new BadRequestException({ code: 'SKILL_INSTALLATION_CONFLICT',
+        message: `技能安装目录冲突 (${directory})`, subscriptionId: subscription.id,
+        capabilityIds: [previous, binding.capabilityId] });
+      directories.set(directory, binding.capabilityId);
+    }
   }
 
   async submitPlatformReview(_userId: string, _versionId: string) {

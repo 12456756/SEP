@@ -83,7 +83,7 @@ describe('DigitalEmployeeService', () => {
         { provide: PrismaService, useValue: prismaMock },
         {
           provide: EmployeeReadinessService,
-          useFactory: () => new EmployeeReadinessService(prismaMock as any, { describe: jest.fn() } as any),
+          useFactory: () => new EmployeeReadinessService(prismaMock as any, { describe: jest.fn(), assertEmployeeSubscriptionsReady: jest.fn() } as any),
         },
         {
           // 人才市场履历由独立 service 算（一条原生 SQL），这里只需它别真跑

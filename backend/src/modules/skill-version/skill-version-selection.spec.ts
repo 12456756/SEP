@@ -6,6 +6,7 @@ const enterprise = { ...platform, id: 'enterprise-1', scope: 'ENTERPRISE', statu
 
 function build() {
   const prisma = {
+    capability: { findUnique: jest.fn().mockResolvedValue({ status: 'APPROVED' }) },
     subscription: { findUnique: jest.fn().mockResolvedValue({ enterpriseId: 'ent-1', employee: { bindings: [{ defaultSkillVersion: platform }] } }) },
     skillVersion: { findFirst: jest.fn().mockResolvedValue(platform) },
     memberSkillVersionSelection: { upsert: jest.fn(), findFirst: jest.fn() },
@@ -55,7 +56,7 @@ describe('正式执行统一跟随企业启用版本', () => {
     prisma.subscriptionSkillVersion.findUnique.mockResolvedValue({ version: { ...enterprise, scope: 'PERSONAL' } });
     await expect(service.resolveEffectiveVersion('sub-1', 'cap-1')).resolves.toEqual(platform);
     expect(prisma.subscription.findUnique).toHaveBeenCalledWith(expect.objectContaining({ select: expect.objectContaining({
-      employee: { select: { bindings: { where: { capabilityId: 'cap-1', enabled: true }, select: { defaultSkillVersion: true }, take: 1 } } },
+      employee: { select: { bindings: { where: { capabilityId: 'cap-1', enabled: true, capability: { status: 'APPROVED' } }, select: { defaultSkillVersion: true }, take: 1 } } },
     }) }));
   });
 

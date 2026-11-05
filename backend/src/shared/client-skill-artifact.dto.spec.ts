@@ -87,9 +87,7 @@ describe('client skill artifact v1 schemas', () => {
 
   it('keeps BLOCKED descriptors download-free and accepts only known reasons', () => {
     for (const reason of SkillArtifactBlockedReasonSchema.options) {
-      const descriptor = reason === 'CLIENT_LIMIT_EXCEEDED'
-        ? { ...blocked, reason, fileCount: 501 }
-        : { ...blocked, reason };
+      const descriptor = { ...blocked, reason };
       expect(ClientSkillArtifactSchema.safeParse(descriptor).success).toBe(true);
     }
     for (const override of [

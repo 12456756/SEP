@@ -100,5 +100,6 @@ export class EmployeeReadinessService {
         failures,
       });
     }
+    await this.artifacts.assertEmployeeSubscriptionsReady(employeeId, db);
   }
 }

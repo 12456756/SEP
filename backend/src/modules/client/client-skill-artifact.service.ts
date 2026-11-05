@@ -1,21 +1,12 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
-import { SkillVersion } from '@prisma/client';
-import { createHash } from 'crypto';
-import {
-  CLIENT_SKILL_ARTIFACT_MAX_BYTES, CLIENT_SKILL_ARTIFACT_MAX_FILES,
-  ClientSkillArtifact, ClientSkillArtifactAvailable, ClientSkillArtifactBlocked, ClientSkillArtifactParams, ClientSkillArtifactAvailableSchema,
-  SkillArtifactBlockedReason,
-} from 'shared';
-import { prepareSkillMarkdown } from '../../shared/skill-content';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { Prisma, SkillVersion } from '@prisma/client';
+import { ClientSkillArtifact, ClientSkillArtifactParams } from 'shared';
 import { PrismaService } from '../../prisma/prisma.service';
 import { EnterpriseContextService } from '../enterprise/enterprise-context.service';
 import { SkillPackageService } from '../skill-package/skill-package.service';
+import { prepareSkillArtifact } from '../skill-package/skill-artifact-preparation';
 import { SkillVersionService } from '../skill-version/skill-version.service';
 import { clientSubscriptionAccessWhere } from './client-subscription-access';
-
-const sha256 = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
-type AvailableArtifact = ClientSkillArtifactAvailable;
-type PreparedArtifact = { descriptor: AvailableArtifact; buffer: Buffer } | { descriptor: ClientSkillArtifactBlocked };
 
 @Injectable()
 export class ClientSkillArtifactService {
@@ -53,41 +44,11 @@ export class ClientSkillArtifactService {
     return { descriptor: artifact.descriptor, buffer: artifact.buffer };
   }
 
-  private async prepare(subscriptionId: string, capabilityId: string, version: SkillVersion): Promise<PreparedArtifact> {
-    const identity = { protocolVersion: 1 as const, capabilityId, versionId: version.id, approvedContentSha256: sha256(version.content) };
-    const blocked = (
-      reason: SkillArtifactBlockedReason,
-      metadata?: { byteLength?: number; fileCount?: number },
-    ): PreparedArtifact => ({ descriptor: { ...identity, status: 'BLOCKED', reason, ...metadata } });
-    const available = (buffer: Buffer, fields: Pick<AvailableArtifact, 'format' | 'installationDirectory' | 'entryPath' | 'entrySha256' | 'fileCount'>): PreparedArtifact => {
-      if (buffer.length > CLIENT_SKILL_ARTIFACT_MAX_BYTES || fields.fileCount > CLIENT_SKILL_ARTIFACT_MAX_FILES) {
-        return blocked('CLIENT_LIMIT_EXCEEDED', { byteLength: buffer.length, fileCount: fields.fileCount });
-      }
-      const result = ClientSkillArtifactAvailableSchema.safeParse({ ...identity, status: 'AVAILABLE', ...fields,
-        artifactSha256: sha256(buffer), byteLength: buffer.length,
-        downloadPath: `/client/subscriptions/${encodeURIComponent(subscriptionId)}/skills/${encodeURIComponent(capabilityId)}/versions/${encodeURIComponent(version.id)}/artifact`,
-      });
-      return result.success ? { buffer, descriptor: result.data } : blocked('INVALID_ENTRY');
-    };
+  assertEmployeeSubscriptionsReady(employeeId: string, db: Prisma.TransactionClient) {
+    return this.skillVersions.assertEmployeeSubscriptionsReady(employeeId, db);
+  }
 
-    if (version.packageKey || version.packageSha256) {
-      if (!version.packageSha256 || version.packageKey !== `skills/${version.packageSha256}.zip`) return blocked('PACKAGE_UNAVAILABLE');
-      try {
-        const pkg = await this.packages.readInstallablePackage(version.packageSha256);
-        if (pkg.content !== version.content) return blocked('PACKAGE_CONTENT_MISMATCH');
-        return available(pkg.buffer, { format: 'zip', installationDirectory: pkg.skillName,
-          entryPath: pkg.entryPath, entrySha256: pkg.entrySha256, fileCount: pkg.fileCount });
-      } catch (error) {
-        if (error instanceof NotFoundException) return blocked('PACKAGE_UNAVAILABLE');
-        if (error instanceof BadRequestException) return blocked('INVALID_ENTRY');
-        throw new ServiceUnavailableException('Skill package storage temporarily unavailable');
-      }
-    }
-
-    const prepared = prepareSkillMarkdown(version.content, `sep-${sha256(capabilityId).slice(0, 24)}`);
-    if (prepared.status === 'BLOCKED') return blocked(prepared.reason);
-    const buffer = Buffer.from(prepared.content, 'utf8');
-    return available(buffer, { format: 'single-file', installationDirectory: prepared.skillName,
-      entryPath: 'SKILL.md', entrySha256: sha256(buffer), fileCount: 1 });
+  private prepare(subscriptionId: string, capabilityId: string, version: SkillVersion) {
+    return prepareSkillArtifact(this.packages, subscriptionId, capabilityId, version);
   }
 }

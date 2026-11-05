@@ -259,6 +259,34 @@ describe('SkillPackageService', () => {
   });
 
   describe('readInstallablePackage', () => {
+    it('keeps the upload budget but rejects a generated entry exceeding that same budget', async () => {
+      const markdown = '# ' + 'x'.repeat(2 * 1024 * 1024 - 2);
+      const stored = await service.store(upload(zipWith([['SKILL.md', markdown]])));
+      await expect(service.readInstallablePackage(stored.sha256)).rejects.toThrow('2MiB');
+      await expect(service.read(stored.sha256)).resolves.toMatchObject({ content: markdown });
+    });
+
+    it.each([
+      ['a.txt', 'A.txt'], ['assets/a.txt', 'Assets/b.txt'], ['file', 'file/child.txt'],
+      ['café/a.txt', 'cafe\u0301/b.txt'],
+    ])('rejects installation path aliases or file-directory conflicts: %s %s', async (first, second) => {
+      const buffer = zipWith([['SKILL.md', installableMarkdown()], [first, 'one'], [second, 'two']]);
+      const stored = await service.store(upload(buffer));
+      await expect(service.readInstallablePackage(stored.sha256)).rejects.toThrow('冲突');
+    });
+
+    it('rejects missing input resources while retaining upload warnings', async () => {
+      const buffer = zipWith([['SKILL.md', installableMarkdown() + '\n[Input](references/missing.md)']]);
+      const stored = await service.store(upload(buffer));
+      expect(stored.warnings).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'RESOURCE_REFERENCE' })]));
+      await expect(service.readInstallablePackage(stored.sha256)).rejects.toBeInstanceOf(BadRequestException);
+    });
+
+    it('accepts output names, remote links and case-equivalent skill directory names', async () => {
+      const markdown = installableMarkdown() + '\nSave `report.md`. [Remote](https://example.com)';
+      const stored = await service.store(upload(zipWith([['Weekly/SKILL.md', markdown]])));
+      await expect(service.readInstallablePackage(stored.sha256)).resolves.toMatchObject({ skillName: 'weekly' });
+    });
     const readPackage = (buffer: Buffer, hash = sha256(buffer)) => {
       jest.spyOn(service, 'readBytes').mockResolvedValue(buffer);
       return service.readInstallablePackage(hash);
@@ -289,18 +317,20 @@ describe('SkillPackageService', () => {
       });
     });
 
-    it('接受根入口，不要求 name 与任何目录一致，保持原始 frontmatter 字节', async () => {
+    it('根入口将 CRLF 规范为 LF，与批准正文一致且保留原包', async () => {
       const markdown = '---\r\nname: root-skill\r\ndescription: "  原始说明  "\r\nextra: keep\r\n---\r\n\r\n  # Original\r\n';
       const buffer = zipWith([['SKILL.md', markdown]]);
       const stored = await service.store(upload(buffer));
       const result = await service.readInstallablePackage(stored.sha256);
 
-      expect(result.buffer.equals(buffer)).toBe(true);
-      expect(new AdmZip(result.buffer).getEntry('SKILL.md')!.getData()).toEqual(Buffer.from(markdown));
+      const normalized = markdown.replace(/\r\n/g, '\n');
+      expect(result.buffer.equals(buffer)).toBe(false);
+      expect(await service.readBytes(stored.key)).toEqual(buffer);
+      expect(new AdmZip(result.buffer).getEntry('SKILL.md')!.getData()).toEqual(Buffer.from(normalized));
       expect(result.content).toBe(stored.content);
       expect(result.entryPath).toBe('SKILL.md');
       expect(result.skillName).toBe('root-skill');
-      expect(result.entrySha256).toBe(sha256(Buffer.from(markdown)));
+      expect(result.entrySha256).toBe(sha256(Buffer.from(normalized)));
       expect(result.entrySha256).not.toBe(sha256(Buffer.from(result.content)));
       expect(result).not.toHaveProperty('key');
       expect(result).not.toHaveProperty('suggested');
@@ -319,7 +349,7 @@ describe('SkillPackageService', () => {
     });
 
     it('normalizes reproducibly while retaining every attachment and original source', async () => {
-      const original = new AdmZip(zipWith([['demo/skill.md', '# Instructions'], ['demo/script.py', 'print(1)'],
+      const original = new AdmZip(zipWith([['demo/skill.md', '---\nname: demo\n---\n# Instructions'], ['demo/script.py', 'print(1)'],
         ['shared/input.txt', 'input']]));
       const timestamp = new Date('2001-01-02T03:04:06');
       original.getEntry('demo/skill.md')!.header.time = timestamp;
@@ -396,7 +426,7 @@ describe('SkillPackageService', () => {
       await expect(service.store(upload(buffer))).resolves.toMatchObject({ warnings: expect.arrayContaining([expect.objectContaining({ code: 'MULTIPLE_ENTRIES' })]) });
       jest.spyOn(service, 'readBytes').mockResolvedValue(buffer);
       await expect(service.read(sha256(buffer))).resolves.toMatchObject({ warnings: expect.arrayContaining([expect.objectContaining({ code: 'MULTIPLE_ENTRIES' })]) });
-      await expect(service.readInstallablePackage(sha256(buffer))).resolves.toMatchObject({ skillName: 'other' });
+      await expect(service.readInstallablePackage(sha256(buffer))).rejects.toBeInstanceOf(BadRequestException);
     });
 
     it('拒绝缺少精确 basename SKILL.md 的包', () =>
@@ -481,8 +511,11 @@ describe('SkillPackageService', () => {
       await expect(readPackage(buffer)).resolves.toBeDefined();
     });
 
-    it('目录 basename 与 name 不一致时给出兼容提示', async () =>
-      expect(readPackage(zipWith([['different/SKILL.md', installableMarkdown()]])).then((result) => result.warnings)).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ code: 'DIRECTORY_NAME_MISMATCH' })])));
+    it('目录 basename 与 name 不一致时保留上传警告并拒绝安装', async () => {
+      const buffer = zipWith([['different/SKILL.md', installableMarkdown()]]);
+      await expect(service.store(upload(buffer))).resolves.toMatchObject({ warnings: expect.arrayContaining([expect.objectContaining({ code: 'DIRECTORY_NAME_MISMATCH' })]) });
+      await expect(readPackage(buffer)).rejects.toThrow('技能名称与包目录名称不同');
+    });
 
     it('上传与安装均接受中文和大写名称及 BOM/空行头部', async () => {
       for (const markdown of [installableMarkdown('竞品周报'), installableMarkdown('Weekly'), `\ufeff\n \t\n${installableMarkdown()}`]) {

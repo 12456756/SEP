@@ -79,13 +79,19 @@ describe('ClientSkillArtifactService', () => {
   it.each([
     '---\nname: Bad_Name\ndescription: test\n---\nbody',
     '---\nname: valid\ndescription: test\ncompatibility: 2\n---\nbody',
-    'Read references/checklist.md', '[Checklist](<../checklist.md>)',
   ])('distributes compatible entries despite metadata or reference warnings: %s', async (content) => {
     versions.resolveEffectiveVersion.mockResolvedValue(makeVersion({ content }));
     const artifact = await service.download('user-1', params);
     expect(artifact.descriptor.status).toBe('AVAILABLE');
     expect(SkillArtifactFrontmatterSchema.safeParse(matter(artifact.buffer.toString()).data).success).toBe(true);
   });
+
+  it.each(['Read references/checklist.md', '[Checklist](<../checklist.md>)'])(
+    'requires a package for concrete local input references: %s', async (content) => {
+      expect(await service.describe('sub-1', 'cap-1', makeVersion({ content })))
+        .toMatchObject({ status: 'BLOCKED', reason: 'PACKAGE_REQUIRED' });
+    },
+  );
 
   it.each([
     '[Policy](https://example.com/policy) and [Details](#details)',
@@ -203,8 +209,8 @@ describe('ClientSkillArtifactService', () => {
   });
 
   it.each([
-    [{ byteLength: 1024, fileCount: 821 }, { reason: 'CLIENT_LIMIT_EXCEEDED', byteLength: 1024, fileCount: 821 }],
-    [{ byteLength: 20 * 1024 * 1024 + 1, fileCount: 42 }, { reason: 'CLIENT_LIMIT_EXCEEDED', byteLength: 20 * 1024 * 1024 + 1, fileCount: 42 }],
+    [{ byteLength: 1024, fileCount: 821 }, { reason: 'INVALID_ENTRY' }],
+    [{ byteLength: 20 * 1024 * 1024 + 1, fileCount: 42 }, { reason: 'INVALID_ENTRY' }],
   ])('blocks a valid stored package outside the SEP client limits', async (packageMeta, expected) => {
     const hash = 'a'.repeat(64);
     const entry = Buffer.from('---\nname: product-image\ndescription: Make a product image\n---\nApproved body.\n');
@@ -216,6 +222,9 @@ describe('ClientSkillArtifactService', () => {
     expect(await service.describe('sub-1', 'cap-1', version)).toMatchObject({
       status: 'BLOCKED', capabilityId: 'cap-1', versionId: 'sv-1', ...expected,
     });
+    const descriptor = await service.describe('sub-1', 'cap-1', version);
+    expect(descriptor).not.toHaveProperty('byteLength');
+    expect(descriptor).not.toHaveProperty('fileCount');
   });
 
   it('allows a package at the inclusive SEP client size and file-count limits', async () => {
