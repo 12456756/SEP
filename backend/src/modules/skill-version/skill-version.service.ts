@@ -14,6 +14,7 @@ import {
   SkillVersion,
 } from '@prisma/client';
 import { createHash } from 'node:crypto';
+import { singleFileSkillWarnings } from '../../shared/skill-content';
 import { PrismaService } from '../../prisma/prisma.service';
 import { EnterpriseContextService } from '../enterprise/enterprise-context.service';
 import { EnterpriseSkillDefaultService } from './enterprise-skill-default.service';
@@ -28,7 +29,7 @@ import {
 } from './promote-to-platform';
 import { CapabilityValidatorService } from '../capability-contribution/capability-validator.service';
 import { PackageSecurityService } from '../capability-contribution/package-security.service';
-import { SkillPackageService } from '../skill-package/skill-package.service';
+import { SkillPackageService, type SkillPackageWarning } from '../skill-package/skill-package.service';
 import { prepareSkillArtifact } from '../skill-package/skill-artifact-preparation';
 import { PersonalWalletService, assertActiveRewardRecipientInTx } from '../personal-wallet/personal-wallet.service';
 import { SettingService } from '../setting/setting.service';
@@ -634,6 +635,15 @@ export class SkillVersionService {
       },
     });
     if (!version || version.capability.type !== 'SKILL') throw new NotFoundException('技能版本不存在');
+    let packageWarnings: SkillPackageWarning[] = version.packageSha256 ? [] : singleFileSkillWarnings(version.content);
+    if (version.packageSha256 && this.platformPackages) {
+      try {
+        packageWarnings = (await this.platformPackages.read(version.packageSha256)).warnings;
+      } catch (error) {
+        if (!(error instanceof BadRequestException || error instanceof NotFoundException)) throw error;
+        packageWarnings = [{ code: 'PACKAGE_UNAVAILABLE', message: error.message }];
+      }
+    }
     const [state] = await readAdminEnterpriseReviewStates(this.prisma, {
       ids: version.scope === 'PLATFORM' ? version.sourceVersionId ? [version.sourceVersionId] : [] : [version.id],
     });
@@ -652,7 +662,7 @@ export class SkillVersionService {
       select: { id: true, capabilityId: true, version: true, content: true, updatedAt: true }, orderBy: PLATFORM_RELEASE_ORDER,
     }) : null;
     const lineages = await readAdminVersionLineages(this.prisma, [version.id]);
-    return { ...version, currentPlatformVersion, ...lineages.get(version.id)!, isWorkingCopy: isPlatformWorkingCopy(version), ...platformMonitorClassifications(version, state?.enterpriseReviewStatus),
+    return { ...version, packageWarnings, currentPlatformVersion, ...lineages.get(version.id)!, isWorkingCopy: isPlatformWorkingCopy(version), ...platformMonitorClassifications(version, state?.enterpriseReviewStatus),
       ...(state ? { enterpriseReviewedAt: state.enterpriseReviewedAt,
         ...(version.scope !== 'PLATFORM' ? { rejectionReason: state.rejectionReason } : {}),
         ...(version.sourceVersion ? { sourceVersion: { ...version.sourceVersion, ...state, id: version.sourceVersion.id } } : {}),

@@ -57,6 +57,7 @@ export type MonitorDetail = SkillVersionPreview & MonitorClassifications & {
   packageSha256?: string | null;
   packageFileCount?: number | null;
   packageFilename?: string | null;
+  packageWarnings?: { code: string; message: string; path?: string }[];
   reviews?: { id: string; actorType: string; decision: string; comment: string | null; createdAt: string; reviewer: { id: string; name: string | null } }[];
 };
 

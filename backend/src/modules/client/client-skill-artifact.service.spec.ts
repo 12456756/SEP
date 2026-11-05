@@ -87,9 +87,11 @@ describe('ClientSkillArtifactService', () => {
   });
 
   it.each(['Read references/checklist.md', '[Checklist](<../checklist.md>)'])(
-    'requires a package for concrete local input references: %s', async (content) => {
-      expect(await service.describe('sub-1', 'cap-1', makeVersion({ content })))
-        .toMatchObject({ status: 'BLOCKED', reason: 'PACKAGE_REQUIRED' });
+    'distributes approved single-file skills with local references: %s', async (content) => {
+      versions.resolveEffectiveVersion.mockResolvedValue(makeVersion({ content }));
+      const artifact = await service.download('user-1', params);
+      expect(artifact.descriptor).toMatchObject({ status: 'AVAILABLE', format: 'single-file', fileCount: 1 });
+      expect(matter(artifact.buffer.toString()).content).toBe(content);
     },
   );
 

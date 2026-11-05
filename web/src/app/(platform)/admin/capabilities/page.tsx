@@ -33,6 +33,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog';
 import { toast } from '@/components/ui/toast';
@@ -44,7 +45,8 @@ import {
   useArchiveCapability,
   type AdminCapabilityRow,
 } from '@/features/admin/use-admin';
-import { useMonitorReview } from '../skills/use-skill-monitor';
+import { useMonitorDetail, useMonitorReview } from '../skills/use-skill-monitor';
+import { SkillPackageWarnings } from '../skills/package-warnings';
 import { CAPABILITY_TYPE_META, cn } from '@/lib/utils';
 import { common } from '@/locales/zh-CN';
 
@@ -116,6 +118,7 @@ export default function CapabilitiesPage() {
   const remove = useDeleteCapability();
   const archive = useArchiveCapability();
   const reviewSkill = useMonitorReview();
+  const skillPreview = useMonitorDetail(approvingSkill?.pendingPlatformVersion?.id ?? '');
 
   const visible = query.data?.items ?? [];
 
@@ -502,17 +505,28 @@ export default function CapabilitiesPage() {
         onConfirm={handleArchive}
       />
 
-      <ConfirmDialog
+      <Dialog
         open={Boolean(approvingSkill)}
         onOpenChange={(open) => !open && !reviewSkill.isPending && setApprovingSkill(null)}
-        title="审核通过技能"
-        description={approvingSkill
-          ? `确认通过「${approvingSkill.name}」的待审平台版本 v${approvingSkill.pendingPlatformVersion?.version ?? '-'}？通过后会立即公开并供硅基员工使用。`
-          : ''}
-        confirmText="确认审核通过"
-        loading={reviewSkill.isPending}
-        onConfirm={handleApproveSkill}
-      />
+      >
+        <DialogContent className="min-w-0 sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>审核通过技能</DialogTitle>
+            <DialogDescription>{approvingSkill
+              ? `确认通过「${approvingSkill.name}」的待审平台版本 v${approvingSkill.pendingPlatformVersion?.version ?? '-'}？通过后会立即公开并供硅基员工使用。`
+              : ''}</DialogDescription>
+          </DialogHeader>
+          {skillPreview.isFetching && <p role="status" className="text-sm text-gtext-muted">正在读取技能包提醒...</p>}
+          {skillPreview.isError && <div role="alert" className="space-y-2 text-sm text-gdanger"><p>技能包提醒加载失败</p><Button variant="glass" onClick={() => void skillPreview.refetch()}>重试</Button></div>}
+          {skillPreview.data && !skillPreview.isFetching && !skillPreview.isError && <SkillPackageWarnings warnings={skillPreview.data.packageWarnings} />}
+          <DialogFooter>
+            <Button variant="outline" disabled={reviewSkill.isPending} onClick={() => setApprovingSkill(null)}>取消</Button>
+            <Button disabled={!skillPreview.data || skillPreview.isFetching || skillPreview.isError || reviewSkill.isPending} onClick={handleApproveSkill}>
+              {reviewSkill.isPending ? '处理中...' : '确认审核通过'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

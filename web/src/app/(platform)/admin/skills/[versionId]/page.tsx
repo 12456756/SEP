@@ -17,6 +17,7 @@ import { diffLines } from '@/features/capability-iteration/diff-lines';
 import { useMonitorDetail, usePublishSkillVersion } from '../use-skill-monitor';
 import { VERSION_TYPE_LABELS, canPublishVersion, creationMethodLabel, currentUsageLabel, enterpriseReviewLabel, monitorContextFilters, monitorContextSuffix, monitorValidation, platformProcessingLabel, promotedVersion, publishedSourceVersion, type MonitorDetail } from '../monitor';
 import { EnterprisePublishedVersions, VersionAttribution } from '../version-attribution';
+import { SkillPackageWarnings } from '../package-warnings';
 
 export default function AdminSkillVersionDetailPage() {
   return <Suspense fallback={<CenteredSpinner label="加载版本详情..." />}><SkillVersionDetail /></Suspense>;
@@ -114,6 +115,7 @@ function SkillVersionPreview({ versionId }: { versionId: string }) {
         {validation.issues.length > 0 && <ul aria-label="校验问题" className="list-inside list-disc space-y-1 whitespace-pre-wrap break-words text-gdanger">{validation.issues.map((message, index) => <li key={index}>{message}</li>)}</ul>}
         {validation.warnings.length > 0 && <div><h3 className="mb-1 font-medium text-gtext-secondary">校验提醒</h3><ul aria-label="校验提醒" className="list-inside list-disc space-y-1 whitespace-pre-wrap break-words text-gtext-secondary">{validation.warnings.map((message, index) => <li key={index}>{message}</li>)}</ul></div>}
       </section>
+      <SkillPackageWarnings warnings={version.packageWarnings} />
       <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_320px]">
         <section aria-label="只读正文" className="min-h-[70vh] min-w-0">
           <Tabs value={tab} onValueChange={setTab} className="min-w-0">

@@ -6,7 +6,7 @@ import {
   ClientSkillArtifactAvailableSchema,
 } from 'shared';
 import type { ClientSkillArtifactAvailable, ClientSkillArtifactBlocked, SkillArtifactBlockedReason } from 'shared';
-import { prepareSkillMarkdown, skillLocalResourceReferences } from '../../shared/skill-content';
+import { prepareSkillMarkdown } from '../../shared/skill-content';
 import type { SkillPackageService } from './skill-package.service';
 
 const sha256 = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
@@ -49,7 +49,6 @@ export async function prepareSkillArtifact(
   }
   const prepared = prepareSkillMarkdown(version.content, `sep-${sha256(capabilityId).slice(0, 24)}`);
   if (prepared.status === 'BLOCKED') return blocked(prepared.reason);
-  if (skillLocalResourceReferences(prepared.body).length) return blocked('PACKAGE_REQUIRED');
   const buffer = Buffer.from(prepared.content, 'utf8');
   return available(buffer, { format: 'single-file', installationDirectory: prepared.skillName,
     entryPath: 'SKILL.md', entrySha256: sha256(buffer), fileCount: 1 });

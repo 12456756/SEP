@@ -2,7 +2,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import CapabilitiesPage from './page';
 
-const { list, approve, reject, reviewSkill, archive } = vi.hoisted(() => ({ list: vi.fn(), approve: vi.fn(), reject: vi.fn(), reviewSkill: vi.fn(), archive: vi.fn() }));
+const { list, approve, reject, reviewSkill, archive, preview } = vi.hoisted(() => ({ list: vi.fn(), approve: vi.fn(), reject: vi.fn(), reviewSkill: vi.fn(), archive: vi.fn(), preview: vi.fn() }));
 vi.mock('@/features/admin/use-admin', () => ({
   useAllCapabilities: list,
   useApproveCapability: () => ({ mutate: approve }),
@@ -10,7 +10,7 @@ vi.mock('@/features/admin/use-admin', () => ({
   useDeleteCapability: () => ({ mutate: vi.fn() }),
   useArchiveCapability: () => ({ mutate: archive, isPending: false }),
 }));
-vi.mock('../skills/use-skill-monitor', () => ({ useMonitorReview: () => ({ mutateAsync: reviewSkill, isPending: false }) }));
+vi.mock('../skills/use-skill-monitor', () => ({ useMonitorReview: () => ({ mutateAsync: reviewSkill, isPending: false }), useMonitorDetail: preview }));
 
 function capability(overrides: Record<string, unknown> = {}) {
   return { id: 'skill-1', name: '写作技能', description: '文案生成', type: 'SKILL', status: 'PENDING',
@@ -23,6 +23,7 @@ describe('能力管理监控入口', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     list.mockReturnValue({ data: { items: [] } });
+    preview.mockReturnValue({ data: { packageWarnings: [] }, isFetching: false, isError: false });
   });
   it('只有一个技能监控入口，无待审计数，保留新建能力', () => {
     render(<CapabilitiesPage />);
@@ -94,6 +95,39 @@ describe('能力管理监控入口', () => {
     expect(screen.getByRole('dialog')).toHaveTextContent('待审平台版本 v1.0.0');
     fireEvent.click(screen.getByRole('button', { name: '确认审核通过' }));
     await vi.waitFor(() => expect(reviewSkill).toHaveBeenCalledWith({ id: 'pending-version-1', decision: 'APPROVE' }));
+  });
+
+  it('审核前展示缺失资源的具体路径，提醒不阻止审核通过', async () => {
+    list.mockReturnValue({ data: { items: [capability({ pendingPlatformVersion: { id: 'pending-version-1', version: '1.0.0' } })] } });
+    const message = '资源引用未匹配到包内文件：references/missing.md。不影响审核通过。';
+    preview.mockReturnValue({ data: { packageWarnings: [{ code: 'RESOURCE_REFERENCE', path: 'references/missing.md', message }] }, isFetching: false, isError: false });
+    reviewSkill.mockResolvedValue({});
+    render(<CapabilitiesPage />);
+    fireEvent.click(screen.getByRole('button', { name: '审核通过' }));
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByRole('region', { name: '技能包提醒' })).toHaveTextContent(message);
+    expect(within(dialog).getByRole('button', { name: '确认审核通过' })).toBeEnabled();
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认审核通过' }));
+    await vi.waitFor(() => expect(reviewSkill).toHaveBeenCalledWith({ id: 'pending-version-1', decision: 'APPROVE' }));
+  });
+
+  it.each([{ isFetching: true, isError: false }, { isFetching: false, isError: true }])('提醒尚未读取完成时保留弹窗，不能误当作没有提醒：%j', (state) => {
+    list.mockReturnValue({ data: { items: [capability({ pendingPlatformVersion: { id: 'pending-version-1', version: '1.0.0' } })] } });
+    preview.mockReturnValue({ ...state, data: undefined });
+    render(<CapabilitiesPage />);
+    fireEvent.click(screen.getByRole('button', { name: '审核通过' }));
+    expect(screen.getByRole('button', { name: '确认审核通过' })).toBeDisabled();
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('审核失败后保留提醒与弹窗，允许重试', async () => {
+    list.mockReturnValue({ data: { items: [capability({ pendingPlatformVersion: { id: 'pending-version-1', version: '1.0.0' } })] } });
+    reviewSkill.mockRejectedValue(new Error('审核失败'));
+    render(<CapabilitiesPage />);
+    fireEvent.click(screen.getByRole('button', { name: '审核通过' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认审核通过' }));
+    await vi.waitFor(() => expect(reviewSkill).toHaveBeenCalled());
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
   });
 
   it('非技能平台能力保留行内通过与驳回操作', () => {

@@ -539,14 +539,44 @@ describe('Selected skill package security', () => {
     await expect(validatePlatformSource({ ...packaged, content: content.split('---\n')[2] }, validator, security as never, packages as never)).resolves.toMatchObject({ valid: true });
   });
 
-  it('accepts short Chinese instructions, BOM and output examples, but requires real local dependencies', async () => {
+  it('approves missing resources and persists their paths as review warnings', async () => {
+    const { prisma, service, packages } = setup();
+    const body = content.split('---\n')[2];
+    const warning = { code: 'RESOURCE_REFERENCE', path: 'references/missing.md',
+      message: '资源引用未匹配到包内文件：references/missing.md。不影响审核通过。' };
+    const selected = { ...packaged, content: body, scope: 'PLATFORM', status: 'PENDING_PLATFORM_REVIEW',
+      capability: { ...capability, enterpriseId: null } };
+    prisma.skillVersion.findFirst.mockResolvedValue(selected);
+    packages.readBytes.mockResolvedValue(bytes);
+    packages.read.mockResolvedValue({ key: selected.packageKey, fileCount: 2, content: body, warnings: [warning] });
+    packages.readInstallablePackage.mockResolvedValue({ fileCount: 2, content: body, warnings: [warning] });
+    await service.reviewPlatformVersion('admin', selected.id, { decision: 'APPROVE' });
+    expect(prisma.skillVersion.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+      status: 'PLATFORM_APPROVED', validationResult: expect.objectContaining({
+        valid: true, warnings: expect.arrayContaining([warning]),
+      }),
+    }) }));
+  });
+
+  it('returns current package warnings before review for existing uploads', async () => {
+    const { prisma, service, packages } = setup();
+    const warning = { code: 'RESOURCE_REFERENCE', path: 'references/missing.md', message: '未匹配：references/missing.md' };
+    prisma.skillVersion.findUnique.mockResolvedValue(packaged);
+    packages.read.mockResolvedValue({ warnings: [warning] });
+    await expect(service.getAdminVersion(packaged.id)).resolves.toMatchObject({ packageWarnings: [warning] });
+    expect(packages.read).toHaveBeenCalledWith(sha256);
+  });
+
+  it('accepts short Chinese instructions, BOM and output examples and warns about local dependencies', async () => {
     const { validator, security } = setup();
     for (const content of ['汇总订单', '\ufeff\n---\nname: 订单汇总\ndescription: 中文\n---\n汇总订单',
       '输出 `result.md`；保存到 assets/output.png；访问 https://example.com/assets/logo.png']) {
       await expect(validatePlatformSource({ ...source, content }, validator, security as never)).resolves.toMatchObject({ valid: true });
     }
     await expect(validatePlatformSource({ ...source, content: '读取 references/policy.md 后汇总订单' }, validator, security as never))
-      .resolves.toMatchObject({ valid: true });
+      .resolves.toMatchObject({ valid: true, warnings: expect.arrayContaining([
+        expect.objectContaining({ code: 'RESOURCE_REFERENCE', path: 'references/policy.md' }),
+      ]) });
     await expect(validatePlatformSource({ ...source, content: '---\nname: ../unsafe\ndescription: invalid\n---\n汇总订单' }, validator, security as never))
       .resolves.toMatchObject({ valid: true });
   });

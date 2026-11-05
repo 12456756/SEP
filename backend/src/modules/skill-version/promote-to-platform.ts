@@ -1,7 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { createHash } from 'node:crypto';
-import { parseSkillMarkdown, prepareSkillMarkdown } from '../../shared/skill-content';
+import { parseSkillMarkdown, prepareSkillMarkdown, singleFileSkillWarnings } from '../../shared/skill-content';
 import { CapabilityValidatorService } from '../capability-contribution/capability-validator.service';
 import { PackageSecurityService } from '../capability-contribution/package-security.service';
 import { SkillPackageService } from '../skill-package/skill-package.service';
@@ -228,6 +228,7 @@ export async function validatePlatformSource(
         installable.fileCount !== source.packageFileCount || installable.content !== source.content) {
       throw new BadRequestException('技能包不能按所选版本安装，不能发布');
     }
+    validation.warnings.push(...(stored.warnings ?? []));
   } else {
     const prepared = prepareSkillMarkdown(source.content, 'sep-publication-check');
     if (prepared.status === 'BLOCKED') {
@@ -238,6 +239,7 @@ export async function validatePlatformSource(
           : '技能入口不可安装，请检查名称、frontmatter 或 UTF-8 大小',
       });
     }
+    validation.warnings.push(...singleFileSkillWarnings(source.content));
   }
   return validation;
 }

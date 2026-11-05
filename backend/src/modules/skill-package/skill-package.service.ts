@@ -9,7 +9,7 @@ import AdmZip from 'adm-zip';
 import { isSupportedArchiveFilename, normalizeArchive } from '../archive/archive-normalizer';
 import { isSafeSkillPathComponent, SkillArtifactFrontmatterSchema } from 'shared';
 import { parseSkillMarkdown, prepareSkillMarkdown, SKILL_CONTENT_MAX_BYTES, skillLocalResourceReferences } from '../../shared/skill-content';
-import { SKILL_PACKAGE_MAX_BYTES, SKILL_PACKAGE_MAX_ENTRIES, SKILL_PACKAGE_MAX_UNCOMPRESSED_BYTES } from '../../shared/skill-content-schema';
+import { CLIENT_SKILL_ARTIFACT_MAX_BYTES, CLIENT_SKILL_ARTIFACT_MAX_FILES, SKILL_PACKAGE_MAX_BYTES, SKILL_PACKAGE_MAX_ENTRIES, SKILL_PACKAGE_MAX_UNCOMPRESSED_BYTES } from '../../shared/skill-content-schema';
 import { StorageService } from '../upload/storage/storage.service';
 
 export { SKILL_PACKAGE_MAX_BYTES } from '../../shared/skill-content-schema';
@@ -164,9 +164,6 @@ export class SkillPackageService {
       throw error;
     }
     const pkg = this.validatePackage(buffer, sha256);
-    const incompatibility = pkg.warnings.find(({ code }) =>
-      ['MULTIPLE_ENTRIES', 'DIRECTORY_NAME_MISMATCH', 'RESOURCE_REFERENCE'].includes(code));
-    if (incompatibility) throw new BadRequestException(incompatibility.message);
     this.assertInstallablePaths(buffer);
     const zip = new AdmZip(buffer);
     const original = zip.getEntry(pkg.entryPath)!.getData();
@@ -242,8 +239,12 @@ export class SkillPackageService {
       ).sort((a, b) => a.entryName.split('/').length - b.entryName.split('/').length ||
         (a.entryName < b.entryName ? -1 : a.entryName > b.entryName ? 1 : 0));
       if (!skillEntries.length) throw new BadRequestException('包内未找到 SKILL.md 入口');
-      if (skillEntries.length > 1) warnings.push({ code: 'MULTIPLE_ENTRIES', message: '检测到多个技能入口，已优先使用根目录或层级最浅的入口。' });
       const skillEntry = skillEntries[0];
+      if (skillEntries.length > 1) warnings.push({ code: 'MULTIPLE_ENTRIES', path: skillEntry.entryName,
+        message: `检测到多个技能入口，已选择 ${skillEntry.entryName}（优先根目录，再按层级和路径排序）；其他文件保留，不影响审核通过。` });
+      if (buffer.length > CLIENT_SKILL_ARTIFACT_MAX_BYTES || files.length > CLIENT_SKILL_ARTIFACT_MAX_FILES) {
+        warnings.push({ code: 'CLIENT_ARTIFACT_LIMIT', message: '技能包超过当前客户端自动安装上限（20MiB 或 500 个文件），不影响审核通过；使用前需精简包或通过原始包下载自行安装。' });
+      }
       if (skillEntry.header.size > MAX_SKILL_MARKDOWN_BYTES) {
         throw new BadRequestException('SKILL.md 不能超过 2MiB');
       }
@@ -271,9 +272,6 @@ export class SkillPackageService {
       if (!parsed.hasFrontmatter || !frontmatter.success) warnings.push({ code: 'METADATA_NORMALIZED', message: '元数据缺失或格式不规范，安装时会自动补齐兼容信息。' });
       const entryPath = skillEntry.entryName;
       const directory = posix.dirname(entryPath);
-      if (directory !== '.' && posix.basename(directory).normalize('NFKC').toLowerCase() !== name.normalize('NFKC').toLowerCase()) {
-        warnings.push({ code: 'DIRECTORY_NAME_MISMATCH', message: '技能名称与包目录名称不同，请修正目录或技能名称后再安装。' });
-      }
       const paths = new Set(files.map((entry) => entry.entryName.normalize('NFKC')));
       for (const reference of skillLocalResourceReferences(parsed.content)) {
         let resource: string;
@@ -281,7 +279,8 @@ export class SkillPackageService {
         const target = posix.normalize(posix.join(directory, resource)).normalize('NFKC');
         if (resource.startsWith('/') || /[\\\x00-\x1f\x7f:]/.test(resource) ||
           target === '..' || target.startsWith('../') || !paths.has(target)) {
-          if (!warnings.some((warning) => warning.code === 'RESOURCE_REFERENCE')) warnings.push({ code: 'RESOURCE_REFERENCE', message: '说明中部分资源引用未匹配到包内文件，请按实际使用情况确认。' });
+          warnings.push({ code: 'RESOURCE_REFERENCE', path: reference,
+            message: `资源引用未匹配到包内文件：${reference}。可能影响运行，请确认是否为运行时生成或外部提供的文件；不影响审核通过。` });
         }
       }
       return {

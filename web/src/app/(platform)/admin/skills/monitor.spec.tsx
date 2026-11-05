@@ -360,6 +360,17 @@ describe('monitor 详情发布', () => {
 });
 
 describe('monitor 详情校验与操作错误', () => {
+  it('展示现存技能包的资源提醒并允许发布', async () => {
+    const message = '资源引用未匹配到包内文件：scripts/missing.py。不影响审核通过。';
+    get.mockResolvedValue(version({ packageWarnings: [{ code: 'RESOURCE_REFERENCE', path: 'scripts/missing.py', message }] }));
+    post.mockResolvedValue(version({ id: 'platform-1' }));
+    mount(<DetailPage />);
+    expect(await screen.findByRole('region', { name: '技能包提醒' })).toHaveTextContent(message);
+    expect(screen.getByRole('button', { name: '发布为平台版本' })).toBeEnabled();
+    await confirmPublish();
+    await waitFor(() => expect(post).toHaveBeenCalled());
+  });
+
   const actions = [
     { name: '来源发布', overrides: {} },
     { name: '历史草稿发布', overrides: { scope: 'PLATFORM', status: 'DRAFT' } },

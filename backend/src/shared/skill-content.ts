@@ -71,6 +71,13 @@ export type PreparedSkillMarkdown =
   | { status: 'AVAILABLE'; content: string; skillName: string; body: string }
   | { status: 'BLOCKED'; reason: 'INVALID_ENTRY' | 'PACKAGE_REQUIRED' };
 
+export function singleFileSkillWarnings(content: string) {
+  return skillLocalResourceReferences(parseSkillMarkdown(content).content).map((path) => ({
+    code: 'RESOURCE_REFERENCE', path,
+    message: `单文件技能引用了本地资源：${path}。请确认是否由运行环境提供或运行时生成；如需随技能分发，可上传包含附件的压缩包。不影响审核通过。`,
+  }));
+}
+
 export function prepareSkillMarkdown(content: string, fallbackName: string): PreparedSkillMarkdown {
   const invalid = { status: 'BLOCKED', reason: 'INVALID_ENTRY' } as const;
   if (!SkillContentSchema.safeParse(content).success || Buffer.from(content, 'utf8').toString('utf8') !== content) return invalid;
