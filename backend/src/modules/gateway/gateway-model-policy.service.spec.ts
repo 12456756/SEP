@@ -325,6 +325,18 @@ describe('GatewayModelPolicyService', () => {
       'MODEL_FEATURE_UNSUPPORTED', `该模型不支持 ${feature}`, param);
   });
 
+  it('rejects image input only when the model explicitly disables vision', async () => {
+    const imageRequest = request({ messages: [{ role: 'user', content: [
+      { type: 'text', text: 'Describe this image' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,aGVsbG8=' } },
+    ] }] });
+    prisma.platformModel.findFirst.mockResolvedValue({ maxOutputTokens: null, supportedFeatures: { vision: false } });
+    await expectPlatformError(service.prepare(identity, imageRequest), 400, 'MODEL_FEATURE_UNSUPPORTED',
+      '该模型不支持 vision', 'messages');
+    prisma.platformModel.findFirst.mockResolvedValue({ maxOutputTokens: null, supportedFeatures: { vision: true } });
+    await expect(service.prepare(identity, imageRequest)).resolves.toMatchObject({ request: imageRequest });
+  });
+
   it.each([0, -1, 1.5, NaN, Infinity, '4096', null])('rejects invalid explicit output %p', async (max_tokens) => {
     await expect(service.prepare(identity, { ...request(), max_tokens } as never)).rejects.toMatchObject({
       status: 400, response: { error: { code: 'INVALID_PARAMETER', param: 'max_tokens' } },

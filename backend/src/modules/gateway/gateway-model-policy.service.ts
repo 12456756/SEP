@@ -119,6 +119,8 @@ export class GatewayModelPolicyService {
     ));
 
     const features = model.supportedFeatures as Record<string, unknown> | null;
+    const usesImages = request.messages.some((message) => Array.isArray(message.content) &&
+      message.content.some((part) => part.type === 'image_url'));
     const usesTools = Boolean(request.tools?.length) ||
       (request.tool_choice !== undefined && request.tool_choice !== 'none') ||
       request.messages.some((message) => message.role === 'tool' || message.tool_calls?.length);
@@ -127,6 +129,11 @@ export class GatewayModelPolicyService {
         : request.tool_choice !== undefined && request.tool_choice !== 'none' ? 'tool_choice' : 'messages';
       throw new BadRequestException(platformErrorResponse(
         'MODEL_FEATURE_UNSUPPORTED', '该模型不支持 functionCalling', param,
+      ));
+    }
+    if (features?.vision === false && usesImages) {
+      throw new BadRequestException(platformErrorResponse(
+        'MODEL_FEATURE_UNSUPPORTED', '该模型不支持 vision', 'messages',
       ));
     }
     if (features?.streaming === false && request.stream) {

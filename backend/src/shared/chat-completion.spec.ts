@@ -42,6 +42,34 @@ describe('ChatCompletionRequestSchema tool round trip', () => {
     expect(ChatCompletionRequestSchema.parse(request).messages[1]).toHaveProperty('reasoning_content', '');
   });
 
+  it('accepts and preserves user text and Base64 image content parts', () => {
+    const request = { model: 'test', messages: [{ role: 'user', content: [
+      { type: 'text', text: '理解一下这张图片' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,aGVsbG8=', detail: 'auto' } },
+    ] }] };
+    expect(ChatCompletionRequestSchema.parse(request)).toEqual(request);
+  });
+
+  it.each([
+    'data:image/svg+xml;base64,PHN2Zz4=',
+    'data:image/png;base64,not base64',
+    'data:image/png;base64,YQ=',
+    'file:///tmp/image.png',
+  ])('rejects unsupported or malformed image URL %s', (url) => {
+    expect(ChatCompletionRequestSchema.safeParse({ model: 'test', messages: [{ role: 'user', content: [
+      { type: 'image_url', image_url: { url } },
+    ] }] }).success).toBe(false);
+  });
+
+  it('rejects multimodal content outside user messages and malformed content parts', () => {
+    expect(ChatCompletionRequestSchema.safeParse({ model: 'test', messages: [{ role: 'assistant', content: [
+      { type: 'text', text: 'unsupported role' },
+    ] }] }).success).toBe(false);
+    expect(ChatCompletionRequestSchema.safeParse({ model: 'test', messages: [{ role: 'user', content: [
+      { type: 'image_url', image_url: { url: 'https://example.com/image.png', extra: true } },
+    ] }] }).success).toBe(false);
+  });
+
   it('preserves multiple tool results without requiring every result to immediately follow assistant', () => {
     const request = followUp();
     request.messages[1].tool_calls.push({ ...structuredClone(toolCall), id: 'call_second' });

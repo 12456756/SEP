@@ -158,6 +158,21 @@ describe('Gateway tool-call HTTP round trip', () => {
     expect(admission.reserve).toHaveBeenCalledTimes(2);
   });
 
+  it('forwards multimodal user content unchanged through the HTTP gateway', async () => {
+    model.findFirst.mockResolvedValue({ maxOutputTokens: null, supportedFeatures: { vision: true } });
+    fetchMock.mockResolvedValue(new Response(JSON.stringify(completion), {
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    const imageRequest = { model: body.model, messages: [{ role: 'user', content: [
+      { type: 'text', text: '理解一下这张图片' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,aGVsbG8=' } },
+    ] }] };
+    await request(app.getHttpServer()).post(endpoint).send(imageRequest).expect(200);
+    const sent = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(sent.messages).toEqual(imageRequest.messages);
+    expect(sent.max_tokens).toBe(4096);
+  });
+
   it.each([4096, 8192, 16384, 32768])('forwards explicit output budget %s with unknown model capability', async (max_tokens) => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify(completion), {
       headers: { 'Content-Type': 'application/json' },

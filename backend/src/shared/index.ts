@@ -1891,6 +1891,28 @@ export type ClientRefreshDto = z.infer<typeof ClientRefreshDtoSchema>;
 
 const ChatCompletionFunctionNameSchema = z.string().min(1).max(64).regex(/^[a-zA-Z0-9_-]+$/);
 const ChatCompletionTextSchema = z.string().max(1024 * 1024);
+const ChatCompletionImageUrlSchema = z.string().max(4 * 1024 * 1024).superRefine((value, ctx) => {
+  if (value.startsWith('data:')) {
+    const match = /^data:(image\/(?:png|jpeg|gif|webp));base64,((?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?)$/i.exec(value);
+    if (!match || match[2].length === 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: '图片 data URL 必须是受支持 MIME 类型的有效 Base64 数据' });
+    }
+    return;
+  }
+  try {
+    const url = new URL(value);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new Error();
+  } catch {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: '图片 URL 必须使用 HTTP 或 HTTPS' });
+  }
+});
+const ChatCompletionContentPartSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('text'), text: ChatCompletionTextSchema }).strict(),
+  z.object({
+    type: z.literal('image_url'),
+    image_url: z.object({ url: ChatCompletionImageUrlSchema, detail: z.enum(['auto', 'low', 'high']).optional() }).strict(),
+  }).strict(),
+]);
 const ChatCompletionJsonSchema: z.ZodType<Record<string, unknown> | boolean> = z.lazy(() =>
   z.union([
     z.boolean(),
@@ -1967,14 +1989,18 @@ const ChatCompletionToolCallSchema = z.object({
 
 const ChatCompletionMessageSchema = z.object({
   role: z.enum(['system', 'user', 'assistant', 'tool']),
-  // 工具调用轮的 assistant 可以没有文本；其他消息仍要求文本内容。
-  content: ChatCompletionTextSchema.nullable().optional(),
+  // 用户消息支持 OpenAI 兼容的多模态内容；工具调用轮 assistant 可省略文本。
+  content: z.union([ChatCompletionTextSchema, z.array(ChatCompletionContentPartSchema).min(1).max(128)])
+    .nullable().optional(),
   name: ChatCompletionFunctionNameSchema.optional(),
   tool_calls: z.array(ChatCompletionToolCallSchema).max(128).optional(),
   tool_call_id: z.string().min(1).max(128).optional(),
   // 推理模型的工具回传可能要求原样保留此字段，不能在 Zod parse 时剥离。
   reasoning_content: ChatCompletionTextSchema.nullable().optional(),
 }).strict().superRefine((message, ctx) => {
+  if (Array.isArray(message.content) && message.role !== 'user') {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['content'], message: '多模态内容仅支持 user 消息' });
+  }
   if (message.content == null && !(message.role === 'assistant' && message.tool_calls?.length)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['content'], message: '此消息必须提供文本 content' });
   }
