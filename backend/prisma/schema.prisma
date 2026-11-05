@@ -1246,6 +1246,9 @@ model EmployeeBundle {
   status       EmployeeBundleStatus @default(DRAFT)
   priceCNY     Decimal              @db.Decimal(12, 2)
   periodMonths Int                  @default(12)
+  autoIncludeAll Boolean            @default(false)
+  autoIncludeCategories EmployeeCategory[] @default([])
+  autoExcludeEmployeeIds String[]    @default([])
   publishedAt  DateTime?
   createdAt    DateTime             @default(now())
   updatedAt    DateTime             @updatedAt

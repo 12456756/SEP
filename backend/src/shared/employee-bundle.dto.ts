@@ -18,20 +18,23 @@ export const BundleItemDtoSchema = z.object({
 });
 
 export const CreateEmployeeBundleDtoSchema = z.object({
-  code: z.string().trim().min(1).max(64),
+  code: z.string().trim().min(1).max(64).optional(),
   name: z.string().trim().min(1).max(120),
   description: z.string().trim().max(5000).optional(),
   cover: EmployeeBundleCoverSchema.optional(),
   priceCNY: CnyAmountSchema,
   periodMonths: z.number().int().min(1).max(36).default(12),
-  items: z.array(BundleItemDtoSchema).min(1).max(100),
+  autoIncludeAll: z.boolean().optional(),
+  autoIncludeCategories: z.array(z.enum(['TECH', 'PRODUCT_DESIGN', 'MARKETING_GROWTH', 'ECOMMERCE', 'SALES_CUSTOMER', 'OPERATIONS_ORG', 'FINANCE_LEGAL'])).optional(),
+  autoExcludeEmployeeIds: z.array(z.string().trim().min(1)).optional(),
+  items: z.array(BundleItemDtoSchema).min(1),
 });
 
 export const UpdateEmployeeBundleDtoSchema = CreateEmployeeBundleDtoSchema.partial();
 
 export const BundleCopyDraftDtoSchema = z.object({
   name: z.string().trim().min(1).max(120),
-  employeeIds: z.array(z.string().trim().min(1)).min(1).max(100),
+  employeeIds: z.array(z.string().trim().min(1)).min(1),
 }).strict().superRefine((value, context) => {
   if (new Set(value.employeeIds).size !== value.employeeIds.length) {
     context.addIssue({

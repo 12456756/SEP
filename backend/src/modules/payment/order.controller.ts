@@ -72,7 +72,7 @@ export class OrderController {
   @Post("bundles")
   @ApiOperation({ summary: "创建数字员工套餐订单" })
   @ApiResponse({ status: 201, description: "套餐订单创建成功" })
-  @ApiResponse({ status: 400, description: "套餐不可购买或企业已有套餐员工订阅" })
+  @ApiResponse({ status: 400, description: "套餐不可购买" })
   async createBundle(
     @Request() req,
     @Body(new ZodValidationPipe(CreateBundleOrderDtoSchema))

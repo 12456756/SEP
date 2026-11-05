@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, uploadForm } from '@/lib/api-client';
 import type { EmployeeCopyDraftResponse } from 'shared/employee-copy.dto';
+import type { EmployeeCategory } from '@/lib/employee-categories';
 
 export type EmployeeBundleStatus = 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
 
@@ -34,6 +35,9 @@ export interface EmployeeBundle {
   createdAt: string;
   updatedAt: string;
   items: EmployeeBundleItem[];
+  autoIncludeAll: boolean;
+  autoIncludeCategories: EmployeeCategory[];
+  autoExcludeEmployeeIds: string[];
 }
 
 export interface BundleItemInput {
@@ -43,13 +47,16 @@ export interface BundleItemInput {
 }
 
 export interface BundleInput {
-  code: string;
+  code?: string;
   name: string;
   description?: string;
   cover?: string | null;
   priceCNY: number;
   periodMonths: number;
   items: BundleItemInput[];
+  autoIncludeAll?: boolean;
+  autoIncludeCategories?: EmployeeCategory[];
+  autoExcludeEmployeeIds?: string[];
 }
 
 export const bundleQueryKeys = {

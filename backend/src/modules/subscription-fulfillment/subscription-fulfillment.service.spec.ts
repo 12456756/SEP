@@ -133,6 +133,51 @@ describe('SubscriptionFulfillmentService', () => {
       expect(prisma.employeeGrant.create).not.toHaveBeenCalled();
     });
 
+    it('二次购买从现有到期日续期，不重置订阅开始日', async () => {
+      const startDate = new Date('2026-01-01');
+      const currentEndDate = new Date('2027-01-01');
+      prisma.subscription.findUnique.mockResolvedValue({
+        id: 'sub-old',
+        status: 'ACTIVE',
+        startDate,
+        endDate: currentEndDate,
+      });
+
+      await svc.fulfill(prisma, {
+        ...baseParams,
+        sourceType: 'order',
+        startDate: new Date('2026-11-05'),
+        endDate: new Date('2027-11-05'),
+        purchasePeriodMonths: 12,
+      });
+
+      expect(prisma.subscription.update.mock.calls[0][0].data).toMatchObject({
+        status: 'ACTIVE',
+        endDate: new Date('2028-01-01'),
+      });
+      expect(prisma.subscription.update.mock.calls[0][0].data).not.toHaveProperty('startDate');
+    });
+
+    it('二次购买不会把永久订阅改成限期订阅', async () => {
+      prisma.subscription.findUnique.mockResolvedValue({
+        id: 'sub-old',
+        status: 'ACTIVE',
+        startDate: new Date('2026-01-01'),
+        endDate: null,
+      });
+
+      await svc.fulfill(prisma, {
+        ...baseParams,
+        sourceType: 'order',
+        startDate: new Date('2026-11-05'),
+        endDate: new Date('2027-11-05'),
+        purchasePeriodMonths: 12,
+      });
+
+      expect(prisma.subscription.update.mock.calls[0][0].data.endDate).toBeNull();
+      expect(prisma.subscription.update.mock.calls[0][0].data).not.toHaveProperty('startDate');
+    });
+
     it('返回 created=false，让调用方能区分新建与复活', async () => {
       const result = await svc.fulfill(prisma, {
         ...baseParams,

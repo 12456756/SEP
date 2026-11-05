@@ -97,7 +97,7 @@ export class SubscriptionFulfillmentService {
     }
 
     const startDate = params.startDate ?? new Date();
-    const endDate = params.endDate ?? null;
+    let endDate = params.endDate ?? null;
 
     const existing = await tx.subscription.findUnique({
       where: {
@@ -106,8 +106,24 @@ export class SubscriptionFulfillmentService {
           employeeId: params.employeeId,
         },
       },
-      select: { id: true },
+      select: { id: true, status: true, endDate: true },
     });
+
+    const preservesActiveSubscription =
+      params.sourceType === 'order' &&
+      existing?.status === 'ACTIVE' &&
+      (existing.endDate === null || existing.endDate > startDate) &&
+      params.purchasePeriodMonths !== undefined;
+    if (preservesActiveSubscription && existing.endDate === null) {
+      endDate = null;
+    } else if (
+      preservesActiveSubscription &&
+      existing.endDate !== null &&
+      existing.endDate > startDate
+    ) {
+      endDate = new Date(existing.endDate);
+      endDate.setMonth(endDate.getMonth() + (params.purchasePeriodMonths ?? 0));
+    }
 
     // 复活时刻意不刷新 templateVersion：停用期间模板可能已发新版，保留旧版本
     // 会让列表立刻给出升级提示，企业能知道「离开这段时间员工变了」。
@@ -116,7 +132,7 @@ export class SubscriptionFulfillmentService {
           where: { id: existing.id },
           data: {
             status: 'ACTIVE',
-            startDate,
+            ...(!preservesActiveSubscription && { startDate }),
             endDate,
             ...(params.displayName !== undefined && {
               name: params.displayName,

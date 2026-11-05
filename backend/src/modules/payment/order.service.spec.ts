@@ -342,12 +342,16 @@ describe("OrderService", () => {
       ]);
     });
 
-    it('rejects the bundle if the enterprise already has an active bundle employee', async () => {
+    it('allows purchasing the bundle if the enterprise already subscribes to an included employee', async () => {
       bundleService.getForPurchase.mockResolvedValue(bundle);
-      prisma.subscription.findMany.mockResolvedValueOnce([{ employeeId: 'emp-2' }]);
+      prisma.order.create.mockResolvedValue({ id: 'order-bundle-1' });
 
-      await expect(service.createBundle('ent-1', 'user-1', 'bundle-1')).rejects.toThrow(BadRequestException);
-      expect(prisma.order.create).not.toHaveBeenCalled();
+      await service.createBundle('ent-1', 'user-1', 'bundle-1');
+
+      expect(prisma.subscription.findMany).not.toHaveBeenCalled();
+      expect(prisma.order.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ orderType: 'BUNDLE', bundleId: 'bundle-1' }),
+      }));
     });
 
     it('keeps rounded employee allocations non-negative and within a low bundle price', async () => {

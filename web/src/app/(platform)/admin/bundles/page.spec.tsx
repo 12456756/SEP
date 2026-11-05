@@ -25,7 +25,6 @@ vi.mock('@/features/employee-bundle/use-employee-bundles', () => ({
 function mount() {
   render(<AdminBundlesPage />);
   fireEvent.click(screen.getByRole('button', { name: '新建套餐' }));
-  fireEvent.change(screen.getByLabelText('套餐编码'), { target: { value: 'test-bundle' } });
   fireEvent.change(screen.getByLabelText('套餐名称'), { target: { value: '业务套餐' } });
   fireEvent.change(screen.getByLabelText('套餐价格（元）'), { target: { value: '100' } });
 }
@@ -39,6 +38,15 @@ beforeEach(() => {
 });
 
 describe('套餐表单', () => {
+  it('创建套餐时不要求手动填写编码', async () => {
+    mount();
+    expect(screen.queryByLabelText('套餐编码')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: /研发员工/ }));
+    fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
+    await waitFor(() => expect(create).toHaveBeenCalled());
+    expect(create.mock.calls[0][0]).not.toHaveProperty('code');
+  });
+
   it('按分类全选并保留跨分类选择，搜索后的取消只影响当前结果', async () => {
     mount();
     fireEvent.change(screen.getByLabelText('员工分类'), { target: { value: 'TECH' } });
@@ -52,6 +60,7 @@ describe('套餐表单', () => {
     fireEvent.click(screen.getByRole('button', { name: '保存草稿' }));
     await waitFor(() => expect(create).toHaveBeenCalled());
     expect(create.mock.calls[0][0].items.map((item: { employeeId: string }) => item.employeeId)).toEqual(['tech-2', 'sales-1']);
+    expect(create.mock.calls[0][0].autoIncludeCategories).toEqual(['TECH', 'SALES_CUSTOMER']);
   });
 
   it('部分选中显示中间态，并可清空所有分类的选择', () => {

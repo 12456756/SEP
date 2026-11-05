@@ -4,6 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { EmployeeBundleStatus, Prisma } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -49,8 +50,9 @@ export class EmployeeBundleService {
   }
 
   async create(dto: CreateEmployeeBundleDto) {
+    const code = dto.code ?? `BUNDLE-${randomUUID()}`;
     await this.validateBundleInput({
-      code: dto.code,
+      code,
       name: dto.name,
       priceCNY: dto.priceCNY,
       periodMonths: dto.periodMonths,
@@ -60,17 +62,20 @@ export class EmployeeBundleService {
         includedComputeCNY: item.includedComputeCNY,
       })),
     });
-    const existing = await this.prisma.employeeBundle.findUnique({ where: { code: dto.code } });
+    const existing = await this.prisma.employeeBundle.findUnique({ where: { code } });
     if (existing) throw new ConflictException('套餐编码已存在');
 
     const bundle = await this.prisma.employeeBundle.create({
       data: {
-        code: dto.code,
+        code,
         name: dto.name,
         description: dto.description,
         cover: dto.cover,
         priceCNY: dto.priceCNY,
         periodMonths: dto.periodMonths,
+        autoIncludeAll: dto.autoIncludeAll,
+        autoIncludeCategories: dto.autoIncludeCategories,
+        autoExcludeEmployeeIds: dto.autoExcludeEmployeeIds,
         items: {
           create: dto.items.map((item) => ({
                 employeeId: item.employeeId!,
@@ -124,6 +129,9 @@ export class EmployeeBundleService {
           ...(dto.cover !== undefined && { cover: dto.cover }),
           ...(dto.priceCNY !== undefined && { priceCNY: dto.priceCNY }),
           ...(dto.periodMonths !== undefined && { periodMonths: dto.periodMonths }),
+          ...(dto.autoIncludeAll !== undefined && { autoIncludeAll: dto.autoIncludeAll }),
+          ...(dto.autoIncludeCategories !== undefined && { autoIncludeCategories: dto.autoIncludeCategories }),
+          ...(dto.autoExcludeEmployeeIds !== undefined && { autoExcludeEmployeeIds: dto.autoExcludeEmployeeIds }),
           ...(dto.items && {
             items: {
               create: dto.items.map((item) => ({
@@ -141,7 +149,7 @@ export class EmployeeBundleService {
   }
 
   async publish(id: string) {
-    const bundle = await this.findForView(id);
+    const bundle = await this.resolveAutoIncludedEmployees(await this.findForView(id));
     if (bundle.items.length === 0) throw new BadRequestException('套餐至少需要一名员工');
     await this.validateEmployees(bundle.items.map((item) => item.employee));
     if (bundle.priceCNY.lessThanOrEqualTo(0)) throw new BadRequestException('套餐价格必须大于 0');
@@ -161,7 +169,30 @@ export class EmployeeBundleService {
   }
 
   async getForPurchase(id: string): Promise<BundleWithItems> {
-    return this.findForView(id, EmployeeBundleStatus.PUBLISHED);
+    return this.resolveAutoIncludedEmployees(await this.findForView(id, EmployeeBundleStatus.PUBLISHED));
+  }
+
+  private async resolveAutoIncludedEmployees(bundle: BundleWithItems): Promise<BundleWithItems> {
+    if (!bundle.autoIncludeAll && !bundle.autoIncludeCategories?.length) return bundle;
+    const existingIds = bundle.items.map((item) => item.employeeId);
+    const employees = await this.prisma.digitalEmployee.findMany({
+      where: {
+        status: 'APPROVED',
+        annualPriceCNY: { gt: 0 },
+        id: { notIn: [...existingIds, ...(bundle.autoExcludeEmployeeIds ?? [])] },
+        ...(!bundle.autoIncludeAll && { functionalCategory: { in: bundle.autoIncludeCategories } }),
+      },
+      orderBy: { id: 'asc' },
+    });
+    // 动态员工在下单时展开为订单快照，已有订单不随套餐规则变化。
+    return { ...bundle, items: [...bundle.items, ...employees.map((employee) => ({
+      id: `auto-${employee.id}`,
+      bundleId: bundle.id,
+      employeeId: employee.id,
+      periodMonths: bundle.periodMonths,
+      includedComputeCNY: null,
+      employee,
+    }))] };
   }
 
   async resolveGiftCNY(item: BundleWithItems['items'][number]) {
@@ -202,6 +233,7 @@ export class EmployeeBundleService {
   }
 
   private async toView(bundle: BundleWithItems) {
+    bundle = await this.resolveAutoIncludedEmployees(bundle);
     const items = await Promise.all(bundle.items.map(async (item) => {
       const unitPrice = item.employee.annualPriceCNY ?? new Decimal(0);
       const periodMonths = item.periodMonths || bundle.periodMonths;
@@ -231,6 +263,9 @@ export class EmployeeBundleService {
       status: bundle.status,
       priceCNY: bundle.priceCNY.toFixed(2),
       periodMonths: bundle.periodMonths,
+      autoIncludeAll: bundle.autoIncludeAll ?? false,
+      autoIncludeCategories: bundle.autoIncludeCategories ?? [],
+      autoExcludeEmployeeIds: bundle.autoExcludeEmployeeIds ?? [],
       originalAmountCNY: originalAmount.toFixed(2),
       discountCNY: discount.toFixed(2),
       totalComputeCNY: totalCompute.toFixed(2),

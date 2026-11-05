@@ -228,14 +228,6 @@ export class OrderService {
   async createBundle(enterpriseId: string, createdBy: string, bundleId: string) {
     if (!this.bundles) throw new BadRequestException('套餐服务不可用');
     const bundle = await this.bundles.getForPurchase(bundleId);
-    const employeeIds = bundle.items.map((item) => item.employeeId);
-    const subscriptions = await this.prisma.subscription.findMany({
-      where: { enterpriseId, employeeId: { in: employeeIds }, status: 'ACTIVE' },
-      select: { employeeId: true },
-    });
-    if (subscriptions.length > 0) {
-      throw new BadRequestException(`企业已订阅套餐中的员工：${subscriptions.map((item) => item.employeeId).join('、')}`);
-    }
 
     const orderNo = this.generateOrderNo();
     const rawItems = await Promise.all(bundle.items.map(async (item) => {
