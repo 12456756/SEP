@@ -298,6 +298,14 @@ describe('InvitationService', () => {
       const select = prisma.enterpriseInvitation.findMany.mock.calls[0][0].select;
       expect(select.tokenHash).toBeUndefined();
     });
+
+    it('分页查询支持状态、角色、部门与邮箱搜索', async () => {
+      await svc.list('u1', 'PENDING', { page: 2, pageSize: 10, search: ' example.com ', role: 'MEMBER', departmentId: 'dept-tech' });
+      const args = prisma.enterpriseInvitation.findMany.mock.calls.at(-1)?.[0];
+      expect(args).toMatchObject({ skip: 10, take: 10, where: { enterpriseId: 'ent-acme', status: 'PENDING', role: 'MEMBER', departmentId: 'dept-tech' } });
+      expect(args.where.OR).toHaveLength(2);
+      expect(prisma.enterpriseInvitation.count).toHaveBeenCalledWith({ where: args.where });
+    });
   });
 
   describe('revoke', () => {

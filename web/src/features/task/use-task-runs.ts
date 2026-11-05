@@ -17,6 +17,7 @@ interface ListParams {
   status?: TaskRunStatus[];
   limit?: number;
   cursor?: string;
+  keyword?: string;
 }
 
 function listQuery(params: ListParams): string {
@@ -24,6 +25,7 @@ function listQuery(params: ListParams): string {
   if (params.scope) search.set('scope', params.scope);
   if (params.limit) search.set('limit', String(params.limit));
   if (params.cursor) search.set('cursor', params.cursor);
+  if (params.keyword?.trim()) search.set('keyword', params.keyword.trim());
   for (const status of params.status ?? []) search.append('status', status);
   const query = search.toString();
   return query ? `?${query}` : '';

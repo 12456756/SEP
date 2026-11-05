@@ -23,21 +23,35 @@ export class MemberService {
   async list(
     userId: string,
     departmentId?: string,
-    pagination?: { page?: number; pageSize?: number },
+    options?: {
+      page?: number;
+      pageSize?: number;
+      search?: string;
+      role?: 'ENTERPRISE_ADMIN' | 'DEPT_MANAGER' | 'MEMBER';
+    },
   ) {
     const ctx = await this.ctx.resolve(userId);
-    const page = Number.isInteger(pagination?.page) && (pagination?.page as number) > 0
-      ? (pagination.page as number)
+    const page = Number.isInteger(options?.page) && (options?.page as number) > 0
+      ? (options.page as number)
       : 1;
-    const pageSize = Number.isInteger(pagination?.pageSize) && (pagination?.pageSize as number) > 0
-      ? Math.min(pagination.pageSize as number, 100)
+    const pageSize = Number.isInteger(options?.pageSize) && (options?.pageSize as number) > 0
+      ? Math.min(options.pageSize as number, 100)
       : 20;
+    const search = options?.search?.trim();
     const where = {
       enterpriseId: ctx.enterpriseId,
       ...(departmentId && { departmentId }),
+      ...(options?.role && { role: options.role }),
+      ...(search ? {
+        OR: [
+          { user: { name: { contains: search, mode: 'insensitive' as const } } },
+          { user: { email: { contains: search, mode: 'insensitive' as const } } },
+          { position: { contains: search, mode: 'insensitive' as const } },
+        ],
+      } : {}),
     };
 
-    if (!pagination) {
+    if (!options) {
       return this.prisma.enterpriseMember.findMany({
         where,
         orderBy: { createdAt: "asc" },

@@ -12,6 +12,7 @@ import {
   ShieldAlert,
   CheckSquare,
   X,
+  Search,
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
@@ -30,6 +31,8 @@ import {
   type NotificationSeverity,
 } from '@/features/notifications/use-notifications';
 import { useActiveAnnouncements } from '@/features/announcement/use-announcements';
+import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
 
 const CATEGORY_TABS: Array<{
   key: NotificationCategory | 'ALL';
@@ -76,10 +79,12 @@ export default function NotificationsPage() {
   const [activeTab, setActiveTab] = useState<NotificationCategory | 'ALL'>('ALL');
   const [offset, setOffset] = useState(0);
   const [dismissedAnnouncements, setDismissedAnnouncements] = useState<Set<string>>(new Set());
+  const [unreadOnly, setUnreadOnly] = useState(false);
+  const [keyword, setKeyword] = useState('');
 
   const category = activeTab === 'ALL' ? undefined : activeTab;
 
-  const { data, isLoading } = useNotifications(PAGE_SIZE, offset, category);
+  const { data, isLoading } = useNotifications(PAGE_SIZE, offset, category, unreadOnly, keyword);
   const { data: unreadData } = useUnreadCount(category);
   const { data: announcements } = useActiveAnnouncements();
   const markAsRead = useMarkAsRead();
@@ -161,6 +166,10 @@ export default function NotificationsPage() {
             {tab.label}
           </button>
         ))}
+      </div>
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="relative min-w-[240px] flex-1"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted" /><Input value={keyword} onChange={(e) => { setKeyword(e.target.value); setOffset(0); }} placeholder="搜索通知标题或内容" className="pl-9" /></div>
+        <label className="flex items-center gap-2 text-sm text-gtext-secondary"><Switch checked={unreadOnly} onCheckedChange={(checked) => { setUnreadOnly(checked); setOffset(0); }} />仅看未读</label>
       </div>
 
       {/* Announcements Section */}

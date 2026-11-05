@@ -81,4 +81,29 @@ describe("AuditService 查询与导出边界", () => {
     ).rejects.toThrow("from 不能晚于 to");
     expect(prisma.auditLog.count).not.toHaveBeenCalled();
   });
+
+  it("列表和导出都按操作人、操作类型、资源类型和日期范围复用筛选", async () => {
+    const query = {
+      actorId: "user-7",
+      action: "MEMBER_UPDATED",
+      resourceType: "member",
+      from: new Date("2026-09-01T00:00:00.000Z"),
+      to: new Date("2026-09-30T23:59:59.999Z"),
+      page: 2,
+      pageSize: 20,
+    };
+
+    await service.list(actor, query);
+    const listWhere = prisma.auditLog.findMany.mock.calls.at(-1)?.[0].where;
+    expect(listWhere).toMatchObject({
+      actorId: "user-7",
+      action: "MEMBER_UPDATED",
+      resourceType: "member",
+      createdAt: { gte: query.from, lte: query.to },
+    });
+
+    await service.csv(actor, query);
+    const exportWhere = prisma.auditLog.findMany.mock.calls.at(-1)?.[0].where;
+    expect(exportWhere).toEqual(listWhere);
+  });
 });

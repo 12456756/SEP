@@ -121,8 +121,9 @@ export class NotificationsService {
     offset = 0,
     category?: NotificationCategory,
     unreadOnly = false,
+    keyword?: string,
   ) {
-    const where = this.buildWhere(userId, category, unreadOnly);
+    const where = this.buildWhere(userId, category, unreadOnly, false, keyword);
     const [items, total] = await Promise.all([
       this.prisma.notification.findMany({
         where,
@@ -203,6 +204,7 @@ export class NotificationsService {
     category?: NotificationCategory,
     unreadOnly = false,
     readOnly = false,
+    keyword?: string,
   ): Prisma.NotificationWhereInput {
     if (category && !CATEGORY_TYPES[category]) {
       throw new BadRequestException(`Unsupported notification category: ${category}`);
@@ -221,12 +223,16 @@ export class NotificationsService {
         }
       : {};
 
-    return {
+    const keywordFilter = keyword?.trim()
+      ? { OR: [{ title: { contains: keyword.trim(), mode: 'insensitive' as const } }, { message: { contains: keyword.trim(), mode: 'insensitive' as const } }] }
+      : undefined;
+    const base = {
       userId,
       ...categoryFilter,
       ...(unreadOnly ? { read: false } : {}),
       ...(readOnly ? { read: true } : {}),
     };
+    return keywordFilter ? { ...base, AND: [keywordFilter] } : base;
   }
 
   private enrich(dto: CreateNotificationDto) {

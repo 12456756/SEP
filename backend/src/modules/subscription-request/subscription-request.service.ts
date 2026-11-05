@@ -411,12 +411,14 @@ export class SubscriptionRequestService {
   /**
    * 查询我的申请（申请人）
    */
-  async getMyRequests(userId: string) {
+  async getMyRequests(userId: string, status?: RequestStatus, keyword?: string) {
     const ctx = await this.enterpriseContext.resolve(userId);
 
     return await this.prisma.subscriptionRequest.findMany({
       where: {
         requesterId: ctx.memberId,
+        ...(status ? { status } : {}),
+        ...(keyword?.trim() ? { employee: { name: { contains: keyword.trim(), mode: 'insensitive' } } } : {}),
       },
       include: {
         employee: { select: { id: true, name: true, avatar: true } },
@@ -429,7 +431,7 @@ export class SubscriptionRequestService {
   /**
    * 查询待审批申请（管理员）
    */
-  async getPendingRequests(userId: string) {
+  async getPendingRequests(userId: string, keyword?: string) {
     const ctx = await this.enterpriseContext.resolve(userId);
     this.enterpriseContext.assertEnterpriseAdmin(ctx);
 
@@ -437,6 +439,7 @@ export class SubscriptionRequestService {
       where: {
         enterpriseId: ctx.enterpriseId,
         status: RequestStatus.PENDING,
+        ...(keyword?.trim() ? { employee: { name: { contains: keyword.trim(), mode: 'insensitive' } } } : {}),
       },
       include: {
         employee: { select: { id: true, name: true, avatar: true } },
@@ -459,6 +462,7 @@ export class SubscriptionRequestService {
   async getAllRequests(
     userId: string,
     status?: RequestStatus,
+    keyword?: string,
   ) {
     const ctx = await this.enterpriseContext.resolve(userId);
     this.enterpriseContext.assertEnterpriseAdmin(ctx);
@@ -467,6 +471,7 @@ export class SubscriptionRequestService {
       where: {
         enterpriseId: ctx.enterpriseId,
         ...(status && { status }),
+        ...(keyword?.trim() ? { employee: { name: { contains: keyword.trim(), mode: 'insensitive' } } } : {}),
       },
       include: {
         employee: { select: { id: true, name: true, avatar: true } },

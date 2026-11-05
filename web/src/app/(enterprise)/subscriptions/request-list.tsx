@@ -73,7 +73,7 @@ export function RequestList({
                   >
                     {req.kind === 'GRANT' ? '仅授权（免费）' : '新雇佣（付费）'}
                   </Badge>
-                  <Badge className="bg-warning/10 text-warning">{common.status.pendingApproval}</Badge>
+                  <Badge className={req.status === 'PENDING' ? 'bg-warning/10 text-warning' : req.status === 'APPROVED' ? 'bg-success/10 text-success' : 'bg-danger/10 text-danger'}>{req.status === 'PENDING' ? common.status.pendingApproval : req.status === 'APPROVED' ? '已通过' : req.status === 'REJECTED' ? '已拒绝' : '已取消'}</Badge>
                 </div>
               </div>
               {req.reason && (
@@ -90,14 +90,14 @@ export function RequestList({
               <p className="mt-1 text-xs text-fg-subtle">
                 申请时间：{new Date(req.createdAt).toLocaleString('zh-CN')}
               </p>
-              <div className="mt-3 flex gap-2">
+              {req.status === 'PENDING' && <div className="mt-3 flex gap-2">
                 <Button size="sm" onClick={() => onApprove(req)} disabled={busy}>
                   通过
                 </Button>
                 <Button variant="outline" size="sm" onClick={() => onReject(req)} disabled={busy}>
                   拒绝
                 </Button>
-              </div>
+              </div>}
             </div>
           </div>
         </div>

@@ -53,6 +53,7 @@ export class NotificationsController {
       query.offset,
       query.category,
       query.unreadOnly,
+      query.keyword,
     );
   }
 

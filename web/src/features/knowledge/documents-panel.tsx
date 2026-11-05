@@ -1,7 +1,7 @@
 'use client';
 
 import { useRef, useState } from 'react';
-import { Eye, History, RefreshCw, Trash2 } from 'lucide-react';
+import { Eye, History, RefreshCw, Trash2, Search } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { CenteredSpinner } from '@/components/ui/feedback';
@@ -16,6 +16,7 @@ import { DocumentPreview } from './document-preview';
 import { DocumentVersionDetails } from './document-version-details';
 import { DocumentVersionsDialog } from './document-versions-dialog';
 import { KnowledgeError, KnowledgeIconButton, KnowledgePagination, knowledgeError } from './knowledge-ui';
+import { Input } from '@/components/ui/input';
 
 const statuses: Record<KnowledgeProcessingStatus, string> = { PENDING: '排队中', PROCESSING: '处理中', READY: '可用', FAILED: '处理失败' };
 
@@ -24,6 +25,8 @@ export function DocumentsPanel({ knowledgeBase, limits }: { knowledgeBase: Knowl
   const reprocess = useReprocessDocument(knowledgeBase.id);
   const remove = useDeleteDocument(knowledgeBase.id);
   const [filter, setFilter] = useState('ALL');
+  const [keyword, setKeyword] = useState('');
+  const [searchableOnly, setSearchableOnly] = useState(false);
   const [page, setPage] = useState(1);
   const [preview, setPreview] = useState<{ id: string; versionId: string | null } | null>(null);
   const [versionsId, setVersionsId] = useState<string | null>(null);
@@ -34,7 +37,7 @@ export function DocumentsPanel({ knowledgeBase, limits }: { knowledgeBase: Knowl
   const retryBusy = useRef(false);
   const deleteBusy = useRef(false);
   const rows = documents.data ?? [];
-  const filtered = rows.filter((doc) => filter === 'ALL' || doc.status === filter);
+  const filtered = rows.filter((doc) => (filter === 'ALL' || doc.status === filter) && (!keyword.trim() || doc.originalName.toLowerCase().includes(keyword.trim().toLowerCase())) && (!searchableOnly || doc.searchable));
   const currentPage = Math.min(page, Math.max(1, Math.ceil(filtered.length / 20)));
 
   async function retry(doc: KnowledgeDocument) {
@@ -71,10 +74,10 @@ export function DocumentsPanel({ knowledgeBase, limits }: { knowledgeBase: Knowl
 
   return <div className="min-w-0 space-y-4">
     {knowledgeBase.permissions.canUpload && <DocumentUploader knowledgeBaseId={knowledgeBase.id} limits={limits} />}
-    <div className="flex flex-wrap items-center justify-between gap-3"><label className="flex items-center gap-2 text-sm">处理状态
+    <div className="flex flex-wrap items-center justify-between gap-3"><div className="flex flex-wrap gap-2"><div className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted" /><Input value={keyword} onChange={(e) => { setKeyword(e.target.value); setPage(1); }} placeholder="搜索文档名称" className="pl-9" /></div><label className="flex items-center gap-2 text-sm">处理状态
       <select aria-label="文档状态" value={filter} onChange={(event) => { setFilter(event.target.value); setPage(1); }} className="h-9 rounded-md border border-glassline bg-background px-3">
         <option value="ALL">全部状态</option>{Object.entries(statuses).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-      </select></label><p className="text-xs text-gtext-muted">显示最新版本状态，有待处理任务时自动更新</p></div>
+      </select></label><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={searchableOnly} onChange={(e) => { setSearchableOnly(e.target.checked); setPage(1); }} />仅可检索</label></div><p className="text-xs text-gtext-muted">显示最新版本状态，有待处理任务时自动更新</p></div>
     {error && <p role="alert" className="text-sm text-danger">{error}</p>}
     {documents.isError ? <KnowledgeError error={documents.error} retry={() => { void documents.refetch(); }} /> : !documents.data ? <CenteredSpinner label="加载文档…" /> : <>
       <div className="min-w-0 rounded-lg border border-glassline"><Table className="min-w-[800px] table-fixed"><TableHeader><TableRow>

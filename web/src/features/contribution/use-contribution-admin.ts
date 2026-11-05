@@ -91,9 +91,21 @@ export type PlatformContributionDetail = PlatformContribution & {
   } | null;
 };
 
-export function usePlatformContributionQueue(status: PlatformQueueStatus, page = 1, pageSize = 20) {
+export function usePlatformContributionQueue(
+  status: PlatformQueueStatus,
+  page = 1,
+  pageSize = 20,
+  keyword = "",
+) {
+  const normalizedKeyword = keyword.trim();
+  const params = new URLSearchParams({
+    status,
+    page: String(page),
+    pageSize: String(pageSize),
+  });
+  if (normalizedKeyword) params.set("keyword", normalizedKeyword);
   return useQuery({
-    queryKey: qk.contributionAdminQueue(status, page, pageSize),
+    queryKey: qk.contributionAdminQueue(status, page, pageSize, normalizedKeyword),
     queryFn: () =>
       api.get<{
         items: PlatformContribution[];
@@ -101,7 +113,7 @@ export function usePlatformContributionQueue(status: PlatformQueueStatus, page =
         page: number;
         pageSize: number;
         status: PlatformQueueStatus;
-      }>(`/admin/contributions?status=${status}&page=${page}&pageSize=${pageSize}`),
+      }>(`/admin/contributions?${params.toString()}`),
   });
 }
 

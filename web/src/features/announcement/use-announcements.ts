@@ -64,12 +64,17 @@ export function useActiveAnnouncements() {
 }
 
 // Admin API - Get all announcements
-export function useAnnouncements(page = 1, pageSize = 20) {
+export function useAnnouncements(page = 1, pageSize = 20, filters?: { keyword?: string; type?: Announcement['type']; published?: boolean; activeAt?: string }) {
+  const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
+  if (filters?.keyword) params.set('keyword', filters.keyword);
+  if (filters?.type) params.set('type', filters.type);
+  if (filters?.published !== undefined) params.set('published', String(filters.published));
+  if (filters?.activeAt) params.set('activeAt', filters.activeAt);
   return useQuery({
-    queryKey: ['admin', 'announcements', page, pageSize],
+    queryKey: ['admin', 'announcements', page, pageSize, filters],
     queryFn: async () => {
       return api.get<AnnouncementListResponse>(
-        `/admin/announcements?page=${page}&pageSize=${pageSize}`
+        `/admin/announcements?${params.toString()}`
       );
     },
   });

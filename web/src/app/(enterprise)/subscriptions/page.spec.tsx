@@ -16,6 +16,7 @@ vi.mock('@/features/subscription/use-subscriptions', () => ({
 }));
 vi.mock('@/features/subscription-request/use-subscription-requests', () => ({
   usePendingSubscriptionRequests: () => ({ data: [], isLoading: false }),
+  useAllSubscriptionRequests: () => ({ data: [], isLoading: false }),
   useApproveSubscriptionRequest: () => ({ isPending: false, mutate: vi.fn() }),
   useRejectSubscriptionRequest: () => ({ isPending: false, mutate: vi.fn() }),
 }));

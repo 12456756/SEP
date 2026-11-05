@@ -19,7 +19,7 @@ import {
   useUpgradeSubscription,
 } from '@/features/subscription/use-subscriptions';
 import {
-  usePendingSubscriptionRequests,
+  useAllSubscriptionRequests,
   useApproveSubscriptionRequest,
   useRejectSubscriptionRequest,
 } from '@/features/subscription-request/use-subscription-requests';
@@ -50,10 +50,11 @@ export default function SubscriptionsPage() {
 
   const [topTab, setTopTab] = useState<TopTab>('employments');
   const [keyword, setKeyword] = useState('');
+  const [requestStatus, setRequestStatus] = useState<SubscriptionRequest['status']>('PENDING');
+  const [requestKeyword, setRequestKeyword] = useState('');
 
   const { data: subs = [], isLoading } = useSubscriptions();
-  const { data: pendingRequests = [], isLoading: loadingRequests } =
-    usePendingSubscriptionRequests();
+  const { data: pendingRequests = [], isLoading: loadingRequests } = useAllSubscriptionRequests(requestStatus, requestKeyword);
   const terminate = useTerminateSubscription();
   const updateSub = useUpdateSubscription();
   const changeStatus = useChangeSubscriptionStatus();
@@ -310,13 +311,13 @@ export default function SubscriptionsPage() {
           )}
         </>
       ) : (
-        <RequestList
+        <div className="space-y-4"><div className="flex flex-wrap gap-2"><Input value={requestKeyword} onChange={(e) => setRequestKeyword(e.target.value)} placeholder="搜索员工名称" className="max-w-sm" />{(['PENDING', 'APPROVED', 'REJECTED', 'CANCELED'] as const).map((status) => <Button key={status} variant={requestStatus === status ? 'primary' : 'outline'} size="sm" onClick={() => setRequestStatus(status)}>{status === 'PENDING' ? '待审批' : status === 'APPROVED' ? '已通过' : status === 'REJECTED' ? '已拒绝' : '已取消'}</Button>)}</div><RequestList
           requests={pendingRequests}
           isLoading={loadingRequests}
           busy={approveRequest.isPending || rejectRequest.isPending}
           onApprove={setApproving}
           onReject={setRejecting}
-        />
+        /></div>
       )}
 
       {releasing && (

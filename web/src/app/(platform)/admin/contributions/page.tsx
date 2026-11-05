@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   AlertTriangle,
   Bot,
@@ -40,24 +40,15 @@ export default function AdminContributionsPage() {
   const [status, setStatus] = useState<PlatformQueueStatus>("PENDING_REVIEW");
   const [page, setPage] = useState(1);
   const pageSize = 20;
-  const queue = usePlatformContributionQueue(status, page, pageSize);
   const [requestedId] = useState(() => {
     if (typeof window === "undefined") return "";
     return new URLSearchParams(window.location.search).get("selected") ?? "";
   });
   const [selectedId, setSelectedId] = useState("");
   const [search, setSearch] = useState("");
+  const queue = usePlatformContributionQueue(status, page, pageSize, search);
   const items = queue.data?.items ?? [];
-  const filtered = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    return items.filter(
-      (item) =>
-        !query ||
-        item.name.toLowerCase().includes(query) ||
-        item.description.toLowerCase().includes(query) ||
-        item.enterprise?.name.toLowerCase().includes(query),
-    );
-  }, [items, search]);
+  const filtered = items;
 
   const totalPages = Math.max(1, Math.ceil((queue.data?.total ?? 0) / pageSize));
 

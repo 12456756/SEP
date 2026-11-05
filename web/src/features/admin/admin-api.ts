@@ -307,11 +307,13 @@ export const adminApi = {
     page?: number;
     pageSize?: number;
     keyword?: string;
+    suspended?: boolean;
   }) => {
     const searchParams = new URLSearchParams();
     if (params?.page) searchParams.set('page', String(params.page));
     if (params?.pageSize) searchParams.set('pageSize', String(params.pageSize));
     if (params?.keyword) searchParams.set('keyword', params.keyword);
+    if (params?.suspended !== undefined) searchParams.set('suspended', String(params.suspended));
 
     const query = searchParams.toString();
     return api.get<EnterpriseListResponse>(
@@ -385,11 +387,19 @@ export const adminApi = {
     status?: 'DRAFT' | 'PENDING' | 'APPROVED' | 'REJECTED' | 'ARCHIVED';
     page?: number;
     pageSize?: number;
+    keyword?: string;
+    industry?: string;
+    position?: string;
+    capabilityKeyword?: string;
   }) => {
     const searchParams = new URLSearchParams();
     if (params?.status) searchParams.set('status', params.status);
     if (params?.page) searchParams.set('page', String(params.page));
     if (params?.pageSize) searchParams.set('pageSize', String(params.pageSize));
+    if (params?.keyword) searchParams.set('keyword', params.keyword);
+    if (params?.industry) searchParams.set('industry', params.industry);
+    if (params?.position) searchParams.set('position', params.position);
+    if (params?.capabilityKeyword) searchParams.set('capabilityKeyword', params.capabilityKeyword);
 
     const query = searchParams.toString();
     return api.get<EmployeeListResponse>(

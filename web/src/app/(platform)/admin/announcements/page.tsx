@@ -27,7 +27,6 @@ import {
   FormLabel,
   FormMessage,
 } from '@/components/ui/form';
-import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import {
   Select,
@@ -43,7 +42,8 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { format } from 'date-fns';
-import { Plus, Pencil, Trash2, Eye, EyeOff } from 'lucide-react';
+import { Plus, Pencil, Trash2, Eye, EyeOff, Search } from 'lucide-react';
+import { Input } from '@/components/ui/input';
 import {
   useAnnouncements,
   useCreateAnnouncement,
@@ -84,11 +84,15 @@ const typeColors = {
 
 export default function AnnouncementsPage() {
   const [page, setPage] = useState(1);
+  const [keyword, setKeyword] = useState('');
+  const [typeFilter, setTypeFilter] = useState<'all' | Announcement['type']>('all');
+  const [publishedFilter, setPublishedFilter] = useState<'all' | 'true' | 'false'>('all');
+  const [activeOnly, setActiveOnly] = useState(false);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [editingAnnouncement, setEditingAnnouncement] = useState<Announcement | null>(null);
   const { confirm, dialog: confirmDialog } = useConfirmDialog();
 
-  const { data, isLoading } = useAnnouncements(page, 20);
+  const { data, isLoading } = useAnnouncements(page, 20, { keyword: keyword.trim() || undefined, type: typeFilter === 'all' ? undefined : typeFilter, published: publishedFilter === 'all' ? undefined : publishedFilter === 'true', activeAt: activeOnly ? new Date().toISOString() : undefined });
   const createMutation = useCreateAnnouncement();
   const updateMutation = useUpdateAnnouncement();
   const deleteMutation = useDeleteAnnouncement();
@@ -194,6 +198,12 @@ export default function AnnouncementsPage() {
         <div>
           <h1 className="text-3xl font-bold">公告管理</h1>
           <p className="text-muted-foreground mt-1">创建和管理系统公告</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <div className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted" /><Input value={keyword} onChange={(e) => { setKeyword(e.target.value); setPage(1); }} placeholder="搜索公告标题" className="pl-9" /></div>
+          <Select value={typeFilter} onValueChange={(v: typeof typeFilter) => { setTypeFilter(v); setPage(1); }}><SelectTrigger className="w-28"><SelectValue placeholder="类型" /></SelectTrigger><SelectContent><SelectItem value="all">全部类型</SelectItem>{Object.entries(typeLabels).map(([key, label]) => <SelectItem key={key} value={key}>{label}</SelectItem>)}</SelectContent></Select>
+          <Select value={publishedFilter} onValueChange={(v: typeof publishedFilter) => { setPublishedFilter(v); setPage(1); }}><SelectTrigger className="w-28"><SelectValue placeholder="状态" /></SelectTrigger><SelectContent><SelectItem value="all">全部状态</SelectItem><SelectItem value="true">已发布</SelectItem><SelectItem value="false">草稿</SelectItem></SelectContent></Select>
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={activeOnly} onChange={(e) => { setActiveOnly(e.target.checked); setPage(1); }} />当前有效</label>
         </div>
 
         <Dialog open={isCreateDialogOpen} onOpenChange={handleDialogClose}>

@@ -39,10 +39,13 @@ export function useCreateSubscriptionRequest() {
 /**
  * 查询我的申请（申请人）
  */
-export function useMySubscriptionRequests(options?: { enabled?: boolean }) {
+export function useMySubscriptionRequests(options?: { enabled?: boolean; status?: RequestStatus; keyword?: string }) {
+  const params = new URLSearchParams();
+  if (options?.status) params.set('status', options.status);
+  if (options?.keyword?.trim()) params.set('keyword', options.keyword.trim());
   return useQuery({
-    queryKey: qk.mySubscriptionRequests,
-    queryFn: () => api.get<SubscriptionRequest[]>('/subscription-requests/my'),
+    queryKey: [...qk.mySubscriptionRequests, options?.status ?? 'all', options?.keyword ?? ''],
+    queryFn: () => api.get<SubscriptionRequest[]>(`/subscription-requests/my${params.toString() ? `?${params}` : ''}`),
     enabled: options?.enabled ?? true,
   });
 }
@@ -64,22 +67,24 @@ export function useCancelSubscriptionRequest() {
 /**
  * 查询待审批申请（管理员 - 企业内部审批流）
  */
-export function usePendingSubscriptionRequests() {
+export function usePendingSubscriptionRequests(keyword?: string) {
+  const query = keyword?.trim() ? `?keyword=${encodeURIComponent(keyword.trim())}` : '';
   return useQuery({
-    queryKey: qk.pendingSubscriptionRequests,
-    queryFn: () => api.get<SubscriptionRequest[]>('/subscription-requests/pending'),
+    queryKey: [...qk.pendingSubscriptionRequests, keyword ?? ''],
+    queryFn: () => api.get<SubscriptionRequest[]>(`/subscription-requests/pending${query}`),
   });
 }
 
 /**
  * 查询所有申请（管理员，可筛选状态）
  */
-export function useAllSubscriptionRequests(status?: RequestStatus) {
-  const path = status
-    ? `/subscription-requests?status=${encodeURIComponent(status)}`
-    : '/subscription-requests';
+export function useAllSubscriptionRequests(status?: RequestStatus, keyword?: string) {
+  const params = new URLSearchParams();
+  if (status) params.set('status', status);
+  if (keyword?.trim()) params.set('keyword', keyword.trim());
+  const path = `/subscription-requests${params.toString() ? `?${params}` : ''}`;
   return useQuery({
-    queryKey: [...qk.subscriptionRequests, status ?? 'all'],
+    queryKey: [...qk.subscriptionRequests, status ?? 'all', keyword ?? ''],
     queryFn: () => api.get<SubscriptionRequest[]>(path),
   });
 }

@@ -237,16 +237,19 @@ export class AdminController {
   @ApiQuery({ name: 'page', required: false, type: Number, description: '页码，默认1' })
   @ApiQuery({ name: 'pageSize', required: false, type: Number, description: '每页数量，默认20' })
   @ApiQuery({ name: 'keyword', required: false, type: String, description: '搜索关键词' })
+  @ApiQuery({ name: 'suspended', required: false, type: Boolean })
   @ApiResponse({ status: 200, description: '返回企业列表' })
   listEnterprises(
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
     @Query('keyword') keyword?: string,
+    @Query('suspended') suspended?: string,
   ) {
     return this.adminService.listEnterprises({
       page: page ? parseInt(page, 10) : undefined,
       pageSize: pageSize ? parseInt(pageSize, 10) : undefined,
       keyword,
+      suspended: suspended === undefined ? undefined : suspended === 'true',
     });
   }
 
@@ -304,16 +307,28 @@ export class AdminController {
   @ApiQuery({ name: 'status', required: false, enum: ['PENDING', 'APPROVED', 'REJECTED', 'DRAFT', 'ARCHIVED'], description: '员工状态' })
   @ApiQuery({ name: 'page', required: false, type: Number, description: '页码，默认1' })
   @ApiQuery({ name: 'pageSize', required: false, type: Number, description: '每页数量，默认20' })
+  @ApiQuery({ name: 'keyword', required: false, type: String })
+  @ApiQuery({ name: 'industry', required: false, type: String })
+  @ApiQuery({ name: 'position', required: false, type: String })
+  @ApiQuery({ name: 'capabilityKeyword', required: false, type: String })
   @ApiResponse({ status: 200, description: '返回员工列表' })
   listEmployees(
     @Query('status') status?: 'PENDING' | 'APPROVED' | 'REJECTED' | 'DRAFT' | 'ARCHIVED',
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
+    @Query('keyword') keyword?: string,
+    @Query('industry') industry?: string,
+    @Query('position') position?: string,
+    @Query('capabilityKeyword') capabilityKeyword?: string,
   ) {
     return this.adminService.listEmployees({
       status,
       page: page ? parseInt(page, 10) : undefined,
       pageSize: pageSize ? parseInt(pageSize, 10) : undefined,
+      keyword,
+      industry,
+      position,
+      capabilityKeyword,
     });
   }
 
@@ -600,18 +615,21 @@ export class AdminController {
   @ApiQuery({ name: 'type', required: false, enum: ['AGENT', 'RPA', 'SKILL', 'AI_APP'], description: '能力类型' })
   @ApiQuery({ name: 'page', required: false, type: Number, description: '页码，默认1' })
   @ApiQuery({ name: 'pageSize', required: false, type: Number, description: '每页数量，默认20' })
+  @ApiQuery({ name: 'keyword', required: false, type: String, description: '按能力名称、描述或来源企业搜索' })
   @ApiResponse({ status: 200, description: '返回能力列表' })
   listCapabilitiesAdmin(
     @Query('status') status?: 'PENDING' | 'APPROVED' | 'REJECTED',
     @Query('type') type?: 'AGENT' | 'RPA' | 'SKILL' | 'AI_APP',
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
+    @Query('keyword') keyword?: string,
   ) {
     return this.adminService.listCapabilities({
       status,
       type,
       page: page ? parseInt(page, 10) : undefined,
       pageSize: pageSize ? parseInt(pageSize, 10) : undefined,
+      keyword,
     });
   }
 

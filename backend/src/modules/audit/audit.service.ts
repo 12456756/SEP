@@ -13,6 +13,7 @@ type AuditActor = {
 type AuditQuery = {
   actorId?: string;
   action?: string;
+  resourceType?: string;
   from?: Date;
   to?: Date;
   page?: number;
@@ -104,6 +105,7 @@ export class AuditService {
       createdAt: { gte: query.from && query.from > cutoff ? query.from : cutoff, ...(query.to ? { lte: query.to } : {}) },
       ...(query.actorId ? { actorId: query.actorId } : {}),
       ...(query.action ? { action: query.action } : {}),
+      ...(query.resourceType ? { resourceType: query.resourceType } : {}),
       ...(actor.role === 'ENTERPRISE_ADMIN' ? { enterpriseId: actor.enterpriseId ?? '__missing__' } : {}),
     };
   }

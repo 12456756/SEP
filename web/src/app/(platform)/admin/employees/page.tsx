@@ -23,7 +23,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { adminApi } from '@/features/admin/admin-api';
 import { toast } from '@/components/ui/toast';
 import { employeeStatusMeta } from '@/lib/status-meta';
-import { Plus, Pencil, Trash2, Archive, Upload, Users, Palette } from 'lucide-react';
+import { Plus, Pencil, Trash2, Archive, Upload, Users, Palette, Search } from 'lucide-react';
+import { Input } from '@/components/ui/input';
 import { common } from '@/locales/zh-CN';
 
 function StatusBadge({ status }: { status: string }) {
@@ -38,6 +39,7 @@ export default function AdminEmployeesPage() {
   const queryClient = useQueryClient();
   const [tab, setTab] = useState<'approved' | 'draft' | 'pending'>('approved');
   const [page, setPage] = useState(1);
+  const [filters, setFilters] = useState({ keyword: '', industry: '', position: '', capabilityKeyword: '' });
   const [deleteDialog, setDeleteDialog] = useState<{ open: boolean; employeeId: string; employeeName: string }>({
     open: false,
     employeeId: '',
@@ -45,7 +47,7 @@ export default function AdminEmployeesPage() {
   });
 
   const { data: employeesResponse, isLoading, isError, error } = useQuery({
-    queryKey: ['admin-employees', tab, page],
+    queryKey: ['admin-employees', tab, page, filters],
     queryFn: async () => {
       const statusMap = {
         approved: 'APPROVED',
@@ -56,6 +58,7 @@ export default function AdminEmployeesPage() {
         status: statusMap[tab] as any,
         page,
         pageSize: EMPLOYEES_PAGE_SIZE,
+        ...Object.fromEntries(Object.entries(filters).map(([key, value]) => [key, value.trim() || undefined])),
       });
     },
   });
@@ -160,6 +163,9 @@ export default function AdminEmployeesPage() {
                 {tab === 'draft' && '草稿员工'}
                 {tab === 'pending' && `${common.status.pendingReview}员工`}
               </CardTitle>
+              <div className="grid gap-2 pt-2 md:grid-cols-4">
+                {([['keyword', '搜索员工名称'], ['industry', '行业'], ['position', '岗位'], ['capabilityKeyword', '绑定能力']] as const).map(([key, placeholder]) => <div key={key} className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted" /><Input value={filters[key]} onChange={(e) => { setFilters((current) => ({ ...current, [key]: e.target.value })); setPage(1); }} placeholder={placeholder} className="pl-9" /></div>)}
+              </div>
               {!isLoading && !isError && (
                 <p className="text-sm text-fg-muted">
                   共 {totalEmployees} 名{tabLabel}员工，第 {page} / {totalPages} 页

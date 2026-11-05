@@ -31,13 +31,15 @@ export function useNotifications(
   offset = 0,
   category?: NotificationCategory,
   unreadOnly?: boolean,
+  keyword?: string,
 ) {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (category) params.set('category', category);
   if (unreadOnly) params.set('unreadOnly', 'true');
+  if (keyword?.trim()) params.set('keyword', keyword.trim());
 
   return useQuery<NotificationsResponse>({
-    queryKey: ['notifications', limit, offset, category, unreadOnly],
+    queryKey: ['notifications', limit, offset, category, unreadOnly, keyword?.trim() || ''],
     queryFn: () => api.get<NotificationsResponse>(`/notifications?${params}`),
     staleTime: 10_000,
   });

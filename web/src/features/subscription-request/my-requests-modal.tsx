@@ -1,6 +1,7 @@
 'use client';
 
-import { X, Clock, Inbox } from 'lucide-react';
+import { useState } from 'react';
+import { X, Clock, Inbox, Search } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar } from '@/components/ui/avatar';
 import { cn } from '@/lib/utils';
@@ -13,6 +14,8 @@ import {
 } from './use-subscription-requests';
 import { Z_CLASS } from '@/lib/z-index';
 import { common } from '@/locales/zh-CN';
+import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 const STATUS_META: Record<SubscriptionRequest['status'], { label: string; tone: string }> = {
   PENDING: { label: common.status.pendingApproval, tone: 'bg-warning/10 text-warning' },
@@ -32,7 +35,9 @@ export function MyRequestsModal({
   open: boolean;
   onClose: () => void;
 }) {
-  const { data: requests = [], isLoading } = useMySubscriptionRequests();
+  const [status, setStatus] = useState<'ALL' | SubscriptionRequest['status']>('ALL');
+  const [keyword, setKeyword] = useState('');
+  const { data: requests = [], isLoading } = useMySubscriptionRequests({ status: status === 'ALL' ? undefined : status, keyword });
   const cancelRequest = useCancelSubscriptionRequest();
 
   if (!open) return null;
@@ -72,6 +77,7 @@ export function MyRequestsModal({
 
         {/* body */}
         <div className="flex-1 overflow-y-auto px-6 py-5">
+          <div className="mb-4 flex flex-wrap gap-2"><div className="relative min-w-[200px] flex-1"><Input value={keyword} onChange={(e) => setKeyword(e.target.value)} placeholder="搜索员工名称" /></div><Select value={status} onValueChange={(value: typeof status) => setStatus(value)}><SelectTrigger className="w-32"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ALL">全部状态</SelectItem><SelectItem value="PENDING">待审批</SelectItem><SelectItem value="APPROVED">已通过</SelectItem><SelectItem value="REJECTED">已拒绝</SelectItem><SelectItem value="CANCELED">已取消</SelectItem></SelectContent></Select></div>
           {isLoading ? (
             <p className="py-10 text-center text-[13px] text-gtext-muted">加载中…</p>
           ) : requests.length === 0 ? (

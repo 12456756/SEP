@@ -50,16 +50,16 @@ export class SubscriptionRequestController {
   @Get('my')
   @ApiOperation({ summary: '查询我的申请（申请人）' })
   @ApiResponse({ status: 200, description: '我的申请列表', type: [SubscriptionRequestResponseDto] })
-  async getMyRequests(@Request() req) {
-    return this.subscriptionRequestService.getMyRequests(req.user.id);
+  async getMyRequests(@Request() req, @Query('status') status?: RequestStatus, @Query('keyword') keyword?: string) {
+    return this.subscriptionRequestService.getMyRequests(req.user.id, status, keyword);
   }
 
   @Get('pending')
   @ApiOperation({ summary: '查询待审批申请（管理员）' })
   @ApiResponse({ status: 200, description: '待审批申请列表', type: [SubscriptionRequestResponseDto] })
   @ApiResponse({ status: 403, description: '权限不足' })
-  async getPendingRequests(@Request() req) {
-    return this.subscriptionRequestService.getPendingRequests(req.user.id);
+  async getPendingRequests(@Request() req, @Query('keyword') keyword?: string) {
+    return this.subscriptionRequestService.getPendingRequests(req.user.id, keyword);
   }
 
   @Get()
@@ -70,8 +70,9 @@ export class SubscriptionRequestController {
   async getAllRequests(
     @Request() req,
     @Query('status') status?: RequestStatus,
+    @Query('keyword') keyword?: string,
   ) {
-    return this.subscriptionRequestService.getAllRequests(req.user.id, status);
+    return this.subscriptionRequestService.getAllRequests(req.user.id, status, keyword);
   }
 
   @Patch(':id/approve')

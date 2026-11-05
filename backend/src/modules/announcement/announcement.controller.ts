@@ -62,10 +62,15 @@ export class AnnouncementController {
   async findAll(
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
+    @Query('keyword') keyword?: string,
+    @Query('type') type?: any,
+    @Query('published') published?: string,
+    @Query('activeAt') activeAt?: string,
   ) {
     return this.announcementService.findAll(
       page ? parseInt(page, 10) : 1,
       pageSize ? parseInt(pageSize, 10) : 20,
+      { keyword, type, published: published === undefined ? undefined : published === 'true', activeAt: activeAt ? new Date(activeAt) : undefined },
     );
   }
 

@@ -195,6 +195,7 @@ export class TaskService {
 
     const statuses = q.status ? (Array.isArray(q.status) ? q.status : [q.status]).map((s) => statusToDb[s]) : undefined;
     if (statuses) where.status = { in: statuses };
+    if (q.keyword?.trim()) where.objective = { contains: q.keyword.trim(), mode: 'insensitive' };
 
     if (q.cursor) {
       const c = await this.prisma.taskRun.findUnique({ where: { id: q.cursor }, select: { createdAt: true, id: true } });

@@ -97,19 +97,23 @@ describe('能力管理监控入口', () => {
   });
 
   it('保留状态和名称、描述、企业关键词筛选', () => {
-    list.mockReturnValue({ data: { items: [
+    const items = [
       capability(),
       capability({ id: 'rpa-1', name: '自动化', type: 'RPA', description: '账务核对', enterprise: { name: '示例企业' } }),
-    ] } });
+    ] as unknown as Array<{ name: string; description?: string; enterprise?: { name: string } }>;
+    list.mockImplementation((_status: string | undefined, _page: number, _pageSize: number, keyword = '') => ({
+      data: { items: keyword ? items.filter((item) => `${item.name} ${item.description} ${item.enterprise?.name ?? ''}`.includes(keyword)) : items },
+    }));
     render(<CapabilitiesPage />);
-    expect(list).toHaveBeenLastCalledWith(undefined, 1, 20);
+    expect(list).toHaveBeenLastCalledWith(undefined, 1, 20, '');
     for (const [label, value] of [['待审核', 'PENDING'], ['已发布', 'APPROVED'], ['已拒绝', 'REJECTED'], ['全部', undefined]]) {
       fireEvent.click(screen.getByRole('button', { name: label }));
-      expect(list).toHaveBeenLastCalledWith(value, 1, 20);
+      expect(list).toHaveBeenLastCalledWith(value, 1, 20, '');
     }
     const search = screen.getByPlaceholderText('搜索能力名称、描述或来源企业');
     for (const keyword of ['自动化', '账务', '示例企业']) {
       fireEvent.change(search, { target: { value: keyword } });
+      expect(list).toHaveBeenLastCalledWith(undefined, 1, 20, keyword);
       expect(screen.getByRole('row', { name: /自动化/ })).toBeInTheDocument();
       expect(screen.queryByRole('row', { name: /写作技能/ })).not.toBeInTheDocument();
     }

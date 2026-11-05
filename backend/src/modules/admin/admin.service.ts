@@ -240,18 +240,17 @@ export class AdminService {
     page?: number;
     pageSize?: number;
     keyword?: string;
+    suspended?: boolean;
   }) {
-    const { page = 1, pageSize = 20, keyword } = params || {};
+    const { page = 1, pageSize = 20, keyword, suspended } = params || {};
     const skip = (page - 1) * pageSize;
 
-    const where = keyword
-      ? {
-          OR: [
-            { name: { contains: keyword, mode: 'insensitive' as const } },
-            { description: { contains: keyword, mode: 'insensitive' as const } },
-          ],
-        }
-      : {};
+    const where: any = {};
+    if (keyword?.trim()) where.OR = [
+      { name: { contains: keyword.trim(), mode: 'insensitive' as const } },
+      { description: { contains: keyword.trim(), mode: 'insensitive' as const } },
+    ];
+    if (suspended !== undefined) where.metadata = { path: ['suspended'], equals: suspended };
 
     const [enterprises, total] = await Promise.all([
       this.prisma.enterprise.findMany({
@@ -426,11 +425,21 @@ export class AdminService {
     status?: 'PENDING' | 'APPROVED' | 'REJECTED' | 'DRAFT' | 'ARCHIVED';
     page?: number;
     pageSize?: number;
+    keyword?: string;
+    industry?: string;
+    position?: string;
+    capabilityKeyword?: string;
   }) {
-    const { status, page = 1, pageSize = 20 } = params || {};
+    const { status, page = 1, pageSize = 20, keyword, industry, position, capabilityKeyword } = params || {};
     const skip = (page - 1) * pageSize;
 
-    const where = status ? { status } : {};
+    const where: any = { ...(status ? { status } : {}) };
+    const filters: any[] = [];
+    if (keyword?.trim()) filters.push({ name: { contains: keyword.trim(), mode: 'insensitive' } });
+    if (industry?.trim()) filters.push({ industry: { contains: industry.trim(), mode: 'insensitive' } });
+    if (position?.trim()) filters.push({ position: { contains: position.trim(), mode: 'insensitive' } });
+    if (capabilityKeyword?.trim()) filters.push({ bindings: { some: { capability: { name: { contains: capabilityKeyword.trim(), mode: 'insensitive' } } } } });
+    if (filters.length) where.AND = filters;
 
     const [employees, total] = await Promise.all([
       this.prisma.digitalEmployee.findMany({
@@ -882,8 +891,9 @@ export class AdminService {
     type?: 'AGENT' | 'RPA' | 'SKILL' | 'AI_APP';
     page?: number;
     pageSize?: number;
+    keyword?: string;
   }) {
-    const { status, type, page = 1, pageSize = 20 } = params || {};
+    const { status, type, page = 1, pageSize = 20, keyword } = params || {};
     const skip = (page - 1) * pageSize;
 
     const where: any = {};
@@ -905,6 +915,21 @@ export class AdminService {
       }
     }
     if (type) where.type = type;
+    const normalizedKeyword = keyword?.trim();
+    if (normalizedKeyword) {
+      const keywordOr = [
+        { name: { contains: normalizedKeyword, mode: 'insensitive' as const } },
+        { description: { contains: normalizedKeyword, mode: 'insensitive' as const } },
+        { enterprise: { name: { contains: normalizedKeyword, mode: 'insensitive' as const } } },
+      ];
+      const existingOr = where.OR;
+      if (existingOr) {
+        where.AND = [{ OR: existingOr }, { OR: keywordOr }];
+        delete where.OR;
+      } else {
+        where.OR = keywordOr;
+      }
+    }
 
     const [items, total] = await Promise.all([
       this.prisma.capability.findMany({

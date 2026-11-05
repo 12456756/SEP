@@ -24,10 +24,12 @@ export class CapabilityContributionAdminController {
   @Get()
   @ApiOperation({ summary: '平台贡献投稿队列' })
   @ApiQuery({ name: 'status', required: false, enum: PLATFORM_STATUSES, description: '默认 PENDING_REVIEW' })
+  @ApiQuery({ name: 'keyword', required: false, type: String, description: '按投稿名称、描述或企业名称搜索' })
   list(
     @Query('status') status?: (typeof PLATFORM_STATUSES)[number],
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
+    @Query('keyword') keyword?: string,
   ) {
     const parsed = status && z.enum(PLATFORM_STATUSES).safeParse(status);
     const queueStatus = parsed?.success ? parsed.data : 'PENDING_REVIEW';
@@ -35,6 +37,7 @@ export class CapabilityContributionAdminController {
       queueStatus as ContributionPlatformStatus,
       page ? Math.max(1, Number(page)) : 1,
       pageSize ? Math.min(100, Math.max(1, Number(pageSize))) : 20,
+      keyword,
     );
   }
 

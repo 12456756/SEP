@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { KeyRound, Plus, Pencil, Trash2, Users, AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react';
+import { KeyRound, Plus, Pencil, Trash2, Users, AlertTriangle, ChevronLeft, ChevronRight, Search } from 'lucide-react';
 import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -68,8 +68,16 @@ export default function MembersPage() {
   const isAdmin = roleInEnterprise === 'ENTERPRISE_ADMIN';
 
   const [memberPage, setMemberPage] = useState(1);
+  const [memberSearch, setMemberSearch] = useState('');
+  const [memberRole, setMemberRole] = useState('');
+  const [departmentFilter, setDepartmentFilter] = useState('');
   const MEMBER_PAGE_SIZE = 20;
-  const { data: memberResult, isLoading } = useMembers(undefined, { page: memberPage, pageSize: MEMBER_PAGE_SIZE });
+  const { data: memberResult, isLoading } = useMembers(departmentFilter || undefined, {
+    page: memberPage,
+    pageSize: MEMBER_PAGE_SIZE,
+    search: memberSearch.trim() || undefined,
+    role: (memberRole || undefined) as EnterpriseMember['role'] | undefined,
+  });
   const members = Array.isArray(memberResult) ? memberResult : memberResult?.items ?? [];
   const { data: depts = [] } = useDepartments();
   // 邀请数只在管理员视角下取 —— 普通成员没有 /enterprise/invitations 权限，
@@ -201,7 +209,25 @@ export default function MembersPage() {
 
       {tab === 'invitations' && isAdmin ? (
         <InvitationPanel depts={depts} />
-      ) : members.length === 0 ? (
+      ) : (
+        <>
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-background p-3">
+          <div className="relative min-w-[220px] flex-1">
+            <Search className="absolute left-3 top-2.5 h-4 w-4 text-fg-muted" />
+            <Input aria-label="搜索成员" placeholder="搜索姓名、邮箱或职位" value={memberSearch} onChange={(event) => { setMemberSearch(event.target.value); setMemberPage(1); }} className="pl-9" />
+          </div>
+          <select aria-label="按角色筛选成员" value={memberRole} onChange={(event) => { setMemberRole(event.target.value); setMemberPage(1); }} className="h-10 rounded-md border border-border bg-background px-3 text-sm">
+            <option value="">全部角色</option>
+            <option value="ENTERPRISE_ADMIN">企业管理员</option>
+            <option value="DEPT_MANAGER">部门负责人</option>
+            <option value="MEMBER">普通成员</option>
+          </select>
+          <select aria-label="按部门筛选成员" value={departmentFilter} onChange={(event) => { setDepartmentFilter(event.target.value); setMemberPage(1); }} className="h-10 rounded-md border border-border bg-background px-3 text-sm">
+            <option value="">全部部门</option>
+            {flatDepts.map((department) => <option key={department.id} value={department.id}>{department.label}</option>)}
+          </select>
+        </div>
+        {members.length === 0 ? (
         <EmptyState icon={<Users className="h-8 w-8" />} title="还没有成员" />
       ) : (
         <div className="space-y-4">
@@ -303,6 +329,8 @@ export default function MembersPage() {
             </div>
           )}
         </div>
+      )}
+      </>
       )}
 
       {/* 添加成员 */}

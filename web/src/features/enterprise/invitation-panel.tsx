@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { Check, ChevronLeft, ChevronRight, Copy, Link2, Loader2, Mail, Plus, RotateCw, XCircle } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, Copy, Link2, Loader2, Mail, Plus, RotateCw, Search, XCircle } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import { Badge } from '@/components/ui/badge';
@@ -249,8 +249,18 @@ function InviteDialog({
 
 export function InvitationPanel({ depts }: { depts: Department[] }) {
   const [page, setPage] = useState(1);
+  const [search, setSearch] = useState('');
+  const [status, setStatus] = useState<InvitationStatus | ''>('');
+  const [role, setRole] = useState('');
+  const [departmentId, setDepartmentId] = useState('');
   const PAGE_SIZE = 20;
-  const { data: result, isLoading } = useInvitations(undefined, { page, pageSize: PAGE_SIZE });
+  const { data: result, isLoading } = useInvitations(status || undefined, {
+    page,
+    pageSize: PAGE_SIZE,
+    search: search.trim() || undefined,
+    role: (role || undefined) as EnterpriseInvitation['role'] | undefined,
+    departmentId: departmentId || undefined,
+  });
   const invitations = (Array.isArray(result) ? result : result?.items ?? []) as EnterpriseInvitation[];
   const revokeInvitation = useRevokeInvitation();
   const resendInvitation = useResendInvitation();
@@ -294,6 +304,30 @@ export function InvitationPanel({ depts }: { depts: Department[] }) {
         <Button size="sm" onClick={() => setInviting(true)} disabled={revokeInvitation.isPending || resendInvitation.isPending}>
           <Plus className="h-4 w-4" /> 邀请成员
         </Button>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-background p-3">
+        <div className="relative min-w-[220px] flex-1">
+          <Search className="absolute left-3 top-2.5 h-4 w-4 text-fg-muted" />
+          <Input aria-label="搜索邀请" placeholder="搜索邮箱或职位" value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} className="pl-9" />
+        </div>
+        <select aria-label="按邀请状态筛选" value={status} onChange={(event) => { setStatus(event.target.value as InvitationStatus | ''); setPage(1); }} className="h-10 rounded-md border border-border bg-background px-3 text-sm">
+          <option value="">全部状态</option>
+          <option value="PENDING">待接受</option>
+          <option value="ACCEPTED">已加入</option>
+          <option value="EXPIRED">已过期</option>
+          <option value="REVOKED">已撤回</option>
+        </select>
+        <select aria-label="按邀请角色筛选" value={role} onChange={(event) => { setRole(event.target.value); setPage(1); }} className="h-10 rounded-md border border-border bg-background px-3 text-sm">
+          <option value="">全部角色</option>
+          <option value="ENTERPRISE_ADMIN">企业管理员</option>
+          <option value="DEPT_MANAGER">部门负责人</option>
+          <option value="MEMBER">普通成员</option>
+        </select>
+        <select aria-label="按邀请部门筛选" value={departmentId} onChange={(event) => { setDepartmentId(event.target.value); setPage(1); }} className="h-10 rounded-md border border-border bg-background px-3 text-sm">
+          <option value="">全部部门</option>
+          {flattenDepts(depts).map((department) => <option key={department.id} value={department.id}>{department.label}</option>)}
+        </select>
       </div>
 
       {isLoading ? (

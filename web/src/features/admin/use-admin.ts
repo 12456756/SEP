@@ -37,11 +37,13 @@ export interface AdminCapabilityRow extends Capability {
  *   · PENDING  → 平台自有待审 OR 企业投稿待平台审核
  *   · APPROVED → 平台自有已通过 OR 市场公开已过审
  */
-export function useAllCapabilities(status?: string, page = 1, pageSize = 20) {
+export function useAllCapabilities(status?: string, page = 1, pageSize = 20, keyword = "") {
   const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
   if (status) params.set('status', status);
+  const normalizedKeyword = keyword.trim();
+  if (normalizedKeyword) params.set('keyword', normalizedKeyword);
   return useQuery({
-    queryKey: ['capabilities', { status: status ?? 'ALL', page, pageSize }],
+    queryKey: ['capabilities', { status: status ?? 'ALL', page, pageSize, keyword: normalizedKeyword }],
     queryFn: async () => {
       const response = await api.get<{
         items: AdminCapabilityRow[];
@@ -252,10 +254,10 @@ export function useAllEnterprises() {
 }
 
 /** 企业管理表格使用的分页列表。选择器继续使用 useAllEnterprises 的完整数据。 */
-export function useAdminEnterpriseList(page = 1, pageSize = 20) {
+export function useAdminEnterpriseList(page = 1, pageSize = 20, params?: { keyword?: string; suspended?: boolean }) {
   return useQuery({
-    queryKey: ['admin', 'enterprises', 'list', page, pageSize],
-    queryFn: () => adminApi.listEnterprises({ page, pageSize }),
+    queryKey: ['admin', 'enterprises', 'list', page, pageSize, params],
+    queryFn: () => adminApi.listEnterprises({ page, pageSize, ...params }),
   });
 }
 

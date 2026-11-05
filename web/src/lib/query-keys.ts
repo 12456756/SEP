@@ -25,12 +25,12 @@ export const qk = {
     pagination === undefined
       ? (deptId ? ['enterprise', 'members', deptId] : (['enterprise', 'members'] as const))
       : ['enterprise', 'members', deptId ?? '', pagination] as const,
-  invitations: (status?: string, page?: number, pageSize?: number) =>
+  invitations: (status?: string, page?: number, pageSize?: number, filters?: Record<string, unknown>) =>
     page === undefined && pageSize === undefined
       ? (status ? (['enterprise', 'invitations', status] as const) : (['enterprise', 'invitations'] as const))
       : (status
-        ? (['enterprise', 'invitations', status, page ?? 0, pageSize ?? 0] as const)
-        : (['enterprise', 'invitations', page ?? 0, pageSize ?? 0] as const)),
+        ? (['enterprise', 'invitations', status, page ?? 0, pageSize ?? 0, filters ?? {}] as const)
+        : (['enterprise', 'invitations', page ?? 0, pageSize ?? 0, filters ?? {}] as const)),
   deptMembers: (deptId: string, params?: Record<string, unknown>) =>
     ['enterprise', 'departments', deptId, 'members', params ?? {}] as const,
   subscriptionGrants: (subscriptionId: string) =>
@@ -60,8 +60,10 @@ export const qk = {
   contributionMine: ['contributions', 'mine'] as const,
   contribution: (id: string) => ['contributions', id] as const,
   contributionRewards: ['contributions', 'rewards'] as const,
-  contributionAdminQueue: (status: string, page?: number, pageSize?: number) =>
-    page === undefined ? ['admin', 'contributions', status] as const : ['admin', 'contributions', status, page, pageSize ?? 20] as const,
+  contributionAdminQueue: (status: string, page?: number, pageSize?: number, keyword?: string) =>
+    page === undefined
+      ? ['admin', 'contributions', status, keyword?.trim() ?? ''] as const
+      : ['admin', 'contributions', status, page, pageSize ?? 20, keyword?.trim() ?? ''] as const,
   contributionAdmin: (id: string) => ['admin', 'contributions', id] as const,
   contributionReviewQueue: (kind: string) => ['admin', 'capability-review', kind] as const,
   // 任务中心持久化（替代原先的 localStorage）

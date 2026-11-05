@@ -1,7 +1,9 @@
 'use client';
 
-import { History, Loader2, Plus, Trash2, X } from 'lucide-react';
+import { History, Loader2, Plus, Trash2, X, Search } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { cn } from '@/lib/utils';
 import type { TaskRunStatus } from '../task-orchestration';
 import type { TaskRunSummary } from '../task-run';
@@ -45,6 +47,10 @@ export function TaskHistoryDrawer({
   hasMore = false,
   loadingMore = false,
   onLoadMore,
+  keyword,
+  onKeywordChange,
+  status,
+  onStatusChange,
 }: {
   open: boolean;
   runs: TaskRunSummary[];
@@ -58,6 +64,10 @@ export function TaskHistoryDrawer({
   hasMore?: boolean;
   loadingMore?: boolean;
   onLoadMore?: () => void;
+  keyword?: string;
+  onKeywordChange?: (value: string) => void;
+  status?: 'all' | TaskRunStatus;
+  onStatusChange?: (value: 'all' | TaskRunStatus) => void;
 }) {
   if (!open) return null;
 
@@ -91,6 +101,7 @@ export function TaskHistoryDrawer({
         </header>
 
         <div className="min-h-0 flex-1 overflow-y-auto p-3 scroll-thin">
+          {(onKeywordChange || onStatusChange) && <div className="mb-3 space-y-2"><div className="relative"><Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gtext-muted" /><Input value={keyword ?? ''} onChange={(e) => onKeywordChange?.(e.target.value)} placeholder="搜索任务名称" className="h-8 pl-8 text-xs" /></div><Select value={status ?? 'all'} onValueChange={(v) => onStatusChange?.(v as 'all' | TaskRunStatus)}><SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部状态</SelectItem>{Object.entries(STATUS_LABEL).map(([value, label]) => <SelectItem key={value} value={value}>{label}</SelectItem>)}</SelectContent></Select></div>}
           {loading ? (
             <div className="flex items-center justify-center gap-2 py-10 text-xs text-gtext-muted">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />

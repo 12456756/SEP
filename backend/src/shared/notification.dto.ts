@@ -29,6 +29,7 @@ export const NotificationListQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).max(100_000).default(0),
   category: NotificationCategorySchema.optional(),
   unreadOnly: QueryBooleanSchema,
+  keyword: z.string().trim().max(200).optional(),
 });
 
 export type NotificationListQuery = z.infer<typeof NotificationListQuerySchema>;

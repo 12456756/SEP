@@ -5,6 +5,7 @@ import { useState } from 'react';
 import { ChevronLeft, ChevronRight, Download, Shield } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { EmptyState, ErrorState, CenteredSpinner } from '@/components/ui/feedback';
 import { api } from '@/lib/api-client';
 import { authAccessor } from '@/lib/auth-store';
@@ -40,17 +41,44 @@ function humanizeResource(resourceType: string, action: string) {
   return action.split('/')[2] || resourceType || '系统资源';
 }
 
+type AuditFilters = {
+  actorId: string;
+  action: string;
+  resourceType: string;
+  from: string;
+  to: string;
+};
+
+function buildAuditQuery(filters: AuditFilters, page?: number, pageSize?: number) {
+  const params = new URLSearchParams();
+  if (page !== undefined) params.set('page', String(page));
+  if (pageSize !== undefined) params.set('pageSize', String(pageSize));
+  if (filters.actorId.trim()) params.set('actorId', filters.actorId.trim());
+  if (filters.action.trim()) params.set('action', filters.action.trim());
+  if (filters.resourceType.trim()) params.set('resourceType', filters.resourceType.trim());
+  if (filters.from) params.set('from', filters.from);
+  if (filters.to) params.set('to', filters.to);
+  return params.toString();
+}
+
 export default function AuditPage() {
   const [page, setPage] = useState(1);
   const pageSize = 50;
+  const [filters, setFilters] = useState<AuditFilters>({ actorId: '', action: '', resourceType: '', from: '', to: '' });
   const query = useQuery({
-    queryKey: ['audit-logs', page, pageSize],
-    queryFn: () => api.get<{ items: Array<any>; total: number; page: number; pageSize: number; totalPages: number }>(`/audit-logs?page=${page}&pageSize=${pageSize}`),
+    queryKey: ['audit-logs', page, pageSize, filters],
+    queryFn: () => api.get<{ items: Array<any>; total: number; page: number; pageSize: number; totalPages: number }>(`/audit-logs?${buildAuditQuery(filters, page, pageSize)}`),
   });
+
+  const updateFilter = (key: keyof AuditFilters, value: string) => {
+    setPage(1);
+    setFilters((current) => ({ ...current, [key]: value }));
+  };
 
   const exportCsv = async () => {
     const token = authAccessor.getToken();
-    const response = await fetch('/api/audit-logs/export', {
+    const params = buildAuditQuery(filters);
+    const response = await fetch(`/api/audit-logs/export${params ? `?${params}` : ''}`, {
       credentials: 'include',
       headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     });
@@ -81,6 +109,13 @@ export default function AuditPage() {
             <Shield className="h-4 w-4" />
             操作日志 {query.data ? `（${query.data.total}）` : ''}
           </CardTitle>
+          <div className="grid gap-3 pt-3 sm:grid-cols-2 lg:grid-cols-5">
+            <Input aria-label="操作人" placeholder="操作人 ID" value={filters.actorId} onChange={(event) => updateFilter('actorId', event.target.value)} />
+            <Input aria-label="操作类型" placeholder="操作类型" value={filters.action} onChange={(event) => updateFilter('action', event.target.value)} />
+            <Input aria-label="资源类型" placeholder="资源类型" value={filters.resourceType} onChange={(event) => updateFilter('resourceType', event.target.value)} />
+            <Input aria-label="开始日期" type="date" value={filters.from} onChange={(event) => updateFilter('from', event.target.value)} />
+            <Input aria-label="结束日期" type="date" value={filters.to} onChange={(event) => updateFilter('to', event.target.value)} />
+          </div>
         </CardHeader>
         <CardContent>
           {query.isLoading ? (

@@ -191,6 +191,8 @@ export class EnterpriseController {
   @Get("members")
   @ApiOperation({ summary: "本企业成员列表" })
   @ApiQuery({ name: "departmentId", required: false })
+  @ApiQuery({ name: "search", required: false, description: "按姓名、邮箱或职位搜索" })
+  @ApiQuery({ name: "role", required: false, enum: ['ENTERPRISE_ADMIN', 'DEPT_MANAGER', 'MEMBER'] })
   @ApiQuery({ name: "page", required: false, type: Number, description: "页码，默认1" })
   @ApiQuery({ name: "pageSize", required: false, type: Number, description: "每页数量，默认20，最大100" })
   @ApiResponse({ status: 200, description: "成员分页列表" })
@@ -206,10 +208,16 @@ export class EnterpriseController {
       const parsed = new ZodValidationPipe(KnowledgeGrantCandidateQuerySchema).transform(query);
       return this.members.listKnowledgeGrantCandidates(req.user.id, parsed);
     }
-    const hasPagination = query?.page !== undefined || query?.pageSize !== undefined;
+    const hasPagination = query?.page !== undefined || query?.pageSize !== undefined || query?.search !== undefined || query?.role !== undefined;
+    const role = query?.role;
+    if (role !== undefined && !['ENTERPRISE_ADMIN', 'DEPT_MANAGER', 'MEMBER'].includes(String(role))) {
+      throw new BadRequestException('无效成员角色');
+    }
     return this.members.list(req.user.id, departmentId, hasPagination ? {
       page: Number(query?.page),
       pageSize: Number(query?.pageSize),
+      search: typeof query?.search === 'string' ? query.search : undefined,
+      role: role as 'ENTERPRISE_ADMIN' | 'DEPT_MANAGER' | 'MEMBER' | undefined,
     } : undefined);
   }
 
@@ -278,6 +286,9 @@ export class EnterpriseController {
     description: "顺带把已过期的 PENDING 收敛为 EXPIRED。不返回 token。",
   })
   @ApiQuery({ name: "status", required: false, enum: ['PENDING', 'ACCEPTED', 'EXPIRED', 'REVOKED'] })
+  @ApiQuery({ name: "search", required: false, description: "按邮箱或职位搜索" })
+  @ApiQuery({ name: "role", required: false, enum: ['ENTERPRISE_ADMIN', 'DEPT_MANAGER', 'MEMBER'] })
+  @ApiQuery({ name: "departmentId", required: false })
   @ApiQuery({ name: "page", required: false, type: Number, description: "页码，默认1" })
   @ApiQuery({ name: "pageSize", required: false, type: Number, description: "每页数量，默认20，最大100" })
   @ApiResponse({ status: 200, description: "邀请分页列表" })
@@ -286,11 +297,20 @@ export class EnterpriseController {
     @Query("status") status?: InvitationStatusValue,
     @Query("page") page?: string,
     @Query("pageSize") pageSize?: string,
+    @Query("search") search?: string,
+    @Query("role") role?: string,
+    @Query("departmentId") departmentId?: string,
   ) {
-    const hasPagination = page !== undefined || pageSize !== undefined;
+    const hasPagination = page !== undefined || pageSize !== undefined || search !== undefined || role !== undefined || departmentId !== undefined;
+    if (role !== undefined && !['ENTERPRISE_ADMIN', 'DEPT_MANAGER', 'MEMBER'].includes(role)) {
+      throw new BadRequestException('无效邀请角色');
+    }
     return this.invitations.list(req.user.id, status, hasPagination ? {
       page: Number(page),
       pageSize: Number(pageSize),
+      search,
+      role: role as 'ENTERPRISE_ADMIN' | 'DEPT_MANAGER' | 'MEMBER' | undefined,
+      departmentId,
     } : undefined);
   }
 

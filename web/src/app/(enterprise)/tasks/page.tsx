@@ -46,7 +46,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ClientTaskMonitor } from '@/features/task/components/client-task-monitor';
 import { nav } from '@/locales/zh-CN';
 import type { TaskExecutionSnapshot } from '@/features/task/task-execution';
-import type { TaskCandidateEmployee, TaskPlan, TaskPlanStep } from '@/features/task/task-orchestration';
+import type { TaskCandidateEmployee, TaskPlan, TaskPlanStep, TaskRunStatus } from '@/features/task/task-orchestration';
 import type { MyEmployee } from '@/lib/types';
 
 const VIEW_STORAGE_KEY = 'sep.tasks.view';
@@ -89,7 +89,9 @@ function TasksPageContent() {
   const subscriptionId = searchParams.get('subscriptionId') || undefined;
   const enterprise = useAuthStore((state) => state.enterprise);
 
-  const runsQuery = useInfiniteTaskRuns({ limit: 50 });
+  const [historyKeyword, setHistoryKeyword] = useState('');
+  const [historyStatus, setHistoryStatus] = useState<'all' | TaskRunStatus>('all');
+  const runsQuery = useInfiniteTaskRuns({ limit: 50, keyword: historyKeyword.trim() || undefined, status: historyStatus === 'all' ? undefined : [historyStatus] });
   const templatesQuery = useTaskTemplates();
   const createRun = useCreateTaskRun();
   const updateRun = useUpdateTaskRun();
@@ -591,6 +593,10 @@ function TasksPageContent() {
         hasMore={Boolean(runsQuery.hasNextPage)}
         loadingMore={runsQuery.isFetchingNextPage}
         onLoadMore={() => void runsQuery.fetchNextPage()}
+        keyword={historyKeyword}
+        onKeywordChange={(value) => { setHistoryKeyword(value); }}
+        status={historyStatus}
+        onStatusChange={setHistoryStatus}
       />
 
       <TaskTemplateDrawer

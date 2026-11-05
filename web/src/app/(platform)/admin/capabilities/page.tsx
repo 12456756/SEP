@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { format } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import Link from 'next/link';
@@ -90,23 +90,13 @@ export default function CapabilitiesPage() {
   const [deleting, setDeleting] = useState<AdminCapabilityRow | null>(null);
   const [approvingSkill, setApprovingSkill] = useState<AdminCapabilityRow | null>(null);
 
-  const query = useAllCapabilities(status === 'ALL' ? undefined : status, page, pageSize);
+  const query = useAllCapabilities(status === 'ALL' ? undefined : status, page, pageSize, keyword);
   const approve = useApproveCapability();
   const reject = useRejectCapability();
   const remove = useDeleteCapability();
   const reviewSkill = useMonitorReview();
 
-  const visible = useMemo(() => {
-    const items = query.data?.items ?? [];
-    const kw = keyword.trim().toLowerCase();
-    if (!kw) return items;
-    return items.filter(
-      (cap) =>
-        cap.name.toLowerCase().includes(kw) ||
-        cap.description?.toLowerCase().includes(kw) ||
-        cap.enterprise?.name.toLowerCase().includes(kw),
-    );
-  }, [query.data?.items, keyword]);
+  const visible = query.data?.items ?? [];
 
   const totalPages = Math.max(1, Math.ceil((query.data?.total ?? 0) / pageSize));
 
@@ -376,7 +366,7 @@ export default function CapabilitiesPage() {
         <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-fg-subtle">
           <span>
             共 {query.data.total} 个能力
-            {keyword && ` · 当前页筛选出 ${visible.length} 个`}
+            {keyword.trim() && ` · 搜索结果 ${visible.length} 个`}
           </span>
           {totalPages > 1 && (
             <div className="flex items-center gap-2">

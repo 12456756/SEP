@@ -155,6 +155,29 @@ describe('AdminService', () => {
       expect(mockPrismaService.capability.findMany).toHaveBeenCalledWith(expect.objectContaining({ where }));
       expect(mockPrismaService.capability.count).toHaveBeenCalledWith({ where });
     });
+
+    it('combines keyword search with the expanded pending status filter', async () => {
+      mockPrismaService.capability.findMany.mockResolvedValue([]);
+      mockPrismaService.capability.count.mockResolvedValue(0);
+
+      await service.listCapabilities({ status: 'PENDING', keyword: '  示例企业  ' });
+
+      const expectedWhere = {
+        AND: [
+          { OR: [
+            { enterpriseId: null, status: 'PENDING' },
+            { platformReviewStatus: 'PENDING_REVIEW' },
+          ] },
+          { OR: [
+            { name: { contains: '示例企业', mode: 'insensitive' } },
+            { description: { contains: '示例企业', mode: 'insensitive' } },
+            { enterprise: { name: { contains: '示例企业', mode: 'insensitive' } } },
+          ] },
+        ],
+      };
+      expect(mockPrismaService.capability.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expectedWhere }));
+      expect(mockPrismaService.capability.count).toHaveBeenCalledWith({ where: expectedWhere });
+    });
   });
 
   describe.each(['approve', 'reject'] as const)('%sCapability', (decision) => {

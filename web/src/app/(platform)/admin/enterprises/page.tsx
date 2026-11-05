@@ -1,6 +1,6 @@
 'use client';
 
-import { Building2, ChevronLeft, ChevronRight, ExternalLink, Lock } from 'lucide-react';
+import { Building2, ChevronLeft, ChevronRight, ExternalLink, Lock, Search } from 'lucide-react';
 import { useState } from 'react';
 import Link from 'next/link';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -8,11 +8,16 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton, EmptyState } from '@/components/ui/feedback';
 import { useAdminEnterpriseList } from '@/features/admin/use-admin';
+import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 export default function EnterprisesPage() {
   const [page, setPage] = useState(1);
+  const [keyword, setKeyword] = useState('');
+  const [suspended, setSuspended] = useState<'all' | 'true' | 'false'>('all');
   const pageSize = 20;
-  const { data, isLoading, isFetching, isError, error } = useAdminEnterpriseList(page, pageSize);
+  const filter = { keyword: keyword.trim() || undefined, suspended: suspended === 'all' ? undefined : suspended === 'true' };
+  const { data, isLoading, isFetching, isError, error } = useAdminEnterpriseList(page, pageSize, filter);
   const enterprises = data?.data ?? [];
 
   return (
@@ -27,6 +32,10 @@ export default function EnterprisesPage() {
       <Card variant="solid">
         <CardHeader>
           <CardTitle>全部企业</CardTitle>
+          <div className="flex flex-wrap gap-2 pt-2">
+            <div className="relative min-w-[240px] flex-1"><Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-muted" /><Input value={keyword} onChange={(e) => { setKeyword(e.target.value); setPage(1); }} placeholder="搜索企业名称或简介" className="pl-9" /></div>
+            <Select value={suspended} onValueChange={(value: 'all' | 'true' | 'false') => { setSuspended(value); setPage(1); }}><SelectTrigger className="w-32"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="all">全部状态</SelectItem><SelectItem value="false">正常</SelectItem><SelectItem value="true">已冻结</SelectItem></SelectContent></Select>
+          </div>
         </CardHeader>
         <CardContent className="p-0">
           {isLoading ? (

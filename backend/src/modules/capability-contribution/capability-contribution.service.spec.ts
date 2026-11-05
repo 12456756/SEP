@@ -227,6 +227,28 @@ describe('CapabilityContributionService', () => {
     expect(prisma.capability.count).toHaveBeenCalledWith({ where: { platformReviewStatus: 'PENDING_REVIEW' } });
   });
 
+  it('applies a trimmed keyword across submission and enterprise fields', async () => {
+    prisma.capability.findMany.mockResolvedValue([]);
+    prisma.capability.count.mockResolvedValue(0);
+
+    await service.listPlatformQueue('APPROVED', 2, 10, '  示例企业  ');
+
+    const expectedWhere = {
+      platformReviewStatus: 'APPROVED',
+      OR: [
+        { name: { contains: '示例企业', mode: 'insensitive' } },
+        { description: { contains: '示例企业', mode: 'insensitive' } },
+        { enterprise: { name: { contains: '示例企业', mode: 'insensitive' } } },
+      ],
+    };
+    expect(prisma.capability.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expectedWhere,
+      skip: 10,
+      take: 10,
+    }));
+    expect(prisma.capability.count).toHaveBeenCalledWith({ where: expectedWhere });
+  });
+
   it('merges capability and Skill version submissions into one oldest-first queue', async () => {
     const capabilitySubmittedAt = new Date('2026-08-25T10:00:00.000Z');
     const versionSubmittedAt = new Date('2026-08-25T09:00:00.000Z');

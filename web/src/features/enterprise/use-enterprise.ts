@@ -64,14 +64,21 @@ export type EnterpriseMemberPage = {
   totalPages: number;
 };
 
+export type EnterpriseMemberListOptions = {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  role?: EnterpriseMember['role'];
+};
+
 export function useMembers(departmentId?: string): UseQueryResult<EnterpriseMember[]>;
 export function useMembers(
   departmentId: string | undefined,
-  pagination: { page?: number; pageSize?: number },
+  pagination: EnterpriseMemberListOptions,
 ): UseQueryResult<EnterpriseMemberPage>;
 export function useMembers(
   departmentId?: string,
-  pagination?: { page?: number; pageSize?: number },
+  pagination?: EnterpriseMemberListOptions,
 ): UseQueryResult<EnterpriseMember[] | EnterpriseMemberPage> {
   return useQuery({
     queryKey: qk.members(departmentId, pagination),
@@ -82,6 +89,8 @@ export function useMembers(
           if (departmentId) params.set('departmentId', departmentId);
           if (pagination?.page !== undefined) params.set('page', String(pagination.page));
           if (pagination?.pageSize !== undefined) params.set('pageSize', String(pagination.pageSize));
+          if (pagination?.search) params.set('search', pagination.search);
+          if (pagination?.role) params.set('role', pagination.role);
           const query = params.toString();
           return query ? `/enterprise/members?${query}` : '/enterprise/members';
         })(),
@@ -153,14 +162,14 @@ export function useDeleteMember() {
 export function useInvitations(status?: InvitationStatus, opts?: { enabled?: boolean }): UseQueryResult<EnterpriseInvitation[]>;
 export function useInvitations(
   status: InvitationStatus | undefined,
-  opts: { enabled?: boolean; page?: number; pageSize?: number },
+  opts: { enabled?: boolean; page?: number; pageSize?: number; search?: string; role?: EnterpriseInvitation['role']; departmentId?: string },
 ): UseQueryResult<{ items: EnterpriseInvitation[]; total: number; page: number; pageSize: number; totalPages: number }>;
 export function useInvitations(
   status?: InvitationStatus,
-  opts?: { enabled?: boolean; page?: number; pageSize?: number },
+  opts?: { enabled?: boolean; page?: number; pageSize?: number; search?: string; role?: EnterpriseInvitation['role']; departmentId?: string },
 ): UseQueryResult<EnterpriseInvitation[] | { items: EnterpriseInvitation[]; total: number; page: number; pageSize: number; totalPages: number }> {
   return useQuery({
-    queryKey: qk.invitations(status, opts?.page, opts?.pageSize),
+    queryKey: qk.invitations(status, opts?.page, opts?.pageSize, { search: opts?.search, role: opts?.role, departmentId: opts?.departmentId }),
     queryFn: () =>
       api.get<EnterpriseInvitation[] | { items: EnterpriseInvitation[]; total: number; page: number; pageSize: number; totalPages: number }>(
         (() => {
@@ -168,6 +177,9 @@ export function useInvitations(
           if (status) params.set('status', status);
           if (opts?.page !== undefined) params.set('page', String(opts.page));
           if (opts?.pageSize !== undefined) params.set('pageSize', String(opts.pageSize));
+          if (opts?.search) params.set('search', opts.search);
+          if (opts?.role) params.set('role', opts.role);
+          if (opts?.departmentId) params.set('departmentId', opts.departmentId);
           const query = params.toString();
           return query ? `/enterprise/invitations?${query}` : '/enterprise/invitations';
         })(),

@@ -50,14 +50,25 @@ export class AnnouncementService {
   /**
    * 获取公告列表（运营端）- 包含未发布的
    */
-  async findAll(page = 1, pageSize = 20) {
+  async findAll(page = 1, pageSize = 20, params?: { keyword?: string; type?: AnnouncementType; published?: boolean; activeAt?: Date }) {
     const skip = (page - 1) * pageSize;
+    const where: any = {};
+    if (params?.keyword?.trim()) where.title = { contains: params.keyword.trim(), mode: 'insensitive' };
+    if (params?.type) where.type = params.type;
+    if (params?.published !== undefined) where.published = params.published;
+    if (params?.activeAt) {
+      where.AND = [
+        { OR: [{ startTime: null }, { startTime: { lte: params.activeAt } }] },
+        { OR: [{ endTime: null }, { endTime: { gte: params.activeAt } }] },
+      ];
+    }
 
     const [data, total] = await Promise.all([
       this.prisma.announcement.findMany({
         skip,
         take: pageSize,
         orderBy: [{ priority: 'desc' }, { createdAt: 'desc' }],
+        where,
         include: {
           createdBy: {
             select: {
@@ -68,7 +79,7 @@ export class AnnouncementService {
           },
         },
       }),
-      this.prisma.announcement.count(),
+      this.prisma.announcement.count({ where }),
     ]);
 
     return {

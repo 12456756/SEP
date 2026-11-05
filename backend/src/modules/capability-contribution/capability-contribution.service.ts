@@ -1588,8 +1588,19 @@ export class CapabilityContributionService {
     status: ContributionPlatformStatus = "PENDING_REVIEW",
     page = 1,
     pageSize = 20,
+    keyword?: string,
   ) {
-    const where = { platformReviewStatus: status };
+    const normalizedKeyword = keyword?.trim();
+    const where: Prisma.CapabilityWhereInput = {
+      platformReviewStatus: status,
+      ...(normalizedKeyword ? {
+        OR: [
+          { name: { contains: normalizedKeyword, mode: 'insensitive' } },
+          { description: { contains: normalizedKeyword, mode: 'insensitive' } },
+          { enterprise: { name: { contains: normalizedKeyword, mode: 'insensitive' } } },
+        ],
+      } : {}),
+    };
     const [items, total] = await Promise.all([
       this.prisma.capability.findMany({
         where,

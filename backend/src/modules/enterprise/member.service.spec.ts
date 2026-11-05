@@ -106,6 +106,14 @@ describe('MemberService', () => {
       const where = prisma.enterpriseMember.findMany.mock.calls[0][0].where;
       expect(where).toEqual({ enterpriseId: 'ent-acme', departmentId: 'dept-tech' });
     });
+
+    it('分页查询支持姓名/邮箱/职位搜索与角色过滤', async () => {
+      await svc.list('u1', undefined, { page: 2, pageSize: 10, search: ' 张三 ', role: 'MEMBER' });
+      const args = prisma.enterpriseMember.findMany.mock.calls.at(-1)?.[0];
+      expect(args).toMatchObject({ skip: 10, take: 10, where: { enterpriseId: 'ent-acme', role: 'MEMBER' } });
+      expect(args.where.OR).toHaveLength(3);
+      expect(prisma.enterpriseMember.count).toHaveBeenCalledWith({ where: args.where });
+    });
   });
 
   describe('create', () => {
