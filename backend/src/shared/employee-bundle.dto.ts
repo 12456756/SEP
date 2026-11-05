@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { CnyAmountSchema } from './index';
+import { CnyAmountSchema } from './cny-amount';
 
 export const MAX_BUNDLE_COVER_SIZE = 5 * 1024 * 1024;
 

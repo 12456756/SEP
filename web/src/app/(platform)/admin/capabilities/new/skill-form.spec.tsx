@@ -8,6 +8,14 @@ const { push, success, error } = vi.hoisted(() => ({ push: vi.fn(), success: vi.
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push }) }));
 vi.mock('@/components/ui/toast', () => ({ toast: { success, error } }));
 const metadata = { zipPath: 'skills/abc.zip', sha256: 'a'.repeat(64), fileCount: 4, totalSize: 8192, filename: '测试.ZIP', content: '---\nname: complete\n---\n# 完整 SKILL.md 正文' };
+const clientRelease = {
+  version: '0.4.2',
+  artifacts: [
+    { platform: 'macos-arm64', label: 'macOS · Apple 芯片', fileName: 'SEP-Client-0.4.2-mac-arm64.dmg', url: 'https://sep.longdaoec.com/sep-client/stable/0.4.2/SEP-Client-0.4.2-mac-arm64.dmg', architecture: 'ARM64', minimumOsVersion: 'macOS 12 或更高版本' },
+    { platform: 'macos-x64', label: 'macOS · Intel 芯片', fileName: 'SEP-Client-0.4.2-mac-x64.dmg', url: 'https://sep.longdaoec.com/sep-client/stable/0.4.2/SEP-Client-0.4.2-mac-x64.dmg', architecture: 'x64', minimumOsVersion: 'macOS 12 或更高版本' },
+    { platform: 'windows-x64', label: 'Windows · 64 位', fileName: 'SEP-Client-0.4.2-win-x64.exe', url: 'https://sep.longdaoec.com/sep-client/stable/0.4.2/SEP-Client-0.4.2-win-x64.exe', architecture: 'x64', minimumOsVersion: 'Windows 10 64 位或更高版本' },
+  ],
+};
 const fetchMock = vi.fn();
 let skillImportEnabled = false;
 function response(body: unknown, status = 200) { return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } }); }
@@ -16,7 +24,8 @@ function mount(source: 'zip' | 'client' = 'zip') {
   if (source === 'zip') fireEvent.mouseDown(screen.getByRole('tab', { name: 'ZIP 上传' }), { button: 0, ctrlKey: false });
 }
 async function upload() {
-  fireEvent.change(screen.getByLabelText('Zip 文件（必须包含 SKILL.md）'), { target: { files: [new File(['zip'], metadata.filename, { type: 'application/zip' })] } });
+  fireEvent.mouseDown(screen.getByRole('tab', { name: 'ZIP 上传' }), { button: 0, ctrlKey: false });
+  fireEvent.change(screen.getByLabelText('技能压缩包（必须包含 SKILL.md）'), { target: { files: [new File(['zip'], metadata.filename, { type: 'application/zip' })] } });
   await screen.findByText(`文件: ${metadata.filename}`);
 }
 function fill() {
@@ -26,6 +35,8 @@ function fill() {
 beforeEach(() => {
   vi.clearAllMocks(); skillImportEnabled = false; vi.stubGlobal('fetch', (path: string, options?: RequestInit) => path === '/api/skill-import/config'
     ? Promise.resolve(response({ enabled: skillImportEnabled, instanceId: 'test', protocolVersion: 1, minClientVersion: '1.0.0' }))
+    : path === 'https://sep.longdaoec.com/sep-client/stable/client-release.json'
+      ? Promise.resolve(response(clientRelease))
     : fetchMock(path, options));
   useAuthStore.getState().setAuth({ token: 'ops-memory-token', user: { id: 'ops', name: '运营', email: 'ops@example.com', avatar: null, role: 'ADMIN' }, enterprise: null, roleInEnterprise: null });
   fetchMock.mockImplementation(async (path: string) => response(path.endsWith('upload-skill') ? metadata : { id: 'created-cap' }));
@@ -174,7 +185,8 @@ describe('ops SKILL 首次创建认证契约', () => {
   });
   it('不按文件名后缀拦截上传，由后端识别文件内容', async () => {
     mount();
-    fireEvent.change(screen.getByLabelText('Zip 文件（必须包含 SKILL.md）'), {
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'ZIP 上传' }), { button: 0, ctrlKey: false });
+    fireEvent.change(screen.getByLabelText('技能压缩包（必须包含 SKILL.md）'), {
       target: { files: [new File(['zip'], 'skill-package.bin', { type: 'application/zip' })] },
     });
     await screen.findByText(`文件: ${metadata.filename}`);
@@ -183,7 +195,8 @@ describe('ops SKILL 首次创建认证契约', () => {
   it('上传 403 时不能创建，没有无认证备用请求', async () => {
     fetchMock.mockResolvedValue(response({ message: '仅平台管理员可上传' }, 403));
     mount(); fill();
-    fireEvent.change(screen.getByLabelText('Zip 文件（必须包含 SKILL.md）'), { target: { files: [new File(['zip'], 'skill.zip')] } });
+    fireEvent.mouseDown(screen.getByRole('tab', { name: 'ZIP 上传' }), { button: 0, ctrlKey: false });
+    fireEvent.change(screen.getByLabelText('技能压缩包（必须包含 SKILL.md）'), { target: { files: [new File(['zip'], 'skill.zip')] } });
     expect(await screen.findByText('仅平台管理员可上传')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '创建并进入平台待审' })).toBeDisabled();
     expect(fetchMock).toHaveBeenCalledTimes(1);

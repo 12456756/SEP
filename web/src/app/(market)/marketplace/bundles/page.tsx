@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { ArrowLeft, Package, Sparkles } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronUp, Package, Sparkles } from 'lucide-react';
 import { useState } from 'react';
 import { Avatar } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -25,6 +25,7 @@ export default function MarketplaceBundlesPage() {
   const createPayment = useCreateAlipayPayment();
   const payWithBalance = usePayOrderWithBalance();
   const [selectedBundle, setSelectedBundle] = useState<EmployeeBundle | null>(null);
+  const [expandedBundles, setExpandedBundles] = useState<Set<string>>(() => new Set());
   const [paymentMethod, setPaymentMethod] = useState<'balance' | 'alipay'>('balance');
   const [pendingOrderId, setPendingOrderId] = useState<string | null>(null);
   const [processing, setProcessing] = useState(false);
@@ -87,7 +88,20 @@ export default function MarketplaceBundlesPage() {
               <CardContent className="flex flex-1 flex-col gap-4 pt-0">
                 {bundle.description && <p className="line-clamp-2 text-sm text-gtext-secondary">{bundle.description}</p>}
                 <div className="space-y-2 border-y border-glassline py-3 text-sm">
-                  {bundle.items.map((item) => <div key={item.id} className="flex items-center gap-2"><Avatar name={item.employeeName} src={item.employeeAvatar} className="h-7 w-7" /><span className="min-w-0 flex-1 truncate">{item.employeeName}</span><span className="text-gtext-muted">¥{money(item.subtotal)}</span></div>)}
+                  {(expandedBundles.has(bundle.id) ? bundle.items : bundle.items.slice(0, 5)).map((item) => <div key={item.id} className="flex items-center gap-2"><Avatar name={item.employeeName} src={item.employeeAvatar} className="h-7 w-7" /><span className="min-w-0 flex-1 truncate">{item.employeeName}</span><span className="text-gtext-muted">¥{money(item.subtotal)}</span></div>)}
+                  {bundle.items.length > 5 && <button
+                    type="button"
+                    aria-expanded={expandedBundles.has(bundle.id)}
+                    onClick={() => setExpandedBundles((current) => {
+                      const next = new Set(current);
+                      if (next.has(bundle.id)) next.delete(bundle.id);
+                      else next.add(bundle.id);
+                      return next;
+                    })}
+                    className="inline-flex items-center gap-1 pt-1 text-xs font-medium text-gbrand-text hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gbrand/50"
+                  >
+                    {expandedBundles.has(bundle.id) ? <><ChevronUp className="h-3.5 w-3.5" />收起员工列表</> : <><ChevronDown className="h-3.5 w-3.5" />展开剩余 {bundle.items.length - 5} 位员工</>}
+                  </button>}
                 </div>
                 <div className="grid grid-cols-2 gap-3 text-sm"><div><p className="text-gtext-muted">员工原价合计</p><p className="mt-1 line-through">¥{money(bundle.originalAmountCNY)}</p></div><div><p className="text-gtext-muted">赠送算力</p><p className="mt-1 text-success">¥{money(bundle.totalComputeCNY)}</p></div></div>
                 <div className="mt-auto flex items-end justify-between gap-3"><div><p className="text-xs text-gtext-muted">套餐价</p><p className="text-2xl font-semibold text-gbrand-text">¥{money(bundle.priceCNY)}</p>{Number(bundle.discountCNY) > 0 && <p className="text-xs text-success">立省 ¥{money(bundle.discountCNY)}</p>}</div><Button onClick={() => { setSelectedBundle(bundle); setPaymentMethod('balance'); setPendingOrderId(null); }} disabled={processing}>{processing ? '处理中…' : '购买套餐'}</Button></div>

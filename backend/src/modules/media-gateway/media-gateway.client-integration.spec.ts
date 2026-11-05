@@ -69,7 +69,7 @@ class EmployeeFixture {
       blocked: version('integration-skill-blocked', '3.0.0', ''),
     };
     const current = () => this.versions[this.state === 'revoked' ? 'v2' : this.state];
-    const capability = { id: this.capabilityId, name: 'Approved image skill', description: 'Static media fixture', type: 'SKILL' };
+    const capability = { id: this.capabilityId, name: 'Approved image skill', description: 'Static media fixture', type: 'SKILL', status: 'APPROVED' };
     const subscription = () => ({ id: subscriptionId, enterpriseId, employeeId: this.employeeId, status: 'ACTIVE',
       endDate: null, name: 'Fixture employee', templateVersion: '1.0.0', config: null,
       employee: { id: this.employeeId, name: 'Fixture employee', description: 'Synthetic subscription; no real login',
@@ -77,6 +77,7 @@ class EmployeeFixture {
         modelId: 'mock-no-model', maxSteps: 8, version: '1.0.0',
         bindings: [{ capabilityId: this.capabilityId, capability, defaultSkillVersion: current() }] } });
     this.prisma = {
+      capability: { findUnique: async () => capability },
       subscription: {
         findFirst: async ({ where, select }: Prisma.SubscriptionFindFirstArgs) => {
           // Verify that the real services ask for active, scoped grants before exposing runtime/bytes.

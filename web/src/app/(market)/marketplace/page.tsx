@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { Search, Users, SlidersHorizontal } from "lucide-react";
+import { Search, Users, Package, SlidersHorizontal } from "lucide-react";
 import { toast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import { ApiError } from "@/lib/api-client";
@@ -330,15 +330,15 @@ export default function MarketplacePage() {
             )}
           />
         </div>
-        <Link href="/marketplace/bundles" className="inline-flex items-center gap-2 rounded-glass-md border border-glassline bg-glass-2 px-4 py-2 text-sm font-medium text-gtext-primary transition-colors hover:bg-glass-3">
-          <Users className="h-4 w-4" />浏览员工套餐
-        </Link>
       </header>
 
       {/* ── tabs ─────────────────────────────────────────────────────── */}
       <div className="flex flex-wrap items-end justify-between gap-3 border-b border-glassline">
         <CategoryTabs active={activeTab} onChange={handleTab} />
         <div className="mb-2 flex shrink-0 items-center gap-2">
+          <Link href="/marketplace/bundles" className="inline-flex items-center gap-1.5 rounded-glass-md border border-glassline bg-glass-2 px-3 py-1.5 text-[12px] font-medium text-gtext-secondary transition-colors hover:bg-glass-3 hover:text-gtext-primary">
+            <Package className="h-3.5 w-3.5" />员工套餐
+          </Link>
           <label className="sr-only" htmlFor="market-sort">排序</label>
           <select
             id="market-sort"

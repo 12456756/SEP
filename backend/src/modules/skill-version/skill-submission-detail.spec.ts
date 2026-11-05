@@ -50,7 +50,7 @@ function build(role = 'ENTERPRISE_ADMIN') {
         skillVersionSelections: [], grants: [{ id: 'grant-1' }] }]),
     },
     subscriptionSkillVersion: { findUnique: jest.fn().mockResolvedValue(null) },
-    capability: { findUnique: jest.fn().mockResolvedValue({ id: 'cap-1', name: 'Skill', description: '' }) },
+    capability: { findUnique: jest.fn().mockResolvedValue({ id: 'cap-1', name: 'Skill', description: '', status: 'APPROVED' }) },
     skillVersionAdoption: { findMany: jest.fn().mockResolvedValue([]) },
   };
   const defaults = { get: jest.fn().mockResolvedValue(null) };
