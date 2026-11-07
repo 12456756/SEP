@@ -2,10 +2,11 @@
 # base images are preserved in /www/sep/backups/bootstrap-20261103.
 ARG SEP_WEB_BASE_IMAGE=sep-green-web:42fc2644a38b
 ARG SEP_BACKEND_MODULES_IMAGE=sep-migrator:42fc2644a38b
+FROM ${SEP_BACKEND_MODULES_IMAGE} AS backend-modules
 FROM ${SEP_WEB_BASE_IMAGE} AS builder
 USER root
 WORKDIR /app
-COPY --from=${SEP_BACKEND_MODULES_IMAGE} /app/backend/node_modules /app/backend/node_modules
+COPY --from=backend-modules /app/backend/node_modules /app/backend/node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV API_ORIGIN=http://sep-green-backend:3001
