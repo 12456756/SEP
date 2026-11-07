@@ -77,4 +77,7 @@ for (const [file, services] of [
     assert.ok(backend.volumes.includes(privateRoot + ':/app/private/knowledge'));
   }
 }
+const standalone = yaml.load(fs.readFileSync(path.join(root, 'deploy/standalone/compose.yaml'), 'utf8'));
+assert.equal(standalone.networks.sep.name, 'sep-migration-net');
+assert.equal(standalone.networks.sep.external, true);
 console.log('sep-compose tests passed (gateway policy and pinned private Ollama/tokenizer configuration, production/dev/all colors)');
