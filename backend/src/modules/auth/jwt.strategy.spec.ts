@@ -18,7 +18,7 @@ describe('JwtStrategy', () => {
 
     await expect(strategy.validate({ sub: 'user-1', type: 'access', sid: 'session-1' }))
       .resolves.toEqual({ id: 'user-1', sid: 'session-1' });
-    expect(authService.validateUser).toHaveBeenCalledWith('user-1');
+    expect(authService.validateUser).toHaveBeenCalledWith('user-1', 'session-1');
   });
 
   it('rejects refresh token payloads and payloads without sub', async () => {
@@ -30,6 +30,7 @@ describe('JwtStrategy', () => {
 
     await expect(strategy.validate({ sub: 'user-1', type: 'refresh' })).resolves.toBeNull();
     await expect(strategy.validate({ type: 'access' })).resolves.toBeNull();
+    await expect(strategy.validate({ sub: 'user-1', type: 'access' })).resolves.toBeNull();
     expect(authService.validateUser).not.toHaveBeenCalled();
   });
 });

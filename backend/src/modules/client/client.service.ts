@@ -215,6 +215,7 @@ export class ClientService {
       await this.risk?.recordPasswordFailure(user.id, passwordHash, auditContext);
       throw new UnauthorizedException('邮箱或密码错误');
     }
+    await this.sessions.assertUserEnterpriseActive(user.id, user.role);
     await this.risk?.recordPasswordSuccess(user.id);
 
     // 2. 注册/更新设备
@@ -622,6 +623,7 @@ export class ClientService {
     if (!subscription) {
       throw new NotFoundException(`Subscription ${dto.subscriptionId} not found`);
     }
+    await this.sessions.assertEnterpriseActive(subscription.enterpriseId);
     if (
       subscription.status !== 'ACTIVE' ||
       (subscription.endDate !== null && subscription.endDate <= new Date())

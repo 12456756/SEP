@@ -33,6 +33,7 @@ describe('Client employment and access token refresh', () => {
       rotateRefreshToken: jest.fn().mockResolvedValue({
         sessionId: 'session-1', userId: 'user-1', refreshToken: 'next-refresh',
       }),
+      assertEnterpriseActive: jest.fn().mockResolvedValue(undefined),
       getRefreshTtlSeconds: jest.fn().mockReturnValue(3600),
       revokeSession: jest.fn(),
     };

@@ -5,7 +5,7 @@ import {
   OnGatewayConnection,
   OnGatewayDisconnect,
 } from '@nestjs/websockets';
-import { Logger } from '@nestjs/common';
+import { Logger, UnauthorizedException } from '@nestjs/common';
 import { RawData, Server, WebSocket } from 'ws';
 import { JwtService } from '@nestjs/jwt';
 import { forwardRef, Inject } from '@nestjs/common';
@@ -15,6 +15,7 @@ import { AuthService } from '../auth/auth.service';
 
 interface AuthenticatedWebSocket extends WebSocket {
   userId?: string;
+  sessionId?: string;
   authTimer?: NodeJS.Timeout;
   authenticating?: boolean;
   closed?: boolean;
@@ -22,6 +23,7 @@ interface AuthenticatedWebSocket extends WebSocket {
 
 interface NotificationWebSocketJwtPayload {
   sub?: string;
+  sid?: string;
   type?: string;
 }
 
@@ -92,7 +94,7 @@ export class NotificationsGateway
     const message = input as { type?: unknown; token?: unknown };
 
     if (client.userId) {
-      if (message.type === 'ping') this.handlePing(client);
+      if (message.type === 'ping') await this.handlePing(client);
       return;
     }
 
@@ -112,14 +114,15 @@ export class NotificationsGateway
       return;
     }
 
-    if (payload?.type !== 'access' || typeof payload.sub !== 'string' || !payload.sub.trim()) {
+    if (payload?.type !== 'access' || typeof payload.sub !== 'string' || !payload.sub.trim() ||
+        typeof payload.sid !== 'string' || !payload.sid.trim()) {
       this.closeClient(client, 1008, 'Invalid token');
       return;
     }
 
     client.authenticating = true;
     try {
-      const user = await this.authService.validateUser(payload.sub);
+      const user = await this.authService.validateUser(payload.sub, payload.sid);
       if (client.closed || client.readyState !== WebSocket.OPEN) return;
       if (!user) {
         this.closeClient(client, 1008, 'Invalid token');
@@ -130,6 +133,7 @@ export class NotificationsGateway
       if (client.closed || client.readyState !== WebSocket.OPEN) return;
       this.clearAuthTimer(client);
       client.userId = user.id;
+      client.sessionId = payload.sid;
       const clients = this.clients.get(user.id) ?? new Set<AuthenticatedWebSocket>();
       clients.add(client);
       this.clients.set(user.id, clients);
@@ -137,7 +141,8 @@ export class NotificationsGateway
     } catch (error) {
       if (client.closed || client.readyState !== WebSocket.OPEN) return;
       this.logger.error('Notification WebSocket authentication initialization failed:', error);
-      this.closeClient(client, 1011, 'Internal error');
+      this.closeClient(client, error instanceof UnauthorizedException ? 1008 : 1011,
+        error instanceof UnauthorizedException ? 'Invalid token' : 'Internal error');
     } finally {
       client.authenticating = false;
     }
@@ -158,12 +163,25 @@ export class NotificationsGateway
       this.logger.log(`Client disconnected: userId=${userId}`);
     }
     client.userId = undefined;
+    client.sessionId = undefined;
   }
 
   /**
    * 心跳 ping - 前端每 30s 发送一次
    */
-  handlePing(client: AuthenticatedWebSocket) {
+  async handlePing(client: AuthenticatedWebSocket) {
+    if (!client.userId || !client.sessionId) return;
+    try {
+      const user = await this.authService.validateUser(client.userId, client.sessionId);
+      if (!user) {
+        this.closeClient(client, 1008, 'Session expired');
+        return;
+      }
+    } catch (error) {
+      this.closeClient(client, error instanceof UnauthorizedException ? 1008 : 1011,
+        error instanceof UnauthorizedException ? 'Session expired' : 'Internal error');
+      return;
+    }
     this.sendToClient(client, { type: 'pong', timestamp: Date.now() });
   }
 
@@ -177,17 +195,11 @@ export class NotificationsGateway
       return;
     }
 
-    const message = {
+    await this.sendToActiveClients(userId, {
       type: 'notification',
       data: notification,
       timestamp: Date.now(),
-    };
-
-    userClients.forEach((client) => {
-      this.sendToClient(client, message);
     });
-
-    this.logger.debug(`Pushed notification to ${userClients.size} client(s) for userId=${userId}`);
   }
 
   /**
@@ -197,15 +209,33 @@ export class NotificationsGateway
     const userClients = this.clients.get(userId);
     if (!userClients || userClients.size === 0) return;
 
-    const message = {
+    await this.sendToActiveClients(userId, {
       type: 'unread_count',
       data: { count },
       timestamp: Date.now(),
-    };
-
-    userClients.forEach((client) => {
-      this.sendToClient(client, message);
     });
+  }
+
+  private async sendToActiveClients(userId: string, message: any): Promise<void> {
+    const userClients = this.clients.get(userId);
+    if (!userClients) return;
+    await Promise.all([...userClients].map(async (client) => {
+      if (!client.sessionId) {
+        this.closeClient(client, 1008, 'Session expired');
+        return;
+      }
+      try {
+        const user = await this.authService.validateUser(userId, client.sessionId);
+        if (!user) {
+          this.closeClient(client, 1008, 'Session expired');
+          return;
+        }
+        this.sendToClient(client, message);
+      } catch (error) {
+        this.closeClient(client, error instanceof UnauthorizedException ? 1008 : 1011,
+          error instanceof UnauthorizedException ? 'Session expired' : 'Internal error');
+      }
+    }));
   }
 
   private sendToClient(client: AuthenticatedWebSocket, message: any) {

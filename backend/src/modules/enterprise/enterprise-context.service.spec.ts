@@ -4,7 +4,7 @@
  * 这是多租户隔离的**唯一可信来源** —— enterpriseId 只能由服务端从 userId
  * 反查得出。若此处失守，所有下游的企业过滤都建立在错误的前提上。
  */
-import { ForbiddenException } from '@nestjs/common';
+import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { EnterpriseContextService } from './enterprise-context.service';
 
 type MockPrisma = {
@@ -58,6 +58,17 @@ describe('EnterpriseContextService', () => {
       expect(arg.where).toEqual({ userId: 'user-1', enterprise: { status: 'ACTIVE' } });
     });
 
+    it('冻结企业成员不能解析企业业务上下文', async () => {
+      prisma.enterpriseMember.findFirst.mockResolvedValue({
+        id: 'mem-1', enterpriseId: 'ent-acme', role: 'MEMBER', departmentId: null,
+        enterprise: { metadata: { suspended: true } },
+      });
+
+      await expect(svc.resolve('user-1')).rejects.toMatchObject({
+        response: expect.objectContaining({ code: 'ENTERPRISE_SUSPENDED' }),
+      });
+    });
+
     it('用户不属于任何企业时抛 Forbidden，而非返回空上下文', async () => {
       prisma.enterpriseMember.findFirst.mockResolvedValue(null);
 
@@ -108,6 +119,14 @@ describe('EnterpriseContextService', () => {
       });
       const ctx = await svc.resolveOrNull('user-1');
       expect(ctx?.enterpriseId).toBe('ent-acme');
+    });
+
+    it('不吞掉企业冻结拒绝', async () => {
+      prisma.enterpriseMember.findFirst.mockResolvedValue({
+        id: 'mem-1', enterpriseId: 'ent-acme', role: 'MEMBER', departmentId: null,
+        enterprise: { metadata: { suspended: true } },
+      });
+      await expect(svc.resolveOrNull('user-1')).rejects.toBeInstanceOf(UnauthorizedException);
     });
   });
 

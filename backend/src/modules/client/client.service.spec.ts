@@ -58,6 +58,8 @@ describe('ClientService', () => {
     videoConfig = { getRuntimeVideo: jest.fn().mockResolvedValue({ protocolVersion: 1, executionAvailable: false, tools: [], profiles: [], defaultProfileId: null }), getRuntimeVideoV2: jest.fn().mockResolvedValue({ protocolVersion: 2, executionAvailable: false, tools: [], profiles: [], defaultProfileId: null }), getRuntimeVideoV3: jest.fn().mockResolvedValue({ protocolVersion: 3, executionMode: 'disabled', executionAvailable: false, tools: [], profiles: [], defaultProfileId: null }) };
     skillArtifacts = { describe: jest.fn().mockResolvedValue(artifactFixtures[0].artifact) };
     sessions = {
+      assertUserEnterpriseActive: jest.fn().mockResolvedValue(undefined),
+      assertEnterpriseActive: jest.fn().mockResolvedValue(undefined),
       validateRefreshToken: jest.fn().mockResolvedValue({
         sessionId: 'session-1', userId: 'user-1', deviceId: 'device-1',
       }),

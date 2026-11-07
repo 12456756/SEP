@@ -4,8 +4,10 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuthEventService } from './auth-event.service';
+import { assertEnterpriseNotSuspended } from '../enterprise/enterprise-context.service';
 import { createHash, randomBytes } from 'node:crypto';
 
 export type AuthClientType = 'WEB' | 'DESKTOP';
@@ -78,6 +80,39 @@ export class SessionService {
     return clientType;
   }
 
+  async assertUserEnterpriseActive(userId: string, role?: string | null): Promise<void> {
+    if (role === 'ADMIN' || role === 'PLATFORM_ADMIN' || role === 'SUPER_ADMIN') return;
+    const membership = await this.prisma.enterpriseMember.findFirst({
+      where: { userId }, orderBy: { createdAt: 'asc' },
+      select: { enterprise: { select: { metadata: true } } },
+    }).catch(() => {
+      throw new ServiceUnavailableException('Enterprise access service unavailable');
+    });
+    if (membership) assertEnterpriseNotSuspended(membership.enterprise.metadata);
+  }
+
+  async assertEnterpriseActive(enterpriseId: string): Promise<void> {
+    const enterprise = await this.prisma.enterprise.findUnique({
+      where: { id: enterpriseId }, select: { metadata: true },
+    }).catch(() => {
+      throw new ServiceUnavailableException('Enterprise access service unavailable');
+    });
+    if (!enterprise) throw new UnauthorizedException('Enterprise is unavailable');
+    assertEnterpriseNotSuspended(enterprise.metadata);
+  }
+
+  async assertActiveAccessSession(sessionId: string, userId: string): Promise<void> {
+    const session = await this.prisma.authSession.findUnique({
+      where: { id: sessionId }, select: { type: true },
+    }).catch(() => {
+      throw new ServiceUnavailableException('Authentication session service unavailable');
+    });
+    if (!session || (session.type !== 'WEB' && session.type !== 'DESKTOP')) {
+      throw new UnauthorizedException('Invalid or expired authentication session');
+    }
+    await this.assertActiveSession(sessionId, userId, session.type);
+  }
+
   async assertActiveSession(
     sessionId: string,
     userId: string,
@@ -87,7 +122,8 @@ export class SessionService {
       where: { id: sessionId },
       select: {
         userId: true, type: true, revokedAt: true, expiresAt: true, deviceId: true,
-        user: { select: { status: true } },
+        user: { select: { status: true, role: true, memberships: { orderBy: { createdAt: 'asc' }, take: 1,
+          select: { enterprise: { select: { metadata: true } } } } } },
         device: { select: { userId: true, revokedAt: true } },
       },
     }).catch(() => {
@@ -98,6 +134,9 @@ export class SessionService {
         (clientType === 'DESKTOP' && (!session.deviceId || !session.device ||
           session.device.revokedAt || session.device.userId !== userId))) {
       throw new UnauthorizedException('Invalid or expired authentication session');
+    }
+    if (session.user.role !== 'ADMIN') {
+      assertEnterpriseNotSuspended(session.user.memberships[0]?.enterprise.metadata);
     }
   }
 
@@ -128,9 +167,21 @@ export class SessionService {
     }
 
     const session = await this.prisma.$transaction(async (tx) => {
-      const rows = await tx.$queryRaw<Array<{ id: string; status: string }>>`SELECT id, status FROM users WHERE id = ${input.userId} FOR UPDATE`;
+      const rows = await tx.$queryRaw<Array<{ id: string; status: string; role: string }>>`SELECT id, status, role FROM users WHERE id = ${input.userId} FOR UPDATE`;
       if (!rows[0] || rows[0].status !== 'ACTIVE') {
         throw new UnauthorizedException('Account is not active');
+      }
+      if (rows[0].role !== 'ADMIN') {
+        const memberships = await tx.$queryRaw<Array<{ enterpriseId: string; metadata: unknown }>>`
+          SELECT e.id AS "enterpriseId", e.metadata
+          FROM enterprise_members em
+          JOIN enterprises e ON e.id = em."enterpriseId"
+          WHERE em."userId" = ${input.userId}
+          ORDER BY em."createdAt" ASC
+          LIMIT 1
+          FOR SHARE OF e
+        `;
+        assertEnterpriseNotSuspended(memberships[0]?.metadata);
       }
       const session = await tx.authSession.create({
         data: {
@@ -376,6 +427,24 @@ export class SessionService {
         data: { revokedAt, revokeReason: reason },
       }),
     ]);
+  }
+
+  async revokeEnterpriseSessionsInTx(
+    tx: Prisma.TransactionClient,
+    enterpriseId: string,
+    reason = 'enterprise_suspended',
+  ): Promise<number> {
+    const revokedAt = new Date();
+    const membership = { user: { memberships: { some: { enterpriseId } } } };
+    const sessions = await tx.authSession.updateMany({
+      where: { ...membership, revokedAt: null },
+      data: { revokedAt, revokeReason: reason },
+    });
+    await tx.authToken.updateMany({
+      where: { session: membership, revokedAt: null },
+      data: { revokedAt, revokeReason: reason },
+    });
+    return sessions.count;
   }
 
   async revokeAllUserSessionsExcept(

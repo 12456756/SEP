@@ -1,6 +1,20 @@
-import { ForbiddenException, Injectable, Logger } from "@nestjs/common";
+import { ForbiddenException, Injectable, Logger, ServiceUnavailableException, UnauthorizedException } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
 import { EnterpriseRole } from "@prisma/client";
+
+export const ENTERPRISE_SUSPENDED_CODE = "ENTERPRISE_SUSPENDED";
+export const ENTERPRISE_SUSPENDED_MESSAGE = "所属企业已被冻结，暂无法使用平台服务，请联系平台管理员";
+
+export function assertEnterpriseNotSuspended(metadata: unknown): void {
+  if (metadata && typeof metadata === "object" && !Array.isArray(metadata) &&
+      (metadata as Record<string, unknown>).suspended === true) {
+    throw new UnauthorizedException({
+      statusCode: 401,
+      code: ENTERPRISE_SUSPENDED_CODE,
+      message: ENTERPRISE_SUSPENDED_MESSAGE,
+    });
+  }
+}
 
 /**
  * 请求级企业上下文。
@@ -36,20 +50,28 @@ export class EnterpriseContextService {
    * @throws ForbiddenException 用户不属于任何企业
    */
   async resolve(userId: string): Promise<EnterpriseContext> {
-    const member = await this.prisma.enterpriseMember.findFirst({
-      where: { userId, enterprise: { status: "ACTIVE" } },
-      orderBy: { createdAt: "asc" },
-      select: {
-        id: true,
-        enterpriseId: true,
-        role: true,
-        departmentId: true,
-      },
-    });
+    let member;
+    try {
+      member = await this.prisma.enterpriseMember.findFirst({
+        where: { userId, enterprise: { status: "ACTIVE" } },
+        orderBy: { createdAt: "asc" },
+        select: {
+          id: true,
+          enterpriseId: true,
+          role: true,
+          departmentId: true,
+          enterprise: { select: { metadata: true } },
+        },
+      });
+    } catch {
+      throw new ServiceUnavailableException("企业访问状态暂不可用");
+    }
 
     if (!member) {
       throw new ForbiddenException("当前用户不属于任何企业，无法访问企业资源");
     }
+
+    assertEnterpriseNotSuspended(member.enterprise?.metadata);
 
     return {
       enterpriseId: member.enterpriseId,
@@ -66,8 +88,9 @@ export class EnterpriseContextService {
   async resolveOrNull(userId: string): Promise<EnterpriseContext | null> {
     try {
       return await this.resolve(userId);
-    } catch {
-      return null;
+    } catch (error) {
+      if (error instanceof ForbiddenException) return null;
+      throw error;
     }
   }
 

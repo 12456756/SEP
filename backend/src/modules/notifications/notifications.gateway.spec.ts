@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { WebSocket } from 'ws';
+import { UnauthorizedException } from '@nestjs/common';
 import { NotificationsGateway } from './notifications.gateway';
 
 function createClient() {
@@ -32,7 +33,7 @@ async function flushMessageHandler() {
 describe('NotificationsGateway', () => {
   it('只在认证时读取一次未读数，事件推送不会轮询数据库', async () => {
     const jwtService = {
-      verify: jest.fn().mockReturnValue({ sub: 'user-1', type: 'access' }),
+      verify: jest.fn().mockReturnValue({ sub: 'user-1', sid: 'session-1', type: 'access' }),
     };
     const notificationsService = { countUnread: jest.fn().mockResolvedValue(3) };
     const gateway = new NotificationsGateway(
@@ -66,6 +67,30 @@ describe('NotificationsGateway', () => {
     expect(client.send).toHaveBeenCalledTimes(4);
 
     gateway.handleDisconnect(client);
+  });
+
+  it('冻结后推送前重新验证 session 并关闭通知连接', async () => {
+    const authService = {
+      validateUser: jest.fn()
+        .mockResolvedValueOnce({ id: 'user-1' })
+        .mockRejectedValueOnce(new UnauthorizedException({ code: 'ENTERPRISE_SUSPENDED' })),
+    };
+    const gateway = new NotificationsGateway(
+      { verify: jest.fn().mockReturnValue({ sub: 'user-1', sid: 'session-1', type: 'access' }) } as any,
+      { countUnread: jest.fn().mockResolvedValue(0) } as any,
+      createConfig(),
+      authService as any,
+    );
+    const client = createClient();
+    await gateway.handleConnection(client, { headers: {} });
+    client.emit('message', Buffer.from(JSON.stringify({ type: 'auth', token: 'jwt-token' })));
+    await flushMessageHandler();
+
+    await gateway.pushToUser('user-1', { id: 'must-not-arrive' });
+
+    expect(authService.validateUser).toHaveBeenNthCalledWith(2, 'user-1', 'session-1');
+    expect(client.close).toHaveBeenCalledWith(1008, 'Session expired');
+    expect(client.send).toHaveBeenCalledTimes(1);
   });
 
   it('拒绝 refresh/employment 等非 access token，避免错误令牌订阅通知流', async () => {
@@ -124,7 +149,7 @@ describe('NotificationsGateway', () => {
     expect(notificationsService.countUnread).not.toHaveBeenCalled();
 
     const inactiveGateway = new NotificationsGateway(
-      { verify: jest.fn().mockReturnValue({ sub: 'inactive-user', type: 'access' }) } as any,
+      { verify: jest.fn().mockReturnValue({ sub: 'inactive-user', sid: 'session-1', type: 'access' }) } as any,
       notificationsService as any,
       createConfig(),
       createAuthService(null) as any,
@@ -140,7 +165,7 @@ describe('NotificationsGateway', () => {
 
   it('未读数初始化失败返回内部错误，而不是伪装成无效令牌', async () => {
     const gateway = new NotificationsGateway(
-      { verify: jest.fn().mockReturnValue({ sub: 'user-1', type: 'access' }) } as any,
+      { verify: jest.fn().mockReturnValue({ sub: 'user-1', sid: 'session-1', type: 'access' }) } as any,
       { countUnread: jest.fn().mockRejectedValue(new Error('database unavailable')) } as any,
       createConfig(),
       createAuthService(),
@@ -158,7 +183,7 @@ describe('NotificationsGateway', () => {
     let resolveCount!: (count: number) => void;
     const count = new Promise<number>((resolve) => { resolveCount = resolve; });
     const gateway = new NotificationsGateway(
-      { verify: jest.fn().mockReturnValue({ sub: 'user-1', type: 'access' }) } as any,
+      { verify: jest.fn().mockReturnValue({ sub: 'user-1', sid: 'session-1', type: 'access' }) } as any,
       { countUnread: jest.fn().mockReturnValue(count) } as any,
       createConfig(),
       createAuthService(),
@@ -198,7 +223,7 @@ describe('NotificationsGateway', () => {
 
   it('单个连接发送异常不阻止同用户其他连接收到推送', async () => {
     const gateway = new NotificationsGateway(
-      { verify: jest.fn().mockReturnValue({ sub: 'user-1', type: 'access' }) } as any,
+      { verify: jest.fn().mockReturnValue({ sub: 'user-1', sid: 'session-1', type: 'access' }) } as any,
       { countUnread: jest.fn().mockResolvedValue(0) } as any,
       createConfig(),
       createAuthService(),

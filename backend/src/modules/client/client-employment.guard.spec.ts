@@ -30,7 +30,7 @@ const admission = {
 describe('ClientEmploymentGuard', () => {
   let guard: ClientEmploymentGuard;
   let jwt: JwtService;
-  let sessions: { assertActiveSession: jest.Mock };
+  let sessions: { assertActiveSession: jest.Mock; assertEnterpriseActive: jest.Mock };
   let limiter: { consumeFailure: jest.Mock };
   const fixture = (authorization?: unknown) => {
     const req = {
@@ -47,7 +47,10 @@ describe('ClientEmploymentGuard', () => {
   beforeEach(() => {
     jwt = new JwtService({ secret });
     jest.spyOn(jwt, 'verify');
-    sessions = { assertActiveSession: jest.fn().mockResolvedValue(undefined) };
+    sessions = {
+      assertActiveSession: jest.fn().mockResolvedValue(undefined),
+      assertEnterpriseActive: jest.fn().mockResolvedValue(undefined),
+    };
     limiter = { consumeFailure: jest.fn().mockResolvedValue(admission) };
     guard = new ClientEmploymentGuard(jwt, config, sessions as unknown as SessionService, limiter as unknown as GatewayAuthRateLimitService);
   });
@@ -58,6 +61,7 @@ describe('ClientEmploymentGuard', () => {
     await expect(guard.canActivate(context)).resolves.toBe(true);
     expect(jwt.verify).toHaveBeenCalledWith(credential, { secret, algorithms: ['HS256'] });
     expect(sessions.assertActiveSession).toHaveBeenCalledWith('session-1', 'user-1', 'DESKTOP');
+    expect(sessions.assertEnterpriseActive).toHaveBeenCalledWith('enterprise-1');
     expect(req.clientEmployment).toMatchObject(identity);
     expect(limiter.consumeFailure).not.toHaveBeenCalled();
   });
@@ -173,7 +177,10 @@ describe('Employment authentication with production CSRF over HTTP', () => {
     process.env.NODE_ENV = 'production';
     process.env.CORS_ORIGIN = 'https://app.example.com';
     evalMock = jest.fn();
-    const prisma = { authSession: { findUnique: jest.fn(async () => session) } };
+    const prisma = {
+      authSession: { findUnique: jest.fn(async () => session) },
+      enterprise: { findUnique: jest.fn(async () => ({ metadata: {} })) },
+    };
     const module = await Test.createTestingModule({
       controllers: [EmploymentHttpController],
       providers: [
@@ -192,7 +199,7 @@ describe('Employment authentication with production CSRF over HTTP', () => {
   beforeEach(() => {
     session = {
       userId: 'user-1', type: 'DESKTOP', revokedAt: null, expiresAt: new Date(Date.now() + 60_000),
-      user: { status: 'ACTIVE' }, deviceId: 'device-1', device: { userId: 'user-1', revokedAt: null },
+      user: { status: 'ACTIVE', role: 'USER', memberships: [] }, deviceId: 'device-1', device: { userId: 'user-1', revokedAt: null },
     };
     evalMock.mockReset().mockResolvedValue([1, 1, 120, 1, 60_000, Date.now() + 60_000]);
   });

@@ -12,12 +12,14 @@ describe('SessionService', () => {
   const activeSession = (changes = {}) => ({
     userId: 'user-1', type: 'WEB', revokedAt: null,
     expiresAt: new Date(Date.now() + 60_000), deviceId: null,
-    user: { status: 'ACTIVE' }, device: null, ...changes,
+    user: { status: 'ACTIVE', role: 'USER', memberships: [] }, device: null, ...changes,
   });
 
   beforeEach(() => {
     prisma = {
       $queryRaw: jest.fn().mockResolvedValue([{ id: 'user-1', status: 'ACTIVE' }]),
+      enterpriseMember: { findFirst: jest.fn().mockResolvedValue(null) },
+      enterprise: { findUnique: jest.fn().mockResolvedValue({ metadata: {} }) },
       authSession: {
         create: jest.fn().mockResolvedValue({ id: 'session-1' }),
         update: jest.fn(),
@@ -60,6 +62,17 @@ describe('SessionService', () => {
       .rejects.toBeInstanceOf(UnauthorizedException);
     expect(prisma.authSession.create).not.toHaveBeenCalled();
     expect(prisma.authToken.create).not.toHaveBeenCalled();
+  });
+
+  it('serializes session creation with enterprise freeze and rejects a frozen member', async () => {
+    prisma.$queryRaw
+      .mockResolvedValueOnce([{ id: 'user-1', status: 'ACTIVE', role: 'USER' }])
+      .mockResolvedValueOnce([{ enterpriseId: 'enterprise-1', metadata: { suspended: true } }]);
+
+    await expect(service.createSession({ userId: 'user-1', clientType: 'WEB', refreshTtlSeconds: 3600 }))
+      .rejects.toMatchObject({ response: expect.objectContaining({ code: 'ENTERPRISE_SUSPENDED' }) });
+    expect(prisma.$queryRaw.mock.calls[1][0].join('?')).toContain('FOR SHARE OF e');
+    expect(prisma.authSession.create).not.toHaveBeenCalled();
   });
 
   it('rechecks account status under the user lock after refresh prevalidation', async () => {
@@ -219,8 +232,22 @@ describe('SessionService', () => {
     }));
     await expect(service.assertActiveSession('session-1', 'user-1', 'DESKTOP')).resolves.toBeUndefined();
     expect(prisma.authSession.findUnique).toHaveBeenCalledWith(expect.objectContaining({
-      where: { id: 'session-1' }, select: expect.objectContaining({ user: { select: { status: true } } }),
+      where: { id: 'session-1' },
+      select: expect.objectContaining({
+        user: expect.objectContaining({
+          select: expect.objectContaining({ status: true, role: true, memberships: expect.any(Object) }),
+        }),
+      }),
     }));
+  });
+
+  it('rejects an access session for a suspended enterprise', async () => {
+    prisma.authSession.findUnique.mockResolvedValue(activeSession({
+      user: { status: 'ACTIVE', role: 'USER', memberships: [{ enterprise: { metadata: { suspended: true } } }] },
+    }));
+
+    await expect(service.assertActiveAccessSession('session-1', 'user-1'))
+      .rejects.toMatchObject({ response: expect.objectContaining({ code: 'ENTERPRISE_SUSPENDED' }) });
   });
 
   it.each([

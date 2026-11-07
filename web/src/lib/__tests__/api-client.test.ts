@@ -324,6 +324,22 @@ describe('401 auto-refresh', () => {
     expect(authAccessor.clear).toHaveBeenCalled();
   });
 
+  it('clears auth and preserves the enterprise suspension error without trying refresh', async () => {
+    mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+      statusCode: 401,
+      code: 'ENTERPRISE_SUSPENDED',
+      message: '所属企业已被冻结，暂无法使用平台服务，请联系平台管理员',
+    }), { status: 401, headers: { 'Content-Type': 'application/json' } }));
+
+    await expect(api.get('/protected')).rejects.toMatchObject({
+      status: 401,
+      message: '所属企业已被冻结，暂无法使用平台服务，请联系平台管理员',
+      body: expect.objectContaining({ code: 'ENTERPRISE_SUSPENDED' }),
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(authAccessor.clear).toHaveBeenCalledOnce();
+  });
+
   it('should skip auto-refresh when skipAuthRetry is true', async () => {
     mockFetch.mockResolvedValueOnce({
       ok: false,

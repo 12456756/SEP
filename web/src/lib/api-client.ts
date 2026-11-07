@@ -19,6 +19,14 @@ export class ApiError extends Error {
   }
 }
 
+function enterpriseSuspendedError(status: number, data: unknown): ApiError | null {
+  if (status !== 401 || !data || typeof data !== 'object' ||
+      !('code' in data) || (data as { code?: unknown }).code !== 'ENTERPRISE_SUSPENDED') return null;
+  authAccessor.clear();
+  const message = 'message' in data ? String((data as { message: unknown }).message) : '所属企业已被冻结';
+  return new ApiError(401, message, data);
+}
+
 interface RequestOptions extends Omit<RequestInit, 'body'> {
   body?: unknown;
   /** skip the automatic 401→refresh→retry (used by the refresh call itself) */
@@ -41,6 +49,11 @@ async function rawRequest<T>(path: string, opts: RequestOptions = {}): Promise<T
   });
 
   if (res.status === 401 && !skipAuthRetry) {
+    if (typeof res.clone === 'function') {
+      const responseText = await res.clone().text().catch(() => '');
+      const suspended = enterpriseSuspendedError(401, responseText ? safeJson(responseText) : undefined);
+      if (suspended) throw suspended;
+    }
     // try to silently refresh the access token once, then retry
     const refreshed = await tryRefresh();
     if (refreshed) {
@@ -144,6 +157,8 @@ export async function downloadBlob(
       data && typeof data === 'object' && 'message' in data
         ? String((data as { message: unknown }).message)
         : '下载失败';
+    const suspended = enterpriseSuspendedError(res.status, data);
+    if (suspended) throw suspended;
     throw new ApiError(res.status, message, data, readRetryAfter(res.headers?.get('Retry-After') ?? null));
   }
 
@@ -213,6 +228,11 @@ export async function uploadForm<T>(
   });
 
   if (res.status === 401 && !skipAuthRetry) {
+    if (typeof res.clone === 'function') {
+      const responseText = await res.clone().text().catch(() => '');
+      const suspended = enterpriseSuspendedError(401, responseText ? safeJson(responseText) : undefined);
+      if (suspended) throw suspended;
+    }
     if (await tryRefresh()) return uploadForm<T>(path, form, { headers, skipAuthRetry: true });
     authAccessor.clear();
     throw new ApiError(401, 'Unauthorized');
@@ -227,6 +247,8 @@ export async function uploadForm<T>(
           ? (data as { message: string[] }).message.join('; ')
           : String((data as { message: unknown }).message)
         : '上传失败';
+    const suspended = enterpriseSuspendedError(res.status, data);
+    if (suspended) throw suspended;
     throw new ApiError(res.status, message, data, readRetryAfter(res.headers?.get('Retry-After') ?? null));
   }
   return data as T;

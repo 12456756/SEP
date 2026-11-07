@@ -58,6 +58,7 @@ function getCallbackMessage(
   reason: string | null,
 ): string {
   if (status === 'cancelled') return '你已取消第三方登录。';
+  if (reason === 'enterprise_suspended') return '所属企业已被冻结，暂无法登录平台服务，请联系平台管理员。';
   if (reason === 'account_exists') return '该第三方账号已注册，请返回登录页直接登录。';
   if (reason === 'oauth_not_registered') return '该第三方账号尚未注册，请先完成注册。';
   if (intent === 'INVITATION' && reason === 'invitation_email_mismatch') {

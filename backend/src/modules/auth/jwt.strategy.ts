@@ -20,10 +20,11 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: any) {
-    if (payload?.type !== 'access' || typeof payload.sub !== 'string') {
+    if (payload?.type !== 'access' || typeof payload.sub !== 'string' ||
+        typeof payload.sid !== 'string' || !payload.sid.trim()) {
       return null;
     }
-    const user = await this.authService.validateUser(payload.sub);
+    const user = await this.authService.validateUser(payload.sub, payload.sid);
     return user ? { ...user, sid: payload.sid } : null;
   }
 }

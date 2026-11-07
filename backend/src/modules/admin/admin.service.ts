@@ -10,6 +10,7 @@ import { SettingService } from '../setting/setting.service';
 import { PersonalWalletService, assertActiveRewardRecipientInTx } from '../personal-wallet/personal-wallet.service';
 import { Decimal } from '@prisma/client/runtime/library';
 import { EmployeeReadinessService } from '../digital-employee/employee-readiness.service';
+import { SessionService } from '../auth/session.service';
 
 @Injectable()
 export class AdminService {
@@ -19,6 +20,7 @@ export class AdminService {
     @Optional() private readonly setting?: SettingService,
     @Optional() private readonly personalWallet?: PersonalWalletService,
     @Optional() private readonly readiness?: EmployeeReadinessService,
+    @Optional() private readonly sessions?: SessionService,
   ) {}
 
   private employeeReadiness(): EmployeeReadinessService {
@@ -211,31 +213,32 @@ export class AdminService {
    * 冻结企业
    */
   async suspendEnterprise(enterpriseId: string, reason: string, operatorId: string) {
-    const enterprise = await this.prisma.enterprise.findUnique({
-      where: { id: enterpriseId },
-    });
+    const sessions = this.sessions;
+    if (!sessions) throw new ServiceUnavailableException('认证会话服务暂不可用，无法完成企业冻结');
+    await this.prisma.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM enterprises WHERE id = ${enterpriseId} FOR UPDATE
+      `;
+      if (!locked[0]) throw new NotFoundException('企业不存在');
+      const enterprise = await tx.enterprise.findUnique({ where: { id: enterpriseId } });
+      if (!enterprise) throw new NotFoundException('企业不存在');
 
-    if (!enterprise) {
-      throw new NotFoundException('企业不存在');
-    }
+      const metadata = enterprise.metadata as any;
+      if (metadata?.suspended === true) throw new BadRequestException('企业已被冻结');
 
-    // 检查是否已经被冻结
-    const metadata = enterprise.metadata as any;
-    if (metadata?.suspended === true) {
-      throw new BadRequestException('企业已被冻结');
-    }
-
-    await this.prisma.enterprise.update({
-      where: { id: enterpriseId },
-      data: {
-        metadata: {
-          ...(metadata || {}),
-          suspended: true,
-          suspendReason: reason,
-          suspendedAt: new Date().toISOString(),
-          suspendedBy: operatorId,
+      await tx.enterprise.update({
+        where: { id: enterpriseId },
+        data: {
+          metadata: {
+            ...(metadata || {}),
+            suspended: true,
+            suspendReason: reason,
+            suspendedAt: new Date().toISOString(),
+            suspendedBy: operatorId,
+          },
         },
-      },
+      });
+      await sessions.revokeEnterpriseSessionsInTx(tx, enterpriseId, 'enterprise_suspended');
     });
 
     return { success: true };
@@ -245,30 +248,28 @@ export class AdminService {
    * 解冻企业
    */
   async resumeEnterprise(enterpriseId: string, operatorId: string) {
-    const enterprise = await this.prisma.enterprise.findUnique({
-      where: { id: enterpriseId },
-    });
+    await this.prisma.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM enterprises WHERE id = ${enterpriseId} FOR UPDATE
+      `;
+      if (!locked[0]) throw new NotFoundException('企业不存在');
+      const enterprise = await tx.enterprise.findUnique({ where: { id: enterpriseId } });
+      if (!enterprise) throw new NotFoundException('企业不存在');
 
-    if (!enterprise) {
-      throw new NotFoundException('企业不存在');
-    }
+      const metadata = enterprise.metadata as any;
+      if (metadata?.suspended !== true) throw new BadRequestException('企业未被冻结');
 
-    // 检查是否被冻结
-    const metadata = enterprise.metadata as any;
-    if (metadata?.suspended !== true) {
-      throw new BadRequestException('企业未被冻结');
-    }
-
-    await this.prisma.enterprise.update({
-      where: { id: enterpriseId },
-      data: {
-        metadata: {
-          ...(metadata || {}),
-          suspended: false,
-          resumedAt: new Date().toISOString(),
-          resumedBy: operatorId,
+      await tx.enterprise.update({
+        where: { id: enterpriseId },
+        data: {
+          metadata: {
+            ...(metadata || {}),
+            suspended: false,
+            resumedAt: new Date().toISOString(),
+            resumedBy: operatorId,
+          },
         },
-      },
+      });
     });
 
     return { success: true };

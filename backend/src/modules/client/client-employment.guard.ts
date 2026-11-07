@@ -73,6 +73,7 @@ export class ClientEmploymentGuard implements CanActivate {
 
     try {
       await this.sessions.assertActiveSession(payload.sid, payload.sub, 'DESKTOP');
+      await this.sessions.assertEnterpriseActive(payload.enterpriseId);
     } catch (error) {
       if (!(error instanceof UnauthorizedException)) throw error;
       return this.reject(context, fingerprint);

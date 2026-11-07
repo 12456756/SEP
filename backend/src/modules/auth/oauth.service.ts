@@ -168,6 +168,9 @@ export class OAuthService {
       await this.auth.loginWithUser(userId, res, { ipAddress: input.ipAddress, userAgent: input.userAgent });
       frontend.searchParams.set('status', 'success');
     } catch (error) {
+      const errorResponse = error instanceof UnauthorizedException ? error.getResponse() : undefined;
+      const enterpriseSuspended = errorResponse && typeof errorResponse === 'object' &&
+        'code' in errorResponse && errorResponse.code === 'ENTERPRISE_SUSPENDED';
       await this.events?.record({
         userId: transaction?.userId ?? undefined,
         action: 'OAUTH_CALLBACK_FAILED',
@@ -176,7 +179,9 @@ export class OAuthService {
         ipAddress: input.ipAddress,
         userAgent: input.userAgent,
         metadata: {
-          reason: error instanceof ConflictException
+          reason: enterpriseSuspended
+            ? 'enterprise_suspended'
+            : error instanceof ConflictException
             ? transaction?.intent === 'REGISTER' ? 'account_exists' : 'account_conflict'
             : error instanceof UnauthorizedException
               ? transaction?.intent === 'INVITATION' ? 'invitation_email_mismatch' : 'oauth_not_registered'
@@ -186,7 +191,9 @@ export class OAuthService {
         },
       });
       frontend.searchParams.set('status', 'error');
-      if (error instanceof ConflictException) {
+      if (enterpriseSuspended) {
+        frontend.searchParams.set('reason', 'enterprise_suspended');
+      } else if (error instanceof ConflictException) {
         frontend.searchParams.set('reason', transaction?.intent === 'REGISTER' ? 'account_exists' : 'account_conflict');
       } else if (error instanceof UnauthorizedException) {
         frontend.searchParams.set('reason', transaction?.intent === 'INVITATION' ? 'invitation_email_mismatch' : 'oauth_not_registered');

@@ -125,6 +125,7 @@ export class AuthService {
     }
     return this.signAccess(user, session.sessionId);
   }
+
   /**
    * 铺默认部门树。**吞掉异常**：部门缺了管理员自己能建，
    * 但企业已经建成、邮箱已被占用，此时上抛会让用户既登不进去也重注册不了。
@@ -485,7 +486,6 @@ export class AuthService {
       await this.events?.record({ userId: user.id, action: 'LOGIN_FAILED', success: false, provider: 'password', metadata: { reason: 'account_disabled' } });
       throw new UnauthorizedException('账号当前不可登录');
     }
-
     const credential = user.authCredentials[0];
     const passwordHash = credential?.passwordHash ?? null;
     if (!passwordHash) {
@@ -504,6 +504,7 @@ export class AuthService {
       await this.risk?.recordPasswordFailure(user.id, passwordHash, auditContext);
       throw new UnauthorizedException('邮箱或密码错误');
     }
+    await this.sessions.assertUserEnterpriseActive(user.id, user.role);
     await this.risk?.recordPasswordSuccess(user.id);
 
     const token = await this.issueWebSession(user, res, context, true);
@@ -710,6 +711,7 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new UnauthorizedException('User not found');
     if (user.status !== 'ACTIVE') throw new UnauthorizedException('账号当前不可登录');
+    await this.sessions.assertUserEnterpriseActive(user.id, user.role);
     const token = await this.issueWebSession(user, res, context, true, 'oauth');
     const membership = await this.findMembership(user.id);
     await this.events?.record({ userId: user.id, action: 'LOGIN_SUCCESS', provider: 'oauth', ipAddress: context.ipAddress, userAgent: context.userAgent });
@@ -733,6 +735,7 @@ export class AuthService {
     const user = await this.prisma.user.findUnique({ where: { id: rotated.userId } });
     if (!user) throw new UnauthorizedException('User not found');
     if (user.status !== 'ACTIVE') throw new UnauthorizedException('账号当前不可登录');
+    await this.sessions.assertUserEnterpriseActive(user.id, user.role);
 
     if (res) this.setRefreshCookie(res, rotated.refreshToken);
     const token = this.signAccess(user, rotated.sessionId);
@@ -785,10 +788,14 @@ export class AuthService {
     await this.events?.record({ userId, action: 'SESSION_REVOKED', sessionId });
   }
 
-  async validateUser(userId: string) {
-    return this.prisma.user.findFirst({
+  async validateUser(userId: string, sessionId?: string) {
+    const user = await this.prisma.user.findFirst({
       where: { id: userId, status: 'ACTIVE' },
       select: { id: true, email: true, name: true, role: true },
     });
+    if (!user) return null;
+    if (!sessionId) throw new UnauthorizedException('Invalid or expired authentication session');
+    await this.sessions.assertActiveAccessSession(sessionId, userId);
+    return user;
   }
 }
