@@ -13,6 +13,7 @@ KNOWN_HOSTS=$(cd "$(dirname "${BASH_SOURCE[0]}")/../deploy/standalone" && pwd)/k
 [[ "$SERVER_PORT" == 22 ]] || { echo 'The pinned standalone server host key is valid for SSH port 22 only' >&2; exit 1; }
 [[ "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo 'GITHUB_SHA must be a full commit SHA' >&2; exit 1; }
 
+REMOTE_TMP_DIR=/www/sep/tmp
 TEMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TEMP_DIR"' EXIT
 KEY_FILE=$TEMP_DIR/id_ed25519
@@ -22,10 +23,11 @@ printf '%s\n' "$SERVER_SSH_KEY" > "$KEY_FILE"
 chmod 600 "$KEY_FILE"
 git archive --format=tar.gz --prefix=source/ "$RELEASE_SHA" > "$ARCHIVE"
 ARCHIVE_SHA=$(shasum -a 256 "$ARCHIVE" | awk '{print $1}')
-REMOTE_ARCHIVE="/tmp/sep-release-$RELEASE_SHA.tar.gz"
+REMOTE_ARCHIVE="$REMOTE_TMP_DIR/sep-release-$RELEASE_SHA.tar.gz"
 
 SSH_OPTIONS=(-i "$KEY_FILE" -p "$SERVER_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$KNOWN_HOSTS")
 SCP_OPTIONS=(-i "$KEY_FILE" -P "$SERVER_PORT" -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$KNOWN_HOSTS")
+ssh "${SSH_OPTIONS[@]}" "$SERVER_USER@$SERVER_HOST" install -d -m 700 "$REMOTE_TMP_DIR"
 scp "${SCP_OPTIONS[@]}" "$ARCHIVE" "$SERVER_USER@$SERVER_HOST:$REMOTE_ARCHIVE"
 ssh "${SSH_OPTIONS[@]}" "$SERVER_USER@$SERVER_HOST" bash -s -- "$RELEASE_SHA" "$ARCHIVE_SHA" "$REMOTE_ARCHIVE" <<'REMOTE'
 set -Eeuo pipefail

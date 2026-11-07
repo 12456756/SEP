@@ -43,9 +43,9 @@ SEP_RELEASE_SHA=<完整40位提交> bash deploy/standalone/sep-deploy.sh deploy
 | `/www/sep/backups` | 镜像、源码、数据库、文件和校验记录 |
 | `/www/sep/source` | 原生产提交的源码归档，无 Git 工作区 |
 
-Docker 镜像、构建缓存和容器日志使用系统盘 `/var/lib/docker`。数据库和业务文件通过显式 bind mount 存放在数据盘。PostgreSQL 18 镜像还会声明父目录匿名卷，实际 `PGDATA` 已明确设为并挂载到 `/www/sep/postgres`，不使用该匿名卷保存数据库。
+数据库和业务文件通过显式 bind mount 存放在数据盘。2026-11-07 已将系统默认 Docker 的 `data-root` 切换到 `/www/sep/runtime/docker`，containerd `root` 切换到 `/www/sep/runtime/containerd`；镜像、容器快照、构建缓存、Docker 元数据和容器日志由这两个目录承载。迁移前的旧目录已压缩备份至服务器 `/www/sep/backups/system-docker-legacy-20261107.tar.zst` 并校验 SHA-256，随后删除 `/var/lib/docker` 和 `/var/lib/containerd` 以释放系统盘空间。迁移、校验与回退记录见[SEP 与 sub2api 数据盘迁移策略](../../docs/deployment/2026-11-07-SEP与sub2api数据盘迁移策略.md)。PostgreSQL 18 镜像还会声明父目录匿名卷，实际 `PGDATA` 已明确设为并挂载到 `/www/sep/postgres`，不使用该匿名卷保存数据库。
 
-服务器安装了本目录的 `docker.service.d/sep-data-mount.conf` 至 `/etc/systemd/system/docker.service.d/sep-data-mount.conf`，令 Docker 启动依赖 `/www` 数据盘挂载。安装后执行了 `systemctl daemon-reload` 并核验 `www.mount` 依赖，没有重启生产 Docker 或服务器。
+服务器已安装本目录的 `docker.service.d/sep-data-mount.conf` 和 `containerd.service.d/sep-data-mount.conf` 至对应 systemd drop-in 目录。两个服务均依赖 `/www` 数据盘挂载，Docker 依赖 `/www/sep/runtime/docker` 与 `/www/sep/runtime/containerd`，containerd 依赖 `/www/sep/runtime/containerd`。安装或更新后执行 `systemctl daemon-reload` 并核验依赖；不要改用 `/www/longdao/runtime/*`，那是独立 longdao/sub2api daemon 的专属目录。
 
 `backend.env` 的 `JWT_SECRET`、`ACCESS_JWT_SECRET`、`REFRESH_TOKEN_PEPPER` 保留旧值，确保加密配置和已有认证数据兼容。Compose 显式覆盖 `DATABASE_URL`、`REDIS_URL`，应用数据库用户 `sep_app` 不具备超级用户权限。`.env`、`backend.env` 均应保持权限 `600`，不得提交到 Git。
 

@@ -30,6 +30,7 @@
 
 ### 部署与迁移
 - [SEP 完整迁移部署手册](./deployment/2026-11-03-SEP完整迁移部署手册.md) - 从 `64.83.39.223` 迁移到 `121.37.128.126`，包括数据库、文件、独立部署配置、演练、切换、验收与回滚
+- [SEP 与 sub2api 数据盘迁移策略](./deployment/2026-11-07-SEP与sub2api数据盘迁移策略.md) - Docker/containerd 持久数据迁移到 `/www`、systemd 挂载依赖、停机校验与回退
 - [Embedding 服务部署指南](./deployment/embedding-service.md) - Ollama、固定模型与 tokenizer、向量检索验收
 
 ### 📅 开发进度
