@@ -7,6 +7,7 @@ import { NotFoundException, BadRequestException } from '@nestjs/common';
 import { Prisma, TransactionType } from '@prisma/client';
 import { SettingService } from '../setting/setting.service';
 import { SessionService } from '../auth/session.service';
+import { NotificationsGateway } from '../notifications/notifications.gateway';
 
 describe('AdminService', () => {
   let service: AdminService;
@@ -20,6 +21,7 @@ describe('AdminService', () => {
       count: jest.fn(),
       update: jest.fn(),
     },
+    enterpriseMember: { findMany: jest.fn().mockResolvedValue([{ userId: 'user-1' }]) },
     computeAccount: {
       create: jest.fn(),
       update: jest.fn(),
@@ -29,6 +31,7 @@ describe('AdminService', () => {
     },
     walletTransaction: {
       groupBy: jest.fn(),
+      findMany: jest.fn().mockResolvedValue([]),
     },
     enterpriseWallet: {
       aggregate: jest.fn(),
@@ -66,6 +69,7 @@ describe('AdminService', () => {
   const mockPersonalWalletService = { creditContributionRewardInTx: jest.fn() };
   const mockSettingService = { getEffectiveValue: jest.fn() };
   const mockSessionService = { revokeEnterpriseSessionsInTx: jest.fn().mockResolvedValue(2) };
+  const mockNotifications = { closeUserConnections: jest.fn() };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -82,6 +86,7 @@ describe('AdminService', () => {
         { provide: PersonalWalletService, useValue: mockPersonalWalletService },
         { provide: SettingService, useValue: mockSettingService },
         { provide: SessionService, useValue: mockSessionService },
+        { provide: NotificationsGateway, useValue: mockNotifications },
       ],
     }).compile();
 
@@ -94,6 +99,7 @@ describe('AdminService', () => {
     mockWalletService.adminDeposit.mockResolvedValue({ balance: 150 });
     mockWalletService.adminDeduct.mockResolvedValue({ balance: 50 });
     mockPrismaService.skillVersion.findMany.mockResolvedValue([]);
+    mockPrismaService.walletTransaction.findMany.mockReset().mockResolvedValue([]);
     mockPrismaService.$transaction.mockImplementation((callback) => callback(mockPrismaService));
     mockSessionService.revokeEnterpriseSessionsInTx.mockReset().mockResolvedValue(2);
   });
@@ -497,6 +503,29 @@ describe('AdminService', () => {
   });
 
   describe('getEnterpriseDetail', () => {
+    it('includes prior refunds beyond the displayed transaction page and floors the balance limit', async () => {
+      mockPrismaService.enterprise.findUnique.mockResolvedValue({
+        id: 'ent1', members: [], subscriptions: [], departments: [],
+        wallet: {
+          id: 'w1', balance: new Prisma.Decimal('100.299999'),
+          computeReservedCNY: new Prisma.Decimal(50), frozenAmount: new Prisma.Decimal(10),
+          transactions: [{ id: 'deposit-1', type: 'DEPOSIT', amount: new Prisma.Decimal(1000), balanceAfter: 1000 }],
+        },
+      });
+      mockPrismaService.walletTransaction.findMany.mockResolvedValue([
+        { amount: new Prisma.Decimal(-100), metadata: { sourceTransactionId: 'deposit-1' } },
+        { amount: new Prisma.Decimal(-200), metadata: { sourceTransactionId: 'other-deposit' } },
+        { amount: new Prisma.Decimal(20), metadata: null },
+      ]);
+      const result = await service.getEnterpriseDetail('ent1');
+      expect(result.transactions[0]).toMatchObject({ refundedAmount: 100, refundableAmount: 40.29 });
+      expect(mockPrismaService.walletTransaction.findMany).toHaveBeenCalledWith({
+        where: { walletId: 'w1', type: 'REFUND' }, select: { amount: true, metadata: true },
+      });
+      mockPrismaService.walletTransaction.findMany.mockRejectedValueOnce(new Error('query failed'));
+      await expect(service.getEnterpriseDetail('ent1')).rejects.toThrow('query failed');
+    });
+
     it('should flatten wallet balance and transactions onto the detail', async () => {
       const createdAt = new Date();
       const mockEnterprise = {
@@ -514,6 +543,7 @@ describe('AdminService', () => {
           id: 'w1',
           balance: 49568,
           computeReservedCNY: 2000,
+          frozenAmount: 0,
           transactions: [
             {
               id: 'tx1',
@@ -728,6 +758,11 @@ describe('AdminService', () => {
       expect(mockSessionService.revokeEnterpriseSessionsInTx).toHaveBeenCalledWith(
         mockPrismaService, 'ent1', 'enterprise_suspended',
       );
+      expect(mockNotifications.closeUserConnections).toHaveBeenCalledWith(['user-1']);
+      expect(mockPrismaService.enterpriseMember.findMany).toHaveBeenCalledWith({
+        where: { enterpriseId: 'ent1', user: { role: { not: 'ADMIN' } } },
+        select: { userId: true },
+      });
     });
 
     it('should throw BadRequestException if already suspended', async () => {

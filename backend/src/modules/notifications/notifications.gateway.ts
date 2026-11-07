@@ -216,6 +216,14 @@ export class NotificationsGateway
     });
   }
 
+  closeUserConnections(userIds: string[]): void {
+    for (const userId of userIds) {
+      for (const client of [...(this.clients.get(userId) ?? [])]) {
+        this.closeClient(client, 1008, 'Enterprise suspended');
+      }
+    }
+  }
+
   private async sendToActiveClients(userId: string, message: any): Promise<void> {
     const userClients = this.clients.get(userId);
     if (!userClients) return;

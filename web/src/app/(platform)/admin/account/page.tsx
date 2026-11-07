@@ -14,10 +14,9 @@ import { Input } from '@/components/ui/input';
 import { useRequestEmailChange, useRequestEmailVerification } from '@/features/auth/use-auth';
 import { useChangePassword, useMe } from '@/features/user/use-user';
 import { ApiError } from '@/lib/api-client';
+import { ChangePasswordDtoSchema, RequestEmailChangeDtoSchema } from 'shared/index';
 
-const passwordSchema = z.object({
-  currentPassword: z.string().min(1, '请输入当前密码'),
-  newPassword: z.string().min(8, '新密码至少 8 位'),
+const passwordSchema = ChangePasswordDtoSchema.extend({
   confirmPassword: z.string().min(1, '请确认新密码'),
 }).refine((value) => value.newPassword === value.confirmPassword, {
   path: ['confirmPassword'],
@@ -60,7 +59,12 @@ export default function AdminAccountSettingsPage() {
 
   function submitEmailChange() {
     setEmailMessage('');
-    requestEmailChange.mutate(newEmail.trim(), {
+    const result = RequestEmailChangeDtoSchema.safeParse({ newEmail });
+    if (!result.success) {
+      setEmailMessage('请输入有效的邮箱地址');
+      return;
+    }
+    requestEmailChange.mutate(result.data.newEmail, {
       onSuccess: ({ message }) => {
         setEmailMessage(message);
         setNewEmail('');
@@ -93,6 +97,7 @@ export default function AdminAccountSettingsPage() {
           <CardDescription>此邮箱用于登录和账号安全验证，与系统通知邮箱分开管理。</CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
+          <p className="text-sm">姓名：{profile.data.name || '管理员'}</p>
           <div className="flex flex-wrap items-center gap-3 border-b border-border pb-4">
             <MailCheck className="h-5 w-5 text-fg-muted" />
             <span className="min-w-0 flex-1 break-all text-sm font-medium">{profile.data.email}</span>

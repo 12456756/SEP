@@ -41,6 +41,7 @@ describe('平台管理员账号设置', () => {
   it('显示当前登录邮箱并通过现有流程请求变更邮箱', async () => {
     render(<AdminAccountSettingsPage />);
     expect(screen.getByText('admin@example.com')).toBeVisible();
+    expect(screen.getByText('姓名：运营管理员')).toBeVisible();
     fireEvent.change(screen.getByLabelText('新的登录邮箱'), { target: { value: 'new@example.com' } });
     fireEvent.click(screen.getByRole('button', { name: '发送确认邮件' }));
 
@@ -59,6 +60,18 @@ describe('平台管理员账号设置', () => {
     expect(screen.queryByLabelText('新的登录邮箱')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: '发送验证邮件' }));
     expect(mocks.requestEmailVerification).toHaveBeenCalledWith(undefined, expect.objectContaining({ onSuccess: expect.any(Function) }));
+  });
+
+  it('无效邮箱不会发起请求，合法邮箱按共享规则归一化', async () => {
+    render(<AdminAccountSettingsPage />);
+    const input = screen.getByLabelText('新的登录邮箱');
+    fireEvent.change(input, { target: { value: 'invalid' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送确认邮件' }));
+    expect(mocks.requestEmailChange).not.toHaveBeenCalled();
+    expect(screen.getByText('请输入有效的邮箱地址')).toBeVisible();
+    fireEvent.change(input, { target: { value: 'NEW@EXAMPLE.COM' } });
+    fireEvent.click(screen.getByRole('button', { name: '发送确认邮件' }));
+    await waitFor(() => expect(mocks.requestEmailChange).toHaveBeenCalledWith('new@example.com', expect.any(Object)));
   });
 
   it('提交当前密码和新密码，成功后清空表单并显示会话提示', async () => {

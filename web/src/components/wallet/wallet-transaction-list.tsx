@@ -166,8 +166,9 @@ export function WalletTransactionList() {
 }
 
 function TransactionItem({ transaction }: { transaction: any }) {
-  const isPositive = transaction.type === 'DEPOSIT' || transaction.type === 'REFUND' || transaction.type === 'COMPUTE_RELEASE';
   const isNeutral = transaction.type === 'COMPUTE_RESERVE';
+  const isPositive = transaction.type === 'DEPOSIT' || transaction.type === 'COMPUTE_RELEASE' ||
+    (transaction.type === 'REFUND' && Number(transaction.amount) > 0);
 
   const Icon =
     transaction.type === 'DEPOSIT' ? ArrowUpCircle :
@@ -209,7 +210,7 @@ function TransactionItem({ transaction }: { transaction: any }) {
             <>
               <span>·</span>
               <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium">
-                {transaction.relatedType === 'subscription' ? '订阅' : '算力'}
+                {transaction.relatedType === 'subscription' ? '订阅' : transaction.relatedType === 'deposit_refund' ? '充值退款' : '算力'}
               </span>
             </>
           )}

@@ -11,6 +11,8 @@ import { PersonalWalletService, assertActiveRewardRecipientInTx } from '../perso
 import { Decimal } from '@prisma/client/runtime/library';
 import { EmployeeReadinessService } from '../digital-employee/employee-readiness.service';
 import { SessionService } from '../auth/session.service';
+import { NotificationsGateway } from '../notifications/notifications.gateway';
+import { depositRefundableAmount } from '../wallet/deposit-refund';
 
 @Injectable()
 export class AdminService {
@@ -21,6 +23,7 @@ export class AdminService {
     @Optional() private readonly personalWallet?: PersonalWalletService,
     @Optional() private readonly readiness?: EmployeeReadinessService,
     @Optional() private readonly sessions?: SessionService,
+    @Optional() private readonly notifications?: NotificationsGateway,
   ) {}
 
   private employeeReadiness(): EmployeeReadinessService {
@@ -98,12 +101,20 @@ export class AdminService {
     // schema 里标注废弃的字段，后者只剩 gateway 链路在写，运营端看到的
     // 余额和流水都对不上企业自己看到的数。
     const { wallet, ...rest } = enterprise;
-    const refunds = wallet && typeof (this.prisma.walletTransaction as any).findMany === 'function'
+    const refunds = wallet
       ? await this.prisma.walletTransaction.findMany({
         where: { walletId: wallet.id, type: 'REFUND' },
         select: { amount: true, metadata: true },
       })
       : [];
+    const refundedByDeposit = new Map<string, Decimal>();
+    for (const refund of refunds) {
+      const metadata = refund.metadata as { sourceTransactionId?: unknown } | null;
+      if (typeof metadata?.sourceTransactionId !== 'string') continue;
+      const sourceId = metadata.sourceTransactionId;
+      refundedByDeposit.set(sourceId,
+        (refundedByDeposit.get(sourceId) ?? new Decimal(0)).add(new Decimal(refund.amount).abs()));
+    }
     return {
       ...rest,
       balance: Number(wallet?.balance ?? 0),
@@ -116,19 +127,12 @@ export class AdminService {
         description: tx.description,
         metadata: tx.metadata,
         createdAt: tx.createdAt,
-        refundedAmount: tx.type === 'DEPOSIT'
-          ? Number(refunds
-            .filter((refund) => (refund.metadata as any)?.sourceTransactionId === tx.id)
-            .reduce((sum, refund) => sum + Math.abs(Number(refund.amount)), 0))
-          : 0,
-        refundableAmount: tx.type === 'DEPOSIT'
-          ? Math.max(0, Math.min(
-            Math.abs(Number(tx.amount)) - Number(refunds
-              .filter((refund) => (refund.metadata as any)?.sourceTransactionId === tx.id)
-              .reduce((sum, refund) => sum + Math.abs(Number(refund.amount)), 0)),
-            Math.max(0, Number(wallet?.balance ?? 0) - Number(wallet?.computeReservedCNY ?? 0) - Number(wallet?.frozenAmount ?? 0)),
-          ))
-          : 0,
+        refundedAmount: tx.type === 'DEPOSIT' ? (refundedByDeposit.get(tx.id)?.toNumber() ?? 0) : 0,
+        refundableAmount: tx.type === 'DEPOSIT' && wallet
+          ? depositRefundableAmount(
+            new Decimal(tx.amount).abs().sub(refundedByDeposit.get(tx.id) ?? 0),
+            wallet,
+          ).toNumber() : 0,
       })),
     };
   }
@@ -215,7 +219,9 @@ export class AdminService {
   async suspendEnterprise(enterpriseId: string, reason: string, operatorId: string) {
     const sessions = this.sessions;
     if (!sessions) throw new ServiceUnavailableException('认证会话服务暂不可用，无法完成企业冻结');
-    await this.prisma.$transaction(async (tx) => {
+    const notifications = this.notifications;
+    if (!notifications) throw new ServiceUnavailableException('通知连接服务暂不可用，无法完成企业冻结');
+    const members = await this.prisma.$transaction(async (tx) => {
       const locked = await tx.$queryRaw<Array<{ id: string }>>`
         SELECT id FROM enterprises WHERE id = ${enterpriseId} FOR UPDATE
       `;
@@ -239,7 +245,12 @@ export class AdminService {
         },
       });
       await sessions.revokeEnterpriseSessionsInTx(tx, enterpriseId, 'enterprise_suspended');
+      return tx.enterpriseMember.findMany({
+        where: { enterpriseId, user: { role: { not: 'ADMIN' } } },
+        select: { userId: true },
+      });
     });
+    notifications.closeUserConnections(members.map((member) => member.userId));
 
     return { success: true };
   }

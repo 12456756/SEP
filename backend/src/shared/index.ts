@@ -2,6 +2,8 @@ import { z } from "zod";
 import { SkillContentSchema } from './skill-content-schema';
 import { CnyAmountSchema } from './cny-amount';
 export { CnyAmountSchema } from './cny-amount';
+export { RefundDepositDtoSchema } from './refund-deposit.dto';
+export type { RefundDepositDto } from './refund-deposit.dto';
 export * from './skill-content-schema';
 import type { EmployeeAvatarAsset } from './employee-avatar';
 export type { EmployeeAvatarAsset } from './employee-avatar';

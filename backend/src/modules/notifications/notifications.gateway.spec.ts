@@ -31,6 +31,29 @@ async function flushMessageHandler() {
 }
 
 describe('NotificationsGateway', () => {
+  it('主动关闭冻结成员连接，保留其他用户连接且阻止后续推送', async () => {
+    const jwt = { verify: jest.fn() };
+    const auth = { validateUser: jest.fn().mockImplementation(async (id) => ({ id })) };
+    const gateway = new NotificationsGateway(jwt as any,
+      { countUnread: jest.fn().mockResolvedValue(0) } as any, createConfig(), auth as any);
+    const clients = [createClient(), createClient(), createClient()];
+    for (const [index, client] of clients.entries()) {
+      jwt.verify.mockReturnValue({ sub: index < 2 ? 'member-1' : 'admin-1', sid: `session-${index}`, type: 'access' });
+      await gateway.handleConnection(client, { headers: {} });
+      client.emit('message', Buffer.from(JSON.stringify({ type: 'auth', token: 'token' })));
+      await flushMessageHandler();
+    }
+    gateway.closeUserConnections(['member-1']);
+    expect(clients[0].close).toHaveBeenCalledWith(1008, 'Enterprise suspended');
+    expect(clients[1].close).toHaveBeenCalledWith(1008, 'Enterprise suspended');
+    expect(clients[2].close).not.toHaveBeenCalled();
+    await gateway.pushToUser('member-1', { id: 'blocked' });
+    expect(clients[0].send).toHaveBeenCalledTimes(1);
+    await gateway.pushToUser('admin-1', { id: 'allowed' });
+    expect(clients[2].send).toHaveBeenCalledTimes(2);
+    gateway.handleDisconnect(clients[2]);
+  });
+
   it('只在认证时读取一次未读数，事件推送不会轮询数据库', async () => {
     const jwtService = {
       verify: jest.fn().mockReturnValue({ sub: 'user-1', sid: 'session-1', type: 'access' }),

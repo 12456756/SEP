@@ -22,7 +22,7 @@ export interface WalletTransaction {
   amount: string; // Prisma Decimal 序列化为字符串
   balanceBefore: string;
   balanceAfter: string;
-  relatedType?: 'subscription' | 'compute';
+  relatedType?: 'subscription' | 'compute' | 'deposit_refund';
   relatedId?: string;
   paymentMethod?: string;
   paymentOrderId?: string;

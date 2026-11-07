@@ -250,6 +250,28 @@ describe('SessionService', () => {
       .rejects.toMatchObject({ response: expect.objectContaining({ code: 'ENTERPRISE_SUSPENDED' }) });
   });
 
+  it('does not revoke platform admin sessions when suspending an enterprise', async () => {
+    const tx = {
+      authSession: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      authToken: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+    };
+
+    await service.revokeEnterpriseSessionsInTx(tx as any, 'enterprise-1');
+
+    expect(tx.authSession.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        user: expect.objectContaining({ role: { not: 'ADMIN' } }),
+      }),
+    }));
+    expect(tx.authToken.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        session: expect.objectContaining({
+          user: expect.objectContaining({ role: { not: 'ADMIN' } }),
+        }),
+      }),
+    }));
+  });
+
   it.each([
     ['missing', null],
     ['wrong user', activeSession({ userId: 'other' })],

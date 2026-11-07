@@ -21,7 +21,7 @@ import { RolesGuard } from '../../common/guards/roles.guard';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { z } from 'zod';
 import { UserRole, UserStatus } from '@prisma/client';
-import { CapabilityUploadDtoSchema, CnyAmountSchema, DigitalEmployeeCreateDtoSchema, EmployeeAvatarUrlSchema } from 'shared';
+import { CapabilityUploadDtoSchema, CnyAmountSchema, DigitalEmployeeCreateDtoSchema, EmployeeAvatarUrlSchema, RefundDepositDtoSchema, type RefundDepositDto } from 'shared';
 import { EmployeeCopyDraftDtoSchema, type EmployeeCopyDraftDto } from '../../shared/employee-copy.dto';
 import { EmployeeCopyDraftService } from './employee-copy-draft.service';
 
@@ -41,11 +41,6 @@ const CreditAdjustmentSchema = z.object({
     errorMap: () => ({ message: '类型必须是 RECHARGE 或 DEDUCT' })
   }),
   note: z.string().min(1, '备注不能为空').max(200, '备注不能超过200字符'),
-});
-
-const RefundDepositSchema = z.object({
-  amount: z.number().positive('退款金额必须大于0'),
-  reason: z.string().max(200, '退款原因不能超过200字符').optional(),
 });
 
 const SuspendSchema = z.object({
@@ -294,7 +289,7 @@ export class AdminController {
   refundDeposit(
     @Param('enterpriseId') enterpriseId: string,
     @Param('transactionId') transactionId: string,
-    @Body(new ZodValidationPipe(RefundDepositSchema)) dto: z.infer<typeof RefundDepositSchema>,
+    @Body(new ZodValidationPipe(RefundDepositDtoSchema)) dto: RefundDepositDto,
     @Request() req: any,
   ) {
     return this.adminService.refundDeposit({

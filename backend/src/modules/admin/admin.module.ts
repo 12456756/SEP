@@ -11,6 +11,7 @@ import { AdminAuthService } from './admin-auth.service';
 import { CapabilityContributionModule } from '../capability-contribution/capability-contribution.module';
 import { EmployeeReadinessModule } from '../digital-employee/employee-readiness.module';
 import { EmployeeCopyDraftService } from './employee-copy-draft.service';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { EmployeeCopyDraftService } from './employee-copy-draft.service';
     AuthModule,
     CapabilityContributionModule,
     EmployeeReadinessModule,
+    NotificationsModule,
   ],
   controllers: [AdminController, AdminUploadController],
   providers: [AdminService, AdminAuthService, EmployeeCopyDraftService],

@@ -8,6 +8,7 @@ import { PrismaService } from "../../prisma/prisma.service";
 import { Prisma, WalletTransactionType } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
 import { assertActiveEnterpriseInTx } from '../../common/enterprise-write-lock';
+import { depositRefundableAmount } from './deposit-refund';
 
 @Injectable()
 export class WalletService {
@@ -240,7 +241,7 @@ export class WalletService {
     return tx ? refund(tx) : this.prisma.$transaction(refund);
   }
 
-  /** Refund unused funds from one deposit into the external payment channel manually. */
+  /** Record a deposit refund in the wallet ledger. */
   async refundDeposit(params: {
     enterpriseId: string;
     depositTransactionId: string;
@@ -249,7 +250,7 @@ export class WalletService {
     operatorId: string;
   }) {
     const { enterpriseId, depositTransactionId, amount, reason, operatorId } = params;
-    if (!Number.isFinite(amount) || amount <= 0 || Math.round(amount * 100) !== amount * 100) {
+    if (!Number.isFinite(amount) || amount <= 0 || new Decimal(amount).decimalPlaces() > 2) {
       throw new BadRequestException('退款金额必须大于 0 且最多保留两位小数');
     }
 
@@ -276,12 +277,8 @@ export class WalletService {
         new Decimal(0),
       );
       const sourceRemaining = Decimal.max(new Decimal(deposit.amount).abs().sub(refundedAmount), 0);
-      const spendableBalance = Decimal.max(
-        wallet.balance.sub(wallet.computeReservedCNY).sub(wallet.frozenAmount),
-        0,
-      );
-      const refundableAmount = Decimal.min(sourceRemaining, spendableBalance);
-      const refundAmount = new Decimal(amount).toDecimalPlaces(2);
+      const refundableAmount = depositRefundableAmount(sourceRemaining, wallet);
+      const refundAmount = new Decimal(amount);
 
       if (refundAmount.greaterThan(refundableAmount)) {
         throw new BadRequestException(`退款金额超过当前可退金额 ¥${refundableAmount.toFixed(2)}`);
@@ -317,7 +314,9 @@ export class WalletService {
         transaction,
         balance: balanceAfter.toNumber(),
         refundAmount: refundAmount.toNumber(),
-        remainingRefundableAmount: Decimal.max(sourceRemaining.sub(refundAmount), 0).toNumber(),
+        remainingRefundableAmount: depositRefundableAmount(
+          sourceRemaining.sub(refundAmount), { ...wallet, balance: balanceAfter },
+        ).toNumber(),
       };
     });
   }

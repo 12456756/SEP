@@ -4,7 +4,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Prisma } from '@prisma/client';
+import { Prisma, UserRole } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuthEventService } from './auth-event.service';
 import { assertEnterpriseNotSuspended } from '../enterprise/enterprise-context.service';
@@ -435,7 +435,12 @@ export class SessionService {
     reason = 'enterprise_suspended',
   ): Promise<number> {
     const revokedAt = new Date();
-    const membership = { user: { memberships: { some: { enterpriseId } } } };
+    const membership = {
+      user: {
+        role: { not: UserRole.ADMIN },
+        memberships: { some: { enterpriseId } },
+      },
+    };
     const sessions = await tx.authSession.updateMany({
       where: { ...membership, revokedAt: null },
       data: { revokedAt, revokeReason: reason },

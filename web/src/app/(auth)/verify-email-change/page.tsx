@@ -18,6 +18,7 @@ function VerifyEmailChangeInner() {
   const token = useSearchParams().get('token');
   const router = useRouter();
   const role = useAuthStore((state) => state.user?.role);
+  const hydrated = useAuthStore((state) => state.hydrated);
   const confirm = useConfirmEmailChange();
 
   useEffect(() => {
@@ -37,7 +38,10 @@ function VerifyEmailChangeInner() {
       {confirm.isSuccess && (
         <button
           className="mt-6 text-sm text-primary hover:underline"
-          onClick={() => router.replace(role === 'ADMIN' ? '/admin/account' : '/settings/profile')}
+          disabled={!hydrated}
+          onClick={() => {
+            if (hydrated) router.replace(role === 'ADMIN' ? '/admin/account' : '/settings/profile');
+          }}
         >
           返回个人设置
         </button>

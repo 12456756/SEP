@@ -29,6 +29,7 @@ import {
   Lock,
   Unlock,
 } from 'lucide-react';
+import { RefundDepositDtoSchema } from 'shared/refund-deposit.dto';
 
 /**
  * 钱包流水类型的中文名与配色。
@@ -150,10 +151,16 @@ export default function EnterpriseDetailPage() {
     }
   };
 
+  const refundValue = refundMode === 'all'
+    ? refundTransaction?.refundableAmount ?? 0 : Number(refundAmount);
+  const validRefund = !!refundTransaction &&
+    RefundDepositDtoSchema.safeParse({ amount: refundValue, reason: refundReason }).success &&
+    refundValue <= refundTransaction.refundableAmount && refundValue <= (enterprise?.balance ?? 0);
+
   const handleRefund = async () => {
     if (!refundTransaction) return;
-    const amount = refundMode === 'all' ? refundTransaction.refundableAmount : Number(refundAmount);
-    if (!Number.isFinite(amount) || amount <= 0 || amount > refundTransaction.refundableAmount) {
+    const amount = refundValue;
+    if (!validRefund) {
       toast.error('请输入有效的退款金额', `最多可退 ¥${refundTransaction.refundableAmount.toFixed(2)}`);
       return;
     }
@@ -539,7 +546,7 @@ export default function EnterpriseDetailPage() {
           )}
           <DialogFooter>
             <Button variant="secondary" onClick={() => setRefundTransaction(null)}>取消</Button>
-            <Button onClick={handleRefund} disabled={refundDeposit.isPending}>
+            <Button onClick={handleRefund} disabled={!validRefund || refundDeposit.isPending}>
               {refundDeposit.isPending ? '处理中...' : '确认退款'}
             </Button>
           </DialogFooter>
