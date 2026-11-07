@@ -34,7 +34,7 @@ export interface EnterpriseDeletionJob {
 
 export const enterpriseDeletionApi = {
   preview: (enterpriseId: string) => api.get<EnterpriseDeletionPreview>(`/admin/enterprises/${encodeURIComponent(enterpriseId)}/deletion-preview`),
-  current: (enterpriseId: string) => api.get<EnterpriseDeletionJob | null>(`/admin/enterprises/${encodeURIComponent(enterpriseId)}/deletion`),
+  current: async (enterpriseId: string) => (await api.get<EnterpriseDeletionJob | null>(`/admin/enterprises/${encodeURIComponent(enterpriseId)}/deletion`)) ?? null,
   start: (enterpriseId: string, confirmName: string) => api.post<EnterpriseDeletionJob>(`/admin/enterprises/${encodeURIComponent(enterpriseId)}/deletion`, { confirmName }),
   getJob: (jobId: string) => api.get<EnterpriseDeletionJob>(`/admin/enterprise-deletions/${encodeURIComponent(jobId)}`),
   retry: (jobId: string) => api.post<EnterpriseDeletionJob>(`/admin/enterprise-deletions/${encodeURIComponent(jobId)}/retry`),

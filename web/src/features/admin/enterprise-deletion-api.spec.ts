@@ -10,9 +10,14 @@ describe('enterprise deletion API', () => {
   it('uses encoded enterprise ids for preview and existing job lookup', async () => {
     vi.mocked(api.get).mockResolvedValueOnce({ warnings: [] }).mockResolvedValueOnce(null);
     await enterpriseDeletionApi.preview('org/a');
-    await enterpriseDeletionApi.current('org/a');
+    await expect(enterpriseDeletionApi.current('org/a')).resolves.toBeNull();
     expect(api.get).toHaveBeenNthCalledWith(1, '/admin/enterprises/org%2Fa/deletion-preview');
     expect(api.get).toHaveBeenNthCalledWith(2, '/admin/enterprises/org%2Fa/deletion');
+  });
+
+  it('normalizes an empty successful response to no current job', async () => {
+    vi.mocked(api.get).mockResolvedValue(undefined);
+    await expect(enterpriseDeletionApi.current('org-1')).resolves.toBeNull();
   });
 
   it('sends the exact confirmation name and retries by job id', async () => {
