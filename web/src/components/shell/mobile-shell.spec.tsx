@@ -116,8 +116,14 @@ describe.each([
 
   it('保留桌面折叠状态，但移动菜单始终显示完整导航和固定尺寸头像', async () => {
     const { container } = renderShell();
+    if (_name === 'PlatformShell') {
+      expect(container.querySelector('a[href="/admin/account"]')).toHaveAttribute('aria-label', '账号设置');
+    }
     fireEvent.click(screen.getByRole('button', { name: '折叠侧边栏' }));
     expect(container.querySelector('aside')).toHaveClass('w-16');
+    if (_name === 'PlatformShell') {
+      expect(container.querySelector('a[href="/admin/account"]')).toBeInTheDocument();
+    }
     const { dialog } = await openMenu();
     expect(within(dialog).getByRole('link', { name: linkName })).toHaveTextContent(linkName);
     expect(within(dialog).queryByRole('button', { name: '展开侧边栏' })).not.toBeInTheDocument();

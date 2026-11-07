@@ -54,13 +54,35 @@ describe('AdminAuthService', () => {
   it('forces email verification and password reset through existing one-time-token flows', async () => {
     prisma.user.findUnique
       .mockResolvedValueOnce({ id: 'u1', emailVerifiedAt: new Date() })
-      .mockResolvedValueOnce({ id: 'u1', email: 'a@example.com' });
+      .mockResolvedValueOnce({ id: 'u1', email: 'a@example.com', status: UserStatus.ACTIVE });
     auth.requestEmailVerification.mockResolvedValue({ message: 'sent' });
     auth.requestPasswordReset.mockResolvedValue({ message: 'sent' });
     await expect(service.forceEmailVerification('u1', 'admin-1')).resolves.toEqual({ message: 'sent' });
-    await expect(service.forcePasswordReset('u1', 'admin-1')).resolves.toEqual({ message: 'sent' });
+    await expect(service.forcePasswordReset('u1', 'admin-1')).resolves.toEqual({ message: '密码重置邮件已发送' });
     expect(auth.requestEmailVerification).toHaveBeenCalledWith('u1', true);
+    expect(auth.requestPasswordReset.mock.invocationCallOrder[0]).toBeLessThan(
+      sessions.revokeAllUserSessions.mock.invocationCallOrder[0],
+    );
     expect(sessions.revokeAllUserSessions).toHaveBeenCalledWith('u1', 'admin_force_password_reset');
+  });
+
+  it('does not revoke sessions when the password reset email request fails', async () => {
+    prisma.user.findUnique.mockResolvedValue({ id: 'u1', email: 'a@example.com', status: UserStatus.ACTIVE });
+    auth.requestPasswordReset.mockRejectedValue(new Error('邮件发送失败'));
+
+    await expect(service.forcePasswordReset('u1', 'admin-1')).rejects.toThrow('邮件发送失败');
+
+    expect(sessions.revokeAllUserSessions).not.toHaveBeenCalled();
+    expect(events.record).not.toHaveBeenCalled();
+  });
+
+  it('does not start a password reset for a non-active user', async () => {
+    prisma.user.findUnique.mockResolvedValue({ id: 'u1', email: 'a@example.com', status: UserStatus.DISABLED });
+
+    await expect(service.forcePasswordReset('u1', 'admin-1')).rejects.toBeInstanceOf(ConflictException);
+
+    expect(auth.requestPasswordReset).not.toHaveBeenCalled();
+    expect(sessions.revokeAllUserSessions).not.toHaveBeenCalled();
   });
 
   it('returns not found for missing users', async () => {

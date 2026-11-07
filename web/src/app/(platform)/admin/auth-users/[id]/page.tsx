@@ -32,14 +32,19 @@ export default function AdminAuthUserDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const params = use(paramsPromise);
-  const user = useAdminAuthUser(params.id);
-  const events = useAdminAuthUserEvents(params.id);
+  return <AdminAuthUserDetailContent userId={params.id} />;
+}
+
+export function AdminAuthUserDetailContent({ userId }: { userId: string }) {
+  const user = useAdminAuthUser(userId);
+  const events = useAdminAuthUserEvents(userId);
   const [reason, setReason] = useState('平台安全策略要求');
-  const disable = useDisableAdminAuthUser(params.id);
-  const enable = useEnableAdminAuthUser(params.id);
-  const logoutAll = useForceLogoutAdminAuthUser(params.id);
-  const verify = useForceEmailVerification(params.id);
-  const reset = useForcePasswordReset(params.id);
+  const [resetMessage, setResetMessage] = useState('');
+  const disable = useDisableAdminAuthUser(userId);
+  const enable = useEnableAdminAuthUser(userId);
+  const logoutAll = useForceLogoutAdminAuthUser(userId);
+  const verify = useForceEmailVerification(userId);
+  const reset = useForcePasswordReset(userId);
 
   if (user.isLoading) return <CenteredSpinner />;
   if (user.isError || !user.data)
@@ -52,8 +57,20 @@ export default function AdminAuthUserDetailPage({
   const detail = user.data;
   const isLifecycleStatus =
     detail.status === 'CLOSURE_PENDING' || detail.status === 'CLOSED';
+  const canManageAuthentication = detail.status === 'ACTIVE';
   const run = (fn: () => void) => {
     if (window.confirm('确认执行此安全操作？')) fn();
+  };
+  const requestPasswordReset = () => {
+    setResetMessage('');
+    reset.mutate({}, {
+      onSuccess: (result) => {
+        const message = typeof result === 'object' && result !== null && 'message' in result
+          ? String(result.message)
+          : '重置密码邮件已发送';
+        setResetMessage(message);
+      },
+    });
   };
 
   return (
@@ -124,13 +141,16 @@ export default function AdminAuthUserDetailPage({
             </Button>
             <Button
               variant="outline"
-              onClick={() => run(() => reset.mutate({}))}
-              disabled={isLifecycleStatus || reset.isPending}
+              onClick={() => run(requestPasswordReset)}
+              disabled={!canManageAuthentication || reset.isPending}
             >
               <KeyRound className="mr-2 h-4 w-4" />
-              强制重置密码
+              {reset.isPending ? '正在发送重置邮件…' : '强制重置密码'}
             </Button>
           </div>
+          <p className="text-sm text-fg-muted">用户会收到设置新密码的邮件；邮件请求成功后，该用户的全部登录设备会退出。管理员不会接触用户密码。</p>
+          {resetMessage && <p role="status" className="text-sm text-success">{resetMessage}，用户的全部登录设备已退出。</p>}
+          {reset.error && <p role="alert" className="text-sm text-danger">{reset.error instanceof Error ? reset.error.message : '重置密码邮件发送失败，请稍后重试'}</p>}
           {!isLifecycleStatus && detail.status !== 'DISABLED' && (
             <Input
               value={reason}
@@ -142,6 +162,9 @@ export default function AdminAuthUserDetailPage({
             <p className="text-sm text-fg-muted">
               生命周期状态由注销流程管理，运营端不能启用、禁用或修改认证状态。
             </p>
+          )}
+          {detail.status === 'DISABLED' && (
+            <p className="text-sm text-fg-muted">账号已禁用，解禁后才能发送密码重置邮件。</p>
           )}
         </CardContent>
       </Card>

@@ -4,6 +4,7 @@ import { Suspense, useEffect } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { CenteredSpinner } from '@/components/ui/feedback';
 import { useConfirmEmailChange } from '@/features/auth/use-auth';
+import { useAuthStore } from '@/lib/auth-store';
 
 export default function VerifyEmailChangePage() {
   return (
@@ -16,6 +17,7 @@ export default function VerifyEmailChangePage() {
 function VerifyEmailChangeInner() {
   const token = useSearchParams().get('token');
   const router = useRouter();
+  const role = useAuthStore((state) => state.user?.role);
   const confirm = useConfirmEmailChange();
 
   useEffect(() => {
@@ -35,7 +37,7 @@ function VerifyEmailChangeInner() {
       {confirm.isSuccess && (
         <button
           className="mt-6 text-sm text-primary hover:underline"
-          onClick={() => router.replace('/settings/profile')}
+          onClick={() => router.replace(role === 'ADMIN' ? '/admin/account' : '/settings/profile')}
         >
           返回个人设置
         </button>

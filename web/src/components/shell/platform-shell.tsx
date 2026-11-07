@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { LayoutDashboard, ShieldCheck, Users, Settings, Building2, LogOut, Wallet, ChevronLeft, ChevronRight, Megaphone, Menu, Package } from 'lucide-react';
 import { Avatar } from '@/components/ui/avatar';
@@ -153,13 +154,20 @@ export function PlatformShell({ children }: { children: React.ReactNode }) {
         <div className="shrink-0 border-t border-glassline p-3">
           {!collapsed ? (
             <>
-              <div className="mb-2 flex items-center gap-2 rounded-glass-sm border border-glassline bg-glass-2 px-2 py-2.5">
+              <Link
+                href="/admin/account"
+                aria-label="账号设置"
+                title="账号设置"
+                onClick={() => setSidebarOpen(false)}
+                className="mb-2 flex items-center gap-2 rounded-glass-sm border border-glassline bg-glass-2 px-2 py-2.5 transition-colors hover:bg-glass-3"
+              >
                 <Avatar name={user?.name || user?.email || '管理员'} src={user?.avatar} className="h-8 w-8 shrink-0" />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium text-gtext-primary">{user?.name || '管理员'}</p>
                   <p className="truncate text-xs text-gtext-muted">{user?.email}</p>
                 </div>
-              </div>
+                <Settings className="h-4 w-4 shrink-0 text-gtext-muted" />
+              </Link>
               <Button
                 variant="ghost"
                 size="sm"
@@ -171,13 +179,25 @@ export function PlatformShell({ children }: { children: React.ReactNode }) {
               </Button>
             </>
           ) : (
-            <button
-              onClick={() => logout.mutate()}
-              className="flex h-10 w-10 items-center justify-center rounded-glass-sm hover:bg-glass-2 mx-auto"
-              title="退出登录"
-            >
-              <LogOut className="h-5 w-5 text-gtext-secondary" />
-            </button>
+            <div className="grid justify-items-center gap-1">
+              <Link
+                href="/admin/account"
+                aria-label="账号设置"
+                title="账号设置"
+                onClick={() => setSidebarOpen(false)}
+                className="flex h-10 w-10 items-center justify-center rounded-glass-sm hover:bg-glass-2"
+              >
+                <Settings className="h-5 w-5 text-gtext-secondary" />
+              </Link>
+              <button
+                onClick={() => logout.mutate()}
+                className="flex h-10 w-10 items-center justify-center rounded-glass-sm hover:bg-glass-2"
+                title="退出登录"
+                aria-label="退出登录"
+              >
+                <LogOut className="h-5 w-5 text-gtext-secondary" />
+              </button>
+            </div>
           )}
         </div>
     </>

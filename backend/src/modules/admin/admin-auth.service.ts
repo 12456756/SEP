@@ -181,11 +181,12 @@ export class AdminAuthService {
   }
 
   async forcePasswordReset(userId: string, actorId: string) {
-    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { id: true, email: true } });
+    const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { id: true, email: true, status: true } });
     if (!user) throw new NotFoundException('用户不存在');
+    if (user.status !== UserStatus.ACTIVE) throw new ConflictException('仅正常账号可以重置密码');
+    await this.auth.requestPasswordReset({ email: user.email }, {}, { skipRateLimit: true });
     await this.sessions.revokeAllUserSessions(userId, 'admin_force_password_reset');
-    const result = await this.auth.requestPasswordReset({ email: user.email }, {}, { skipRateLimit: true });
     await this.events.record({ userId, action: 'PASSWORD_RESET_REQUESTED', success: true, provider: 'admin', metadata: { actorId, forced: true } });
-    return result;
+    return { message: '密码重置邮件已发送' };
   }
 }
