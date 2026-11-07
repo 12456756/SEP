@@ -926,16 +926,6 @@ EOF
 }
 
 if [[ "${SEP_DEPLOY_LIBRARY:-false}" != "true" ]]; then
-  case "${1:-}" in
-    deploy)          cmd_deploy ;;
-    deploy-web)      cmd_deploy_web ;;
-    deploy-backend)  cmd_deploy_backend ;;
-    restart)         cmd_restart "${2:-all}" ;;
-    stop)            cmd_stop ;;
-    status)          cmd_status ;;
-    logs)            cmd_logs "${2:-}" ;;
-    deploy-bluegreen) cmd_deploy_bluegreen ;;
-    rollback-bluegreen) cmd_rollback_bluegreen ;;
-    *)               usage; exit 1 ;;
-  esac
+  error 'Legacy shared-host deployment is retired; use deploy/standalone/sep-deploy.sh'
+  exit 2
 fi

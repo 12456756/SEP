@@ -22,7 +22,7 @@ import type { PrismaService } from '../src/prisma/prisma.service';
  * Required: NODE_ENV=test|development, MEDIA_REAL_ACCEPTANCE_SERVER=true,
  * MEDIA_REAL_TEST_DATABASE_URL, MEDIA_REAL_TEST_REDIS_URL, MEDIA_BASE_URL,
  * MEDIA_API_KEY and MEDIA_REAL_ACCEPTANCE_TOKEN_FILE (outside the repo, parent 0700).
- * Upstream: HTTPS loopback or the explicitly authorized longdaoai.cn:443 sub2api.
+ * Upstream: HTTPS loopback or the explicitly authorized ai.longdaoec.com:443 sub2api.
  * Optional: MEDIA_REAL_ACCEPTANCE_PORT=3012, MEDIA_REAL_ACCEPTANCE_FIXTURE=<batch>,
  * MEDIA_REAL_ACCEPTANCE_KIND=image|video (default image),
  * MEDIA_REAL_ACCEPTANCE_BALANCE_CNY=0 (maximum 60; isolated local fixture only),
@@ -68,10 +68,10 @@ export function mediaAcceptanceSettings(env: Environment) {
     invalid('Requires explicit loopback Redis database 1..15; DB 0 is not isolated');
   }
   const upstream = localUrl(env.MEDIA_BASE_URL);
-  const authorizedUpstream = loopback(upstream) || (upstream.hostname === 'longdaoai.cn' && !upstream.port);
+  const authorizedUpstream = loopback(upstream) || (upstream.hostname === 'ai.longdaoec.com' && !upstream.port);
   if (upstream.protocol !== 'https:' || !authorizedUpstream || upstream.username || upstream.password ||
       upstream.search || upstream.hash || !['/', '/v1', '/v1/'].includes(upstream.pathname) || env.NODE_TLS_REJECT_UNAUTHORIZED === '0') {
-    invalid('MEDIA_BASE_URL requires HTTPS loopback or authorized longdaoai.cn:443, root or /v1; TLS bypass is forbidden');
+    invalid('MEDIA_BASE_URL requires HTTPS loopback or authorized ai.longdaoec.com:443, root or /v1; TLS bypass is forbidden');
   }
   if (!env.MEDIA_API_KEY?.trim() || env.MEDIA_API_KEY.length > 4096 || /[\r\n]/.test(env.MEDIA_API_KEY)) {
     invalid('MEDIA_API_KEY must be supplied in memory');

@@ -209,7 +209,7 @@ export const SETTING_FIELDS: readonly SettingFieldMeta[] = [
     label: "sub2api 上游地址",
     secret: false,
     envFallback: "SUB2API_BASE_URL",
-    placeholder: "https://longdaoai.cn/v1",
+    placeholder: "https://ai.longdaoec.com/v1",
     category: "ai",
     description: "统一模型上游服务地址。",
     type: "url",

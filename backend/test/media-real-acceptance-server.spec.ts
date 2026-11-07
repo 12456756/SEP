@@ -55,9 +55,9 @@ describe('local media acceptance safety boundaries', () => {
     { MEDIA_REAL_TEST_REDIS_URL: 'redis://127.0.0.1:6379/0' }, { MEDIA_REAL_TEST_REDIS_URL: 'redis://127.0.0.1:6379/1junk' },
     { MEDIA_REAL_TEST_REDIS_URL: 'redis://127.0.0.1:6379/15?host=remote' },
     { MEDIA_BASE_URL: 'https://production.example/v1' }, { MEDIA_BASE_URL: 'http://127.0.0.1:8080/v1' },
-    { MEDIA_BASE_URL: 'http://longdaoai.cn/v1' }, { MEDIA_BASE_URL: 'https://sub.longdaoai.cn/v1' },
-    { MEDIA_BASE_URL: 'https://longdaoai.cn.example/v1' }, { MEDIA_BASE_URL: 'https://longdaoai.cn:9443/v1' },
-    { MEDIA_BASE_URL: 'https://longdaoai.cn/v1?key=secret' }, { MEDIA_BASE_URL: 'https://key@longdaoai.cn/v1' },
+    { MEDIA_BASE_URL: 'http://ai.longdaoec.com/v1' }, { MEDIA_BASE_URL: 'https://legacy-upstream.example/v1' },
+    { MEDIA_BASE_URL: 'https://ai.longdaoec.com.example/v1' }, { MEDIA_BASE_URL: 'https://ai.longdaoec.com:9443/v1' },
+    { MEDIA_BASE_URL: 'https://ai.longdaoec.com/v1?key=secret' }, { MEDIA_BASE_URL: 'https://key@ai.longdaoec.com/v1' },
     { MEDIA_BASE_URL: 'https://key@127.0.0.1/v1' }, { MEDIA_BASE_URL: 'https://127.0.0.1/v1?key=secret' },
     { MEDIA_BASE_URL: 'https://127.0.0.1/proxy' }, { NODE_TLS_REJECT_UNAUTHORIZED: '0' },
     { MEDIA_API_KEY: undefined }, { MEDIA_API_KEY: 'key\nsecret' },
@@ -136,9 +136,9 @@ describe('local media acceptance safety boundaries', () => {
     expect(tx.personalWallet.create).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['https://longdaoai.cn', 'https://longdaoai.cn:443/v1'])('allows authorized sub2api %s without enabling execution', upstream => {
+  it.each(['https://ai.longdaoec.com', 'https://ai.longdaoec.com:443/v1'])('allows authorized sub2api %s without enabling execution', upstream => {
     const local = settings({ MEDIA_BASE_URL: upstream });
-    expect(new URL(local.runtime.MEDIA_BASE_URL).hostname).toBe('longdaoai.cn');
+    expect(new URL(local.runtime.MEDIA_BASE_URL).hostname).toBe('ai.longdaoec.com');
     expect(local.allowExecution).toBe(false);
     expect(local.balanceCny).toBe('0.000000');
   });

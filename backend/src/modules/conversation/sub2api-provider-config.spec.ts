@@ -6,7 +6,7 @@ describe("resolveSub2ApiProviderConfig", () => {
   it("uses the persisted effective settings used by the admin model test", async () => {
     const getEffectiveValue = jest.fn(async (key: string) => {
       if (key === SETTING_KEYS.SUB2API_BASE_URL) {
-        return "https://longdaoai.cn/v1/";
+        return "https://ai.longdaoec.com/v1/";
       }
       if (key === SETTING_KEYS.SUB2API_API_KEY) {
         return "sk-admin-configured";
@@ -17,7 +17,7 @@ describe("resolveSub2ApiProviderConfig", () => {
     await expect(
       resolveSub2ApiProviderConfig({ getEffectiveValue }),
     ).resolves.toEqual({
-      baseURL: "https://longdaoai.cn/v1",
+      baseURL: "https://ai.longdaoec.com/v1",
       apiKey: "sk-admin-configured",
       // 系统设置没配默认模型时回落代码常量，调用方不必各自兜底
       defaultModel: DEFAULT_MODEL_ID,

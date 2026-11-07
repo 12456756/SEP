@@ -36,28 +36,24 @@ jobs:
               - 'deploy/production/Caddyfile.blue-green.snippet'
               - 'backend/Dockerfile'
               - 'web/Dockerfile'
+              - 'deploy/standalone/**'
+              - 'deploy/production/sep-deploy.sh'
+              - 'scripts/deploy-standalone.sh'
               - '.github/workflows/deploy.yml'
 
-  # ── 前后端成对蓝绿部署 ─────────────────────────────────────────────────────
-  deploy-bluegreen:
-    name: Deploy blue/green pair
+  # ── 独立服务器发布 ─────────────────────────────────────────────────────────
+  deploy-standalone:
+    name: Deploy standalone release
     needs: changes
     if: needs.changes.outputs.deploy == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: SSH → 蓝绿部署前后端
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host:     ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key:      ${{ secrets.SERVER_SSH_KEY }}
-          port:     ${{ secrets.SERVER_PORT || 22 }}
-          # 首次构建蓝绿候选镜像和迁移镜像可能超过 15 分钟
-          command_timeout: 30m
-          script: |
-            set -e
-            cd /opt/sep/app
-            git fetch origin main
-            git merge --ff-only origin/main
-            ./deploy/production/sep-deploy.sh deploy-bluegreen
-            ./deploy/production/sep-deploy.sh status
+      - uses: actions/checkout@v4
+      - name: Deploy standalone release
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT || 22 }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: bash scripts/deploy-standalone.sh

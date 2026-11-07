@@ -71,10 +71,10 @@ describe('CsrfGuard', () => {
     });
 
     it('配置域名含大写字母时应匹配浏览器规范化的小写 Origin', () => {
-      process.env.CORS_ORIGIN = 'https://longdaoSEP.cn';
+      process.env.CORS_ORIGIN = 'https://sep.longdaoec.com';
       guard = new CsrfGuard(reflector);
       const context = createMockContext('POST', '/api/auth/login', {
-        origin: 'https://longdaosep.cn',
+        origin: 'https://sep.longdaoec.com',
       });
       expect(guard.canActivate(context)).toBe(true);
     });

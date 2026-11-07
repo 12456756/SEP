@@ -62,15 +62,19 @@ for (const [file, services] of [
       assert.ok(backend.healthcheck.test.join(' ').includes('3001/health'));
     }
     assert.equal(environment.EMBEDDING_PROVIDER, '${EMBEDDING_PROVIDER:-ollama}');
-    assert.equal(environment.EMBEDDING_BASE_URL, '${EMBEDDING_BASE_URL:-http://sep-ollama:11434}');
+    assert.equal(environment.EMBEDDING_BASE_URL, file === 'docker-compose.dev.yml'
+      ? '${SEP_DEV_EMBEDDING_BASE_URL:?SEP_DEV_EMBEDDING_BASE_URL is required}'
+      : '${EMBEDDING_BASE_URL:-http://sep-ollama:11434}');
     assert.equal(environment.EMBEDDING_MODEL, '${EMBEDDING_MODEL:-bge-m3:sep-790764642607}');
     assert.equal(environment.EMBEDDING_MODEL_DIGEST, '${EMBEDDING_MODEL_DIGEST:-sha256:7907646426070047a77226ac3e684fbbe8410524f7b4a74d02837e43f2146bab}');
     assert.equal(environment.EMBEDDING_TOKENIZER, '${EMBEDDING_TOKENIZER:-BAAI/bge-m3@5617a9f61b028005a4858fdac845db406aefb181}');
     assert.equal(environment.EMBEDDING_TOKENIZER_PATH, '${EMBEDDING_TOKENIZER_PATH:-/app/tokenizers/bge-m3/5617a9f61b028005a4858fdac845db406aefb181}');
     assert.ok(backend.volumes.includes('${KNOWLEDGE_TOKENIZERS_HOST_PATH:-../../.cache/tokenizers}:/app/tokenizers:ro'));
     assert.equal(environment.KNOWLEDGE_PRIVATE_PATH, '/app/private/knowledge');
-    const privateRoot = file === 'docker-compose.dev.yml' ? '/opt/sep/knowledge-dev' : '/opt/sep/knowledge';
-    assert.ok(backend.volumes.includes('${KNOWLEDGE_PRIVATE_HOST_PATH:-' + privateRoot + '}:/app/private/knowledge'));
+    const privateRoot = file === 'docker-compose.dev.yml'
+      ? '${SEP_DEV_KNOWLEDGE_PRIVATE_HOST_PATH:?SEP_DEV_KNOWLEDGE_PRIVATE_HOST_PATH is required}'
+      : '${KNOWLEDGE_PRIVATE_HOST_PATH:-/opt/sep/knowledge}';
+    assert.ok(backend.volumes.includes(privateRoot + ':/app/private/knowledge'));
   }
 }
 console.log('sep-compose tests passed (gateway policy and pinned private Ollama/tokenizer configuration, production/dev/all colors)');

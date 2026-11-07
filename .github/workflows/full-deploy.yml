@@ -1,18 +1,7 @@
-name: Full Deployment (Complete Sync & Deploy)
+name: Full Deployment (Standalone Server)
 
 on:
   workflow_dispatch:
-    inputs:
-      force_rebuild:
-        description: '强制完全重建（清理缓存）'
-        required: false
-        type: boolean
-        default: false
-      run_migrations:
-        description: '运行数据库迁移'
-        required: false
-        type: boolean
-        default: true
 
 concurrency:
   group: production-deploy
@@ -20,111 +9,15 @@ concurrency:
 
 jobs:
   full-deploy:
-    name: 完整部署（代码同步 + 构建 + 启动）
+    name: Publish standalone release
     runs-on: ubuntu-latest
     steps:
-      - name: 部署到生产服务器
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host:     ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key:      ${{ secrets.SERVER_SSH_KEY }}
-          port:     ${{ secrets.SERVER_PORT || 22 }}
-          command_timeout: 30m
-          script: |
-            set -e
-
-            echo "=========================================="
-            echo "SEP 完整部署流程"
-            echo "=========================================="
-
-            # 1. 进入项目目录
-            cd /opt/sep/app
-            echo "✓ 工作目录: $(pwd)"
-
-            # 2. 显示当前 git 状态
-            echo ""
-            echo "当前 git 状态:"
-            git status --short
-            git log -1 --oneline
-
-            # 3. 强制同步远程代码（覆盖本地修改）
-            echo ""
-            echo "=========================================="
-            echo "步骤 1/5: 同步代码"
-            echo "=========================================="
-            git fetch origin main
-            git reset --hard origin/main
-            git clean -fd
-            echo "✓ 代码已同步到最新版本:"
-            git log -1 --pretty=format:"%h - %an, %ar : %s"
-            echo ""
-
-            # 4. 检查环境文件
-            echo ""
-            echo "=========================================="
-            echo "步骤 2/5: 检查环境配置"
-            echo "=========================================="
-            if [ ! -f "/opt/sep/.env" ]; then
-              echo "❌ 环境文件不存在: /opt/sep/.env"
-              exit 1
-            fi
-            echo "✓ 环境文件存在"
-
-            # 5. 不停止共享基础设施
-            echo ""
-            echo "=========================================="
-            echo "步骤 3/5: 检查部署边界"
-            echo "=========================================="
-            cd deploy/production
-            echo "只允许操作 SEP 容器；不会停止 PostgreSQL、Redis、Caddy 或龙道中转站"
-
-            # 6. 清理（可选）
-            if [ "${{ github.event.inputs.force_rebuild }}" = "true" ]; then
-              echo ""
-              echo "跳过全局 Docker 清理：禁止触碰共享数据卷"
-            fi
-
-            # 7. 构建并启动所有服务
-            echo ""
-            echo "=========================================="
-            echo "步骤 4/5: 构建并启动服务"
-            echo "=========================================="
-
-            # 统一走受保护脚本：共享数据库就绪检查、迁移失败即停止，
-            # 且部署脚本只操作 SEP 容器。
-            echo "执行受保护的 SEP 部署脚本..."
-            SEP_ASSUME_YES=true ./sep-deploy.sh deploy
-
-            # 8. 显示最终状态
-            echo ""
-            echo "=========================================="
-            echo "步骤 5/5: 部署状态"
-            echo "=========================================="
-            docker compose --env-file /opt/sep/.env ps
-
-            echo ""
-            echo "=========================================="
-            echo "容器详细状态:"
-            echo "=========================================="
-            docker ps -a --filter "name=sep-" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-
-            echo ""
-            echo "=========================================="
-            echo "✅ 完整部署完成"
-            echo "=========================================="
-            echo "后端健康检查: http://$(hostname -I | awk '{print $1}'):3001/health"
-            echo "前端访问地址: http://$(hostname -I | awk '{print $1}'):3000"
-
-            # 9. 显示最近日志（快速检查）
-            echo ""
-            echo "=========================================="
-            echo "后端最近日志（最后 20 行）:"
-            echo "=========================================="
-            docker logs --tail=20 sep-backend 2>&1 || true
-
-            echo ""
-            echo "=========================================="
-            echo "前端最近日志（最后 20 行）:"
-            echo "=========================================="
-            docker logs --tail=20 sep-web 2>&1 || true
+      - uses: actions/checkout@v4
+      - name: Deploy standalone release
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT || 22 }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: bash scripts/deploy-standalone.sh

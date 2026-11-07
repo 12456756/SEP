@@ -144,7 +144,7 @@ export class GatewayService {
   async getSub2ApiConfig(): Promise<{ baseUrl: string; apiKey: string; defaultModel: string }> {
     const baseUrl =
       (await this.settingService.getEffectiveValue(SETTING_KEYS.SUB2API_BASE_URL)) ||
-      'https://longdaoai.cn/v1';
+      'https://ai.longdaoec.com/v1';
     const apiKey =
       (await this.settingService.getEffectiveValue(SETTING_KEYS.SUB2API_API_KEY)) || '';
     // 兜底值必须与 DEFAULT_MODEL_ID 一致。这里原来写死 'gpt-3.5-turbo'，

@@ -4,7 +4,7 @@
 # 复用现有基础设施：
 #   - longdao-postgres (PostgreSQL 18，新建数据库 sep_prod)
 #   - longdao-redis (Redis 8，使用 DB 1)
-#   - longdao-sub2api-blue (sub2api 服务)
+#   - the HTTPS sub2api endpoint configured by SUB2API_BASE_URL
 #   - longdao-network (Docker 网络)
 #
 # 部署步骤：见 README.md
@@ -94,7 +94,7 @@ services:
       # ⚠️ 容器名写死成 -blue 是个隐患：中转若切到 green 或改名，这里会连不上，
       # 表现是「工作安排」报「任务规划模型暂时不可用」、对话无响应 —— 而其他页面
       # 完全正常，很难联想到中转。故做成可覆盖，默认仍是 blue。
-      - SUB2API_BASE_URL=${SUB2API_BASE_URL:-http://longdao-sub2api-blue:8080/v1}
+      - SUB2API_BASE_URL=${SUB2API_BASE_URL:-https://ai.longdaoec.com/v1}
       - SUB2API_API_KEY=${SUB2API_API_KEY}
       - MEDIA_GATEWAY_REAL_ENABLED=${MEDIA_GATEWAY_REAL_ENABLED:-false}
       - MEDIA_VIDEO_REAL_ENABLED=${MEDIA_VIDEO_REAL_ENABLED:-false}
@@ -155,10 +155,10 @@ services:
       - PACKAGE_STORAGE_PATH=/app/storage/packages
 
       # 支付宝回调地址（生产）
-      - API_BASE_URL=https://longdaoSEP.cn/api
-      - WEB_BASE_URL=https://longdaoSEP.cn
-      - FRONTEND_URL=https://longdaoSEP.cn
-      - ASSET_BASE_URL=${ASSET_BASE_URL:-https://longdaoSEP.cn}
+      - API_BASE_URL=https://sep.longdaoec.com/api
+      - WEB_BASE_URL=https://sep.longdaoec.com
+      - FRONTEND_URL=https://sep.longdaoec.com
+      - ASSET_BASE_URL=${ASSET_BASE_URL:-https://sep.longdaoec.com}
       - ALIPAY_SANDBOX_MODE=false
 
       # 时区

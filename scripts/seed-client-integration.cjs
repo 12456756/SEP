@@ -39,8 +39,13 @@ const profiles = [
 
 function assertDevEnvironment() {
   const url = new URL(process.env.DATABASE_URL || '');
-  if (url.pathname !== '/sep_dev' || process.env.API_BASE_URL !== 'https://sep-dev.longdaoSEP.cn/api') {
-    throw new Error('Refusing to initialize anything except the shared sep_dev environment');
+  const apiBase = new URL(process.env.API_BASE_URL || '');
+  const expectedApiBase = process.env.SEP_DEV_API_BASE_URL;
+  if (!expectedApiBase || url.pathname !== '/sep_dev' || apiBase.href !== new URL(expectedApiBase).href) {
+    throw new Error('Refusing to initialize anything except the explicitly configured sep_dev environment');
+  }
+  if (apiBase.hostname === 'sep.longdaoec.com') {
+    throw new Error('Refusing to initialize integration data against production');
   }
   if (new Date() >= EXPIRES_AT) throw new Error('This integration fixture has expired');
 }
@@ -75,7 +80,7 @@ async function main(db) {
   const replacement = process.argv.includes('--relay-config-stdin') ? JSON.parse(fs.readFileSync(0, 'utf8')) : null;
   const baseUrl = replacement?.baseUrl || saved.SUB2API_BASE_URL || process.env.SUB2API_BASE_URL;
   const apiKey = replacement?.apiKey || decrypt(saved.SUB2API_API_KEY) || process.env.SUB2API_API_KEY;
-  if (baseUrl !== 'https://longdaoai.cn/v1' || !apiKey) throw new Error('Expected SEP model relay configuration is missing');
+  if (baseUrl !== 'https://ai.longdaoec.com/v1' || !apiKey) throw new Error('Expected SEP model relay configuration is missing');
   const response = await fetch(`${baseUrl}/models`, { headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(15000) });
   if (!response.ok) throw new Error(`SEP relay model discovery failed: HTTP ${response.status}`);
   const models = await response.json();

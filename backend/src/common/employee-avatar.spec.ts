@@ -73,7 +73,7 @@ describe('employee avatars', () => {
   });
 
   it('keeps local avatars local when payment callbacks use a production frontend URL', () => {
-    process.env = { NODE_ENV: 'development', FRONTEND_URL: 'https://longdaosep.cn' };
+    process.env = { NODE_ENV: 'development', FRONTEND_URL: 'https://sep.longdaoec.com' };
     const result = withEmployeeAvatar({ id: 'e1', avatar: path });
     expect(new URL(result.avatarAsset.faceUrl).origin).toBe('http://localhost:3000');
     expect(new URL(result.avatarAsset.portraitUrl).origin).toBe('http://localhost:3000');

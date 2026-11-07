@@ -5,6 +5,6 @@ Requires=docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/opt/sep/app/deploy/production/maintenance-sep.sh
+ExecStart=/www/sep/source/deploy/production/maintenance-sep.sh
 User=root
 Group=root

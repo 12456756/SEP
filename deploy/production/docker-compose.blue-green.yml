@@ -44,7 +44,7 @@ x-backend-environment: &backend-environment
   # 默认走公网域名（对色切换免疫，且有 Caddy 的健康检查兜底）。
   # 中转两色都声明了颜色中立别名 sub2api，两色容器都重建过之后也可改为
   # http://sub2api:8080/v1 走内网。
-  SUB2API_BASE_URL: ${SUB2API_BASE_URL:-https://longdaoai.cn/v1}
+  SUB2API_BASE_URL: ${SUB2API_BASE_URL:-https://ai.longdaoec.com/v1}
   SUB2API_API_KEY: ${SUB2API_API_KEY}
   MEDIA_GATEWAY_REAL_ENABLED: ${MEDIA_GATEWAY_REAL_ENABLED:-false}
   MEDIA_VIDEO_REAL_ENABLED: ${MEDIA_VIDEO_REAL_ENABLED:-false}
@@ -91,10 +91,10 @@ x-backend-environment: &backend-environment
   UPLOAD_PATH: /app/uploads
   UPLOAD_LOCAL_DIR: /app/uploads/chat
   PACKAGE_STORAGE_PATH: /app/storage/packages
-  API_BASE_URL: https://longdaoSEP.cn/api
-  WEB_BASE_URL: https://longdaoSEP.cn
-  FRONTEND_URL: https://longdaoSEP.cn
-  ASSET_BASE_URL: ${ASSET_BASE_URL:-https://longdaoSEP.cn}
+  API_BASE_URL: https://sep.longdaoec.com/api
+  WEB_BASE_URL: https://sep.longdaoec.com
+  FRONTEND_URL: https://sep.longdaoec.com
+  ASSET_BASE_URL: ${ASSET_BASE_URL:-https://sep.longdaoec.com}
   CORS_ORIGIN: ${CORS_ORIGIN:?CORS_ORIGIN is required}
   NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:?NEXT_PUBLIC_WS_URL is required}
   ALIPAY_SANDBOX_MODE: "false"

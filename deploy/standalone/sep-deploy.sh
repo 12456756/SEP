@@ -41,7 +41,7 @@ reload_caddy() {
 
 enable_maintenance() {
   cat > "$CADDYFILE" <<'CADDY'
-sep.longdaoec.com, longdaosep.cn {
+sep.longdaoec.com {
     handle /sep-client/* {
         reverse_proxy sep-downloads:80
     }

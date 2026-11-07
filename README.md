@@ -81,7 +81,7 @@ DATABASE_URL="postgresql://sep_user:sep_pass@localhost:5432/sep_platform"
 JWT_SECRET="your-secret-key-change-in-production"
 
 # sub2api 配置（AI 模型中转站）
-SUB2API_BASE_URL="https://longdaoai.cn/v1"
+SUB2API_BASE_URL="https://ai.longdaoec.com/v1"
 SUB2API_API_KEY="sk-your-key"
 SUB2API_DEFAULT_MODEL="gpt-3.5-turbo"
 

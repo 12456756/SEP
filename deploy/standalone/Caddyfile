@@ -1,9 +1,3 @@
-{
-    servers {
-        trusted_proxies static 64.83.39.223/32
-        trusted_proxies_strict
-    }
-}
 (skill_import_proxy) {
     reverse_proxy sep-green-backend:3001 {
         header_up X-Real-IP {client_ip}
@@ -17,7 +11,7 @@
     }
 }
 
-sep.longdaoec.com, longdaosep.cn {
+sep.longdaoec.com {
 
     @sep_downloads path /sep-client/*
     reverse_proxy @sep_downloads sep-downloads:80

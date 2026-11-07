@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 
-const base = process.env.SEP_BASE_URL || 'https://sep-dev.longdaoSEP.cn/api';
-assert.equal(new URL(base).hostname.toLowerCase(), 'sep-dev.longdaosep.cn', 'Only the shared dev environment is allowed');
+const base = process.env.SEP_BASE_URL;
+assert.ok(base, 'SEP_BASE_URL must point to a dedicated integration environment');
+const baseUrl = new URL(base);
+assert.equal(baseUrl.protocol, 'https:', 'Integration API must use HTTPS');
+assert.notEqual(baseUrl.hostname.toLowerCase(), 'sep.longdaoec.com', 'Mutative smoke tests must not target production');
 assert.ok(process.env.SEP_EMAIL && process.env.SEP_PASSWORD, 'SEP_EMAIL and SEP_PASSWORD are required');
 
 let token;

@@ -5,8 +5,8 @@ x-backend-environment: &backend-environment
   # 设置 SEP_DEV_NODE_ENV=production 时必须同时提供完整生产认证配置。
   NODE_ENV: ${SEP_DEV_NODE_ENV:-development}
   PORT: "3001"
-  DATABASE_URL: postgresql://${SEP_DEV_DB_USER:?SEP_DEV_DB_USER is required}:${SEP_DEV_DB_PASSWORD:?SEP_DEV_DB_PASSWORD is required}@longdao-postgres:5432/sep_dev
-  REDIS_URL: ${SEP_DEV_REDIS_URL:-redis://longdao-redis:6379/2}
+  DATABASE_URL: ${SEP_DEV_DATABASE_URL:?SEP_DEV_DATABASE_URL is required}
+  REDIS_URL: ${SEP_DEV_REDIS_URL:?SEP_DEV_REDIS_URL is required}
   SKILL_IMPORT_ENABLED: ${SKILL_IMPORT_ENABLED:-false}
   SKILL_IMPORT_INSTANCE_ID: ${SKILL_IMPORT_INSTANCE_ID:-}
   SKILL_IMPORT_MIN_CLIENT_VERSION: ${SKILL_IMPORT_MIN_CLIENT_VERSION:-1.0.0}
@@ -35,7 +35,7 @@ x-backend-environment: &backend-environment
   QQ_APP_ID: ${SEP_DEV_QQ_APP_ID:-}
   QQ_APP_KEY: ${SEP_DEV_QQ_APP_KEY:-}
   QQ_REDIRECT_URI: ${SEP_DEV_QQ_REDIRECT_URI:-http://localhost:3001/api/auth/oauth/qq/callback}
-  SUB2API_BASE_URL: ${SUB2API_BASE_URL:-https://longdaoai.cn/v1}
+  SUB2API_BASE_URL: ${SUB2API_BASE_URL:?SUB2API_BASE_URL is required}
   SUB2API_API_KEY: ${SUB2API_API_KEY:?SUB2API_API_KEY is required}
   GATEWAY_MODEL_RATE_LIMIT: ${GATEWAY_MODEL_RATE_LIMIT:-60}
   GATEWAY_MODEL_RATE_WINDOW_MS: ${GATEWAY_MODEL_RATE_WINDOW_MS:-60000}
@@ -63,7 +63,7 @@ x-backend-environment: &backend-environment
   SUB2API_DEFAULT_MODEL: ${SUB2API_DEFAULT_MODEL:-gemini-3.5-flash-high}
   SUB2API_PLANNER_MODEL: ${SUB2API_PLANNER_MODEL:-}
   EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-ollama}
-  EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL:-http://sep-ollama:11434}
+  EMBEDDING_BASE_URL: ${SEP_DEV_EMBEDDING_BASE_URL:?SEP_DEV_EMBEDDING_BASE_URL is required}
   EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-m3:sep-790764642607}
   EMBEDDING_MODEL_DIGEST: ${EMBEDDING_MODEL_DIGEST:-sha256:7907646426070047a77226ac3e684fbbe8410524f7b4a74d02837e43f2146bab}
   EMBEDDING_TOKENIZER: ${EMBEDDING_TOKENIZER:-BAAI/bge-m3@5617a9f61b028005a4858fdac845db406aefb181}
@@ -76,12 +76,12 @@ x-backend-environment: &backend-environment
   KNOWLEDGE_PRIVATE_PATH: /app/private/knowledge
   UPLOAD_PATH: /app/uploads
   PACKAGE_STORAGE_PATH: /app/storage/packages
-  API_BASE_URL: https://sep-dev.longdaoSEP.cn/api
-  WEB_BASE_URL: https://sep-dev.longdaoSEP.cn
-  FRONTEND_URL: https://sep-dev.longdaoSEP.cn
-  ASSET_BASE_URL: ${ASSET_BASE_URL:-https://sep-dev.longdaoSEP.cn}
-  CORS_ORIGIN: https://sep-dev.longdaoSEP.cn
-  NEXT_PUBLIC_WS_URL: wss://sep-dev.longdaoSEP.cn
+  API_BASE_URL: ${SEP_DEV_API_BASE_URL:?SEP_DEV_API_BASE_URL is required}
+  WEB_BASE_URL: ${SEP_DEV_WEB_BASE_URL:?SEP_DEV_WEB_BASE_URL is required}
+  FRONTEND_URL: ${SEP_DEV_WEB_BASE_URL:?SEP_DEV_WEB_BASE_URL is required}
+  ASSET_BASE_URL: ${SEP_DEV_WEB_BASE_URL:?SEP_DEV_WEB_BASE_URL is required}
+  CORS_ORIGIN: ${SEP_DEV_WEB_BASE_URL:?SEP_DEV_WEB_BASE_URL is required}
+  NEXT_PUBLIC_WS_URL: ${SEP_DEV_WS_URL:?SEP_DEV_WS_URL is required}
   ALIPAY_SANDBOX_MODE: "true"
   TZ: Asia/Shanghai
 
@@ -98,9 +98,9 @@ x-backend-defaults: &backend-defaults
     - sep_dev_uploads:/app/uploads
     - sep_dev_packages:/app/storage/packages
     - ${KNOWLEDGE_TOKENIZERS_HOST_PATH:-../../.cache/tokenizers}:/app/tokenizers:ro
-    - ${KNOWLEDGE_PRIVATE_HOST_PATH:-/opt/sep/knowledge-dev}:/app/private/knowledge
+    - ${SEP_DEV_KNOWLEDGE_PRIVATE_HOST_PATH:?SEP_DEV_KNOWLEDGE_PRIVATE_HOST_PATH is required}:/app/private/knowledge
   networks:
-    - longdao-network
+    - sep-dev-network
   healthcheck:
     test: ["CMD-SHELL", "nc -z localhost 3001 || exit 1"]
     interval: 10s
@@ -122,7 +122,7 @@ x-web-defaults: &web-defaults
     NEXT_TELEMETRY_DISABLED: "1"
     TZ: Asia/Shanghai
   networks:
-    - longdao-network
+    - sep-dev-network
   healthcheck:
     test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3000/ || exit 1"]
     interval: 10s
@@ -140,10 +140,10 @@ services:
     container_name: sep-dev-migrate
     restart: "no"
     environment:
-      DATABASE_URL: postgresql://${SEP_DEV_DB_USER:?SEP_DEV_DB_USER is required}:${SEP_DEV_DB_PASSWORD:?SEP_DEV_DB_PASSWORD is required}@longdao-postgres:5432/sep_dev
+      DATABASE_URL: ${SEP_DEV_DATABASE_URL:?SEP_DEV_DATABASE_URL is required}
       TZ: Asia/Shanghai
     networks:
-      - longdao-network
+      - sep-dev-network
     # The shared PostgreSQL image does not include pgvector. Keep the migration
     # history compatible with the existing BYTEA fallback in this environment.
     command:
@@ -173,7 +173,7 @@ services:
       dockerfile: web/Dockerfile
       args:
         API_ORIGIN: http://sep-dev-backend:3001
-        NEXT_PUBLIC_WS_URL: wss://sep-dev.longdaoSEP.cn
+        NEXT_PUBLIC_WS_URL: ${SEP_DEV_WS_URL:?SEP_DEV_WS_URL is required}
     image: sep-dev-web:${DEPLOY_TAG:-local}
     container_name: sep-dev-web
     environment:
@@ -190,5 +190,6 @@ volumes:
     name: sep_dev_packages
 
 networks:
-  longdao-network:
+  sep-dev-network:
+    name: ${SEP_DEV_DOCKER_NETWORK:?SEP_DEV_DOCKER_NETWORK is required}
     external: true

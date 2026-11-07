@@ -2,16 +2,6 @@ name: Manual Deploy to Production
 
 on:
   workflow_dispatch:
-    inputs:
-      target:
-        description: '部署目标'
-        required: true
-        type: choice
-        options:
-          - all
-          - backend
-          - web
-        default: 'all'
 
 concurrency:
   group: production-deploy
@@ -19,32 +9,15 @@ concurrency:
 
 jobs:
   manual-deploy:
-    name: Deploy ${{ github.event.inputs.target }}
+    name: Deploy standalone release
     runs-on: ubuntu-latest
     steps:
-      - name: SSH → 执行部署
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host:     ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key:      ${{ secrets.SERVER_SSH_KEY }}
-          port:     ${{ secrets.SERVER_PORT || 22 }}
-          command_timeout: 15m
-          script: |
-            set -e
-            cd /opt/sep/app
-            git pull origin main
-
-            case "${{ github.event.inputs.target }}" in
-              all)
-                ./deploy/production/sep-deploy.sh deploy-bluegreen
-                ;;
-              backend)
-                ./deploy/production/sep-deploy.sh deploy-bluegreen
-                ;;
-              web)
-                ./deploy/production/sep-deploy.sh deploy-bluegreen
-                ;;
-            esac
-
-            ./deploy/production/sep-deploy.sh status
+      - uses: actions/checkout@v4
+      - name: Deploy standalone release
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT || 22 }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: bash scripts/deploy-standalone.sh

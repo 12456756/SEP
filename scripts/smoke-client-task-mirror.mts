@@ -9,8 +9,11 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 
-const base = process.env.SEP_BASE_URL ?? 'https://sep-dev.longdaoSEP.cn/api';
-assert.equal(base.toLowerCase(), 'https://sep-dev.longdaosep.cn/api', 'Only shared integration is allowed');
+const base = process.env.SEP_BASE_URL;
+assert.ok(base, 'SEP_BASE_URL must point to a dedicated integration environment');
+const baseUrl = new URL(base);
+assert.equal(baseUrl.protocol, 'https:', 'Integration API must use HTTPS');
+assert.notEqual(baseUrl.hostname.toLowerCase(), 'sep.longdaoec.com', 'Mutative smoke tests must not target production');
 assert.ok(process.env.SEP_CLIENT_REPO, 'SEP_CLIENT_REPO is required');
 assert.ok(process.env.SEP_ACCESS_TOKEN, 'SEP_ACCESS_TOKEN is required (never print it)');
 process.env.SEP_BASE_URL = base;

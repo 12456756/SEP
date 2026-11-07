@@ -5,7 +5,7 @@ set -Eeuo pipefail
 # `docker system prune -a` and never removes Docker volumes.
 
 LOCK_FILE="${SEP_MAINTENANCE_LOCK:-/run/lock/sep-maintenance.lock}"
-DEPLOY_LOCK_FILE="${SEP_DEPLOY_LOCK_FILE:-/opt/sep/.deploy.lock}"
+DEPLOY_LOCK_FILE="${SEP_DEPLOY_LOCK_FILE:-/www/sep/.deploy.lock}"
 LOG_FILE="${SEP_MAINTENANCE_LOG:-/var/log/sep-maintenance.log}"
 MOUNT_POINT="${SEP_MAINTENANCE_MOUNT:-/}"
 WARN_PERCENT="${SEP_MAINTENANCE_WARN_PERCENT:-75}"

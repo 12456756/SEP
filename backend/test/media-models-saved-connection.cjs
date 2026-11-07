@@ -19,7 +19,7 @@ async function main() {
     });
     const settings = new Map(rows.map(row => [row.key, row.value]));
     const base = new URL(settings.get('MEDIA_BASE_URL') || process.env.MEDIA_BASE_URL);
-    if (base.origin !== 'https://longdaoai.cn' || base.search || base.hash || base.username || base.password || !['/', '/v1', '/v1/'].includes(base.pathname)) throw new Error('UNEXPECTED_MEDIA_ORIGIN');
+    if (base.origin !== 'https://ai.longdaoec.com' || base.search || base.hash || base.username || base.password || !['/', '/v1', '/v1/'].includes(base.pathname)) throw new Error('UNEXPECTED_MEDIA_ORIGIN');
     const stored = settings.get('MEDIA_API_KEY');
     const key = stored ? decrypt(stored) : process.env.MEDIA_API_KEY;
     if (!key || /[\r\n]/.test(key)) throw new Error('MEDIA_CONNECTION_UNAVAILABLE');
