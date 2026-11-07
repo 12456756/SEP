@@ -1,8 +1,6 @@
 name: Deploy to Production
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 # 同一时间只跑一个部署，避免并发冲突
@@ -11,41 +9,9 @@ concurrency:
   cancel-in-progress: false   # 不取消，排队等待
 
 jobs:
-  # ── 检测哪些部分有变化 ────────────────────────────────────────────────────
-  changes:
-    name: Detect changes
-    runs-on: ubuntu-latest
-    outputs:
-      deploy:  ${{ steps.filter.outputs.deploy }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
-
-      - uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          filters: |
-            deploy:
-              - 'backend/**'
-              - 'web/**'
-              - 'pnpm-lock.yaml'
-              - 'deploy/production/docker-compose.yml'
-              - 'deploy/production/docker-compose.blue-green.yml'
-              - 'deploy/production/sep-deploy.sh'
-              - 'deploy/production/Caddyfile.blue-green.snippet'
-              - 'backend/Dockerfile'
-              - 'web/Dockerfile'
-              - 'deploy/standalone/**'
-              - 'deploy/production/sep-deploy.sh'
-              - 'scripts/deploy-standalone.sh'
-              - '.github/workflows/deploy.yml'
-
   # ── 独立服务器发布 ─────────────────────────────────────────────────────────
   deploy-standalone:
     name: Deploy standalone release
-    needs: changes
-    if: needs.changes.outputs.deploy == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
