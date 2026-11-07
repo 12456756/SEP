@@ -5,6 +5,7 @@ import { useParams, useRouter } from 'next/navigation';
 import {
   useEnterpriseDetail,
   useCreditAdjustment,
+  useRefundDeposit,
   useSuspendEnterprise,
   useResumeEnterprise,
 } from '@/features/admin/use-admin';
@@ -13,6 +14,8 @@ import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import type { EnterpriseDetail } from '@/features/admin/admin-api';
 import { toast } from '@/components/ui/toast';
 import { SUBSCRIPTION_STATUS_LABEL, SUBSCRIPTION_STATUS_STYLE } from '@/lib/utils';
 import {
@@ -61,6 +64,7 @@ export default function EnterpriseDetailPage() {
 
   const { data: enterprise, isLoading, error } = useEnterpriseDetail(enterpriseId);
   const creditAdjustment = useCreditAdjustment();
+  const refundDeposit = useRefundDeposit();
   const suspendEnterprise = useSuspendEnterprise();
   const resumeEnterprise = useResumeEnterprise();
 
@@ -73,6 +77,10 @@ export default function EnterpriseDetailPage() {
   const [creditType, setCreditType] = useState<'RECHARGE' | 'DEDUCT'>('RECHARGE');
   const [creditAmount, setCreditAmount] = useState('');
   const [creditNote, setCreditNote] = useState('');
+  const [refundTransaction, setRefundTransaction] = useState<EnterpriseDetail['transactions'][number] | null>(null);
+  const [refundMode, setRefundMode] = useState<'all' | 'partial'>('all');
+  const [refundAmount, setRefundAmount] = useState('');
+  const [refundReason, setRefundReason] = useState('');
 
   // Suspend dialog state
   const [suspendDialogOpen, setSuspendDialogOpen] = useState(false);
@@ -139,6 +147,28 @@ export default function EnterpriseDetailPage() {
       toast.success('企业已解冻');
     } catch (err) {
       toast.error('解冻失败', err instanceof Error ? err.message : '请稍后重试');
+    }
+  };
+
+  const handleRefund = async () => {
+    if (!refundTransaction) return;
+    const amount = refundMode === 'all' ? refundTransaction.refundableAmount : Number(refundAmount);
+    if (!Number.isFinite(amount) || amount <= 0 || amount > refundTransaction.refundableAmount) {
+      toast.error('请输入有效的退款金额', `最多可退 ¥${refundTransaction.refundableAmount.toFixed(2)}`);
+      return;
+    }
+    try {
+      await refundDeposit.mutateAsync({
+        enterpriseId,
+        transactionId: refundTransaction.id,
+        data: { amount, reason: refundReason.trim() || undefined },
+      });
+      toast.success('退款成功', `已退还 ¥${amount.toFixed(2)}`);
+      setRefundTransaction(null);
+      setRefundAmount('');
+      setRefundReason('');
+    } catch (err) {
+      toast.error('退款失败', err instanceof Error ? err.message : '请刷新后重试');
     }
   };
 
@@ -399,6 +429,7 @@ export default function EnterpriseDetailPage() {
                       <th className="px-5 py-2 text-right font-medium">金额</th>
                       <th className="px-5 py-2 text-left font-medium">说明</th>
                       <th className="px-5 py-2 text-left font-medium">时间</th>
+                      <th className="px-5 py-2 text-left font-medium">操作</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -420,6 +451,22 @@ export default function EnterpriseDetailPage() {
                         <td className="px-5 py-3">{tx.description || '-'}</td>
                         <td className="px-5 py-3 text-fg-muted">
                           {new Date(tx.createdAt).toLocaleString('zh-CN')}
+                        </td>
+                        <td className="px-5 py-3">
+                          {tx.type === 'DEPOSIT' && tx.refundableAmount > 0 && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => {
+                                setRefundTransaction(tx);
+                                setRefundMode('all');
+                                setRefundAmount('');
+                                setRefundReason('');
+                              }}
+                            >
+                              退款
+                            </Button>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -455,6 +502,49 @@ export default function EnterpriseDetailPage() {
           </CardContent>
         </Card>
       )}
+
+      <Dialog open={!!refundTransaction} onOpenChange={(open) => !open && setRefundTransaction(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>充值退款</DialogTitle>
+            <DialogDescription>仅退还该笔充值尚未使用的余额，已消费金额不支持在线退款。</DialogDescription>
+          </DialogHeader>
+          {refundTransaction && (
+            <div className="space-y-4 text-sm">
+              <div className="grid grid-cols-2 gap-3 rounded-md bg-muted/40 p-3">
+                <span className="text-fg-muted">原充值金额</span><span className="text-right font-mono">¥{Math.abs(refundTransaction.amount).toFixed(2)}</span>
+                <span className="text-fg-muted">已退款金额</span><span className="text-right font-mono">¥{refundTransaction.refundedAmount.toFixed(2)}</span>
+                <span className="text-fg-muted">当前可退款</span><span className="text-right font-mono font-semibold">¥{refundTransaction.refundableAmount.toFixed(2)}</span>
+                <span className="text-fg-muted">企业当前余额</span><span className="text-right font-mono">¥{balance.toFixed(2)}</span>
+              </div>
+              <div className="space-y-2">
+                <p className="font-medium">退款金额</p>
+                <label className="flex items-center gap-2">
+                  <input type="radio" name="refund-mode" checked={refundMode === 'all'} onChange={() => setRefundMode('all')} />
+                  退还全部可退余额 ¥{refundTransaction.refundableAmount.toFixed(2)}
+                </label>
+                <label className="flex items-center gap-2">
+                  <input type="radio" name="refund-mode" checked={refundMode === 'partial'} onChange={() => setRefundMode('partial')} />
+                  退还部分金额
+                </label>
+                {refundMode === 'partial' && (
+                  <Input type="number" min="0.01" max={refundTransaction.refundableAmount} step="0.01" value={refundAmount} onChange={(event) => setRefundAmount(event.target.value)} placeholder="请输入退款金额" />
+                )}
+              </div>
+              <div className="space-y-2">
+                <label className="font-medium" htmlFor="refund-reason">退款原因（选填）</label>
+                <textarea id="refund-reason" className="w-full resize-none rounded border border-border px-3 py-2" rows={3} maxLength={200} value={refundReason} onChange={(event) => setRefundReason(event.target.value)} placeholder="可填写退款说明" />
+              </div>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="secondary" onClick={() => setRefundTransaction(null)}>取消</Button>
+            <Button onClick={handleRefund} disabled={refundDeposit.isPending}>
+              {refundDeposit.isPending ? '处理中...' : '确认退款'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Credit Dialog */}
       {creditDialogOpen && (

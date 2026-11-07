@@ -85,6 +85,8 @@ export interface EnterpriseDetail {
     description: string | null;
     metadata: any;
     createdAt: string;
+    refundedAmount: number;
+    refundableAmount: number;
   }>;
   departments: Array<{
     id: string;
@@ -102,6 +104,19 @@ export interface CreditAdjustmentRequest {
 export interface CreditAdjustmentResponse {
   success: boolean;
   newBalance: number;
+}
+
+export interface RefundDepositRequest {
+  amount: number;
+  reason?: string;
+}
+
+export interface RefundDepositResponse {
+  success: boolean;
+  transactionId: string;
+  refundAmount: number;
+  balance: number;
+  remainingRefundableAmount: number;
 }
 
 export interface SuspendEnterpriseRequest {
@@ -337,6 +352,13 @@ export const adminApi = {
     return api.post<CreditAdjustmentResponse>(
       `/admin/enterprises/${id}/credit`,
       data
+    );
+  },
+
+  refundDeposit: (enterpriseId: string, transactionId: string, data: RefundDepositRequest) => {
+    return api.post<RefundDepositResponse>(
+      `/admin/enterprises/${enterpriseId}/transactions/${transactionId}/refund`,
+      data,
     );
   },
 

@@ -6,6 +6,7 @@ import { PersonalWalletService } from '../personal-wallet/personal-wallet.servic
 import { NotFoundException, BadRequestException } from '@nestjs/common';
 import { Prisma, TransactionType } from '@prisma/client';
 import { SettingService } from '../setting/setting.service';
+import { SessionService } from '../auth/session.service';
 
 describe('AdminService', () => {
   let service: AdminService;
@@ -64,6 +65,7 @@ describe('AdminService', () => {
   };
   const mockPersonalWalletService = { creditContributionRewardInTx: jest.fn() };
   const mockSettingService = { getEffectiveValue: jest.fn() };
+  const mockSessionService = { revokeEnterpriseSessionsInTx: jest.fn().mockResolvedValue(2) };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -79,6 +81,7 @@ describe('AdminService', () => {
         },
         { provide: PersonalWalletService, useValue: mockPersonalWalletService },
         { provide: SettingService, useValue: mockSettingService },
+        { provide: SessionService, useValue: mockSessionService },
       ],
     }).compile();
 
@@ -92,6 +95,7 @@ describe('AdminService', () => {
     mockWalletService.adminDeduct.mockResolvedValue({ balance: 50 });
     mockPrismaService.skillVersion.findMany.mockResolvedValue([]);
     mockPrismaService.$transaction.mockImplementation((callback) => callback(mockPrismaService));
+    mockSessionService.revokeEnterpriseSessionsInTx.mockReset().mockResolvedValue(2);
   });
 
   describe('listEmployees', () => {
@@ -542,6 +546,8 @@ describe('AdminService', () => {
           description: '支付宝充值',
           metadata: null,
           createdAt,
+          refundedAmount: 0,
+          refundableAmount: 47568,
         },
       ]);
       expect(prisma.enterprise.findUnique).toHaveBeenCalledWith({
@@ -719,6 +725,9 @@ describe('AdminService', () => {
           }),
         },
       });
+      expect(mockSessionService.revokeEnterpriseSessionsInTx).toHaveBeenCalledWith(
+        mockPrismaService, 'ent1', 'enterprise_suspended',
+      );
     });
 
     it('should throw BadRequestException if already suspended', async () => {

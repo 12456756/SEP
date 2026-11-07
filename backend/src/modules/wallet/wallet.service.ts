@@ -240,6 +240,88 @@ export class WalletService {
     return tx ? refund(tx) : this.prisma.$transaction(refund);
   }
 
+  /** Refund unused funds from one deposit into the external payment channel manually. */
+  async refundDeposit(params: {
+    enterpriseId: string;
+    depositTransactionId: string;
+    amount: number;
+    reason?: string;
+    operatorId: string;
+  }) {
+    const { enterpriseId, depositTransactionId, amount, reason, operatorId } = params;
+    if (!Number.isFinite(amount) || amount <= 0 || Math.round(amount * 100) !== amount * 100) {
+      throw new BadRequestException('退款金额必须大于 0 且最多保留两位小数');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      await assertActiveEnterpriseInTx(tx, enterpriseId);
+      const wallet = await tx.enterpriseWallet.findUnique({ where: { enterpriseId } });
+      if (!wallet) throw new NotFoundException(`企业钱包不存在: ${enterpriseId}`);
+
+      const deposit = await tx.walletTransaction.findFirst({
+        where: { id: depositTransactionId, walletId: wallet.id, type: WalletTransactionType.DEPOSIT },
+      });
+      if (!deposit) throw new NotFoundException('充值记录不存在');
+
+      const priorRefunds = await tx.walletTransaction.findMany({
+        where: {
+          walletId: wallet.id,
+          type: WalletTransactionType.REFUND,
+          metadata: { path: ['sourceTransactionId'], equals: depositTransactionId },
+        },
+        select: { amount: true },
+      });
+      const refundedAmount = priorRefunds.reduce(
+        (sum, refund) => sum.add(refund.amount.abs()),
+        new Decimal(0),
+      );
+      const sourceRemaining = Decimal.max(new Decimal(deposit.amount).abs().sub(refundedAmount), 0);
+      const spendableBalance = Decimal.max(
+        wallet.balance.sub(wallet.computeReservedCNY).sub(wallet.frozenAmount),
+        0,
+      );
+      const refundableAmount = Decimal.min(sourceRemaining, spendableBalance);
+      const refundAmount = new Decimal(amount).toDecimalPlaces(2);
+
+      if (refundAmount.greaterThan(refundableAmount)) {
+        throw new BadRequestException(`退款金额超过当前可退金额 ¥${refundableAmount.toFixed(2)}`);
+      }
+
+      const balanceAfter = wallet.balance.sub(refundAmount);
+      const updated = await tx.enterpriseWallet.updateMany({
+        where: { enterpriseId, version: wallet.version },
+        data: {
+          balance: balanceAfter,
+          totalRefund: { increment: refundAmount },
+          version: { increment: 1 },
+        },
+      });
+      if (updated.count === 0) throw new ConflictException('余额已发生变化，请刷新后重试');
+
+      const transaction = await tx.walletTransaction.create({
+        data: {
+          walletId: wallet.id,
+          type: WalletTransactionType.REFUND,
+          amount: refundAmount.neg(),
+          balanceBefore: wallet.balance,
+          balanceAfter,
+          relatedType: 'deposit_refund',
+          relatedId: depositTransactionId,
+          description: reason?.trim() || '充值退款',
+          metadata: { sourceTransactionId: depositTransactionId, refundKind: 'DEPOSIT_REFUND' },
+          createdBy: operatorId,
+        },
+      });
+
+      return {
+        transaction,
+        balance: balanceAfter.toNumber(),
+        refundAmount: refundAmount.toNumber(),
+        remainingRefundableAmount: Decimal.max(sourceRemaining.sub(refundAmount), 0).toNumber(),
+      };
+    });
+  }
+
   /**
    * 获取交易记录
    */

@@ -96,6 +96,12 @@ export class AdminService {
     // schema 里标注废弃的字段，后者只剩 gateway 链路在写，运营端看到的
     // 余额和流水都对不上企业自己看到的数。
     const { wallet, ...rest } = enterprise;
+    const refunds = wallet && typeof (this.prisma.walletTransaction as any).findMany === 'function'
+      ? await this.prisma.walletTransaction.findMany({
+        where: { walletId: wallet.id, type: 'REFUND' },
+        select: { amount: true, metadata: true },
+      })
+      : [];
     return {
       ...rest,
       balance: Number(wallet?.balance ?? 0),
@@ -108,7 +114,42 @@ export class AdminService {
         description: tx.description,
         metadata: tx.metadata,
         createdAt: tx.createdAt,
+        refundedAmount: tx.type === 'DEPOSIT'
+          ? Number(refunds
+            .filter((refund) => (refund.metadata as any)?.sourceTransactionId === tx.id)
+            .reduce((sum, refund) => sum + Math.abs(Number(refund.amount)), 0))
+          : 0,
+        refundableAmount: tx.type === 'DEPOSIT'
+          ? Math.max(0, Math.min(
+            Math.abs(Number(tx.amount)) - Number(refunds
+              .filter((refund) => (refund.metadata as any)?.sourceTransactionId === tx.id)
+              .reduce((sum, refund) => sum + Math.abs(Number(refund.amount)), 0)),
+            Math.max(0, Number(wallet?.balance ?? 0) - Number(wallet?.computeReservedCNY ?? 0) - Number(wallet?.frozenAmount ?? 0)),
+          ))
+          : 0,
       })),
+    };
+  }
+
+  async refundDeposit(params: {
+    enterpriseId: string;
+    depositTransactionId: string;
+    amount: number;
+    reason?: string;
+    operatorId: string;
+  }) {
+    const enterprise = await this.prisma.enterprise.findUnique({
+      where: { id: params.enterpriseId },
+      select: { id: true },
+    });
+    if (!enterprise) throw new NotFoundException('企业不存在');
+    const result = await this.walletService.refundDeposit(params);
+    return {
+      success: true,
+      transactionId: result.transaction.id,
+      refundAmount: result.refundAmount,
+      balance: result.balance,
+      remainingRefundableAmount: result.remainingRefundableAmount,
     };
   }
 

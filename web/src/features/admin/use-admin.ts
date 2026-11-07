@@ -311,6 +311,7 @@ import type {
   EnterpriseListResponse,
   EnterpriseDetail,
   CreditAdjustmentRequest,
+  RefundDepositRequest,
   SuspendEnterpriseRequest,
 } from './admin-api';
 import { adminApi } from './admin-api';
@@ -333,6 +334,23 @@ export function useCreditAdjustment() {
       qc.invalidateQueries({ queryKey: ['admin', 'enterprises', 'list'] });
       // 充值改了余额和流水，企业列表与资金流水页（合计 + 列表）都要跟着刷 ——
       // 原先只失效了带 'list' 的那个 key，充完钱回列表看还是旧余额
+      qc.invalidateQueries({ queryKey: ['admin', 'enterprises'] });
+      qc.invalidateQueries({ queryKey: ['admin', 'compute'] });
+    },
+  });
+}
+
+export function useRefundDeposit() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ enterpriseId, transactionId, data }: {
+      enterpriseId: string;
+      transactionId: string;
+      data: RefundDepositRequest;
+    }) => adminApi.refundDeposit(enterpriseId, transactionId, data),
+    onSuccess: (_result, { enterpriseId }) => {
+      qc.invalidateQueries({ queryKey: ['admin', 'enterprises', enterpriseId] });
+      qc.invalidateQueries({ queryKey: ['admin', 'enterprises', 'list'] });
       qc.invalidateQueries({ queryKey: ['admin', 'enterprises'] });
       qc.invalidateQueries({ queryKey: ['admin', 'compute'] });
     },

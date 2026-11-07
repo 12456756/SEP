@@ -43,6 +43,11 @@ const CreditAdjustmentSchema = z.object({
   note: z.string().min(1, '备注不能为空').max(200, '备注不能超过200字符'),
 });
 
+const RefundDepositSchema = z.object({
+  amount: z.number().positive('退款金额必须大于0'),
+  reason: z.string().max(200, '退款原因不能超过200字符').optional(),
+});
+
 const SuspendSchema = z.object({
   reason: z.string().min(1, '原因不能为空').max(500, '原因不能超过500字符'),
 });
@@ -277,6 +282,26 @@ export class AdminController {
       amount: dto.amount,
       type: dto.type,
       note: dto.note,
+      operatorId: req.user.id,
+    });
+  }
+
+  @Post('enterprises/:enterpriseId/transactions/:transactionId/refund')
+  @ApiOperation({ summary: '退还企业充值记录的未使用余额' })
+  @ApiResponse({ status: 200, description: '退款成功，返回新余额和剩余可退款金额' })
+  @ApiResponse({ status: 400, description: '金额无效、余额不足或记录不可退款' })
+  @ApiResponse({ status: 404, description: '企业或充值记录不存在' })
+  refundDeposit(
+    @Param('enterpriseId') enterpriseId: string,
+    @Param('transactionId') transactionId: string,
+    @Body(new ZodValidationPipe(RefundDepositSchema)) dto: z.infer<typeof RefundDepositSchema>,
+    @Request() req: any,
+  ) {
+    return this.adminService.refundDeposit({
+      enterpriseId,
+      depositTransactionId: transactionId,
+      amount: dto.amount,
+      reason: dto.reason,
       operatorId: req.user.id,
     });
   }

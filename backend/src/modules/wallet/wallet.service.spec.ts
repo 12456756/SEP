@@ -53,6 +53,7 @@ describe('WalletService', () => {
       },
       walletTransaction: {
         create: jest.fn(),
+        findFirst: jest.fn(),
         findMany: jest.fn(),
         count: jest.fn(),
       },
@@ -245,6 +246,60 @@ describe('WalletService', () => {
       await expect(
         service.refund('ent-1', 0, 'subscription', null, '退款'),
       ).rejects.toThrow(BadRequestException);
+    });
+  });
+
+  describe('refundDeposit', () => {
+    it('refunds only the unused amount of a deposit and records its source', async () => {
+      (prisma.enterpriseWallet.findUnique as jest.Mock).mockResolvedValue(mockWallet);
+      (prisma.walletTransaction.findFirst as jest.Mock).mockResolvedValue({
+        id: 'deposit-1',
+        walletId: 'wallet-1',
+        type: 'DEPOSIT',
+        amount: new Decimal(1000),
+      });
+      (prisma.walletTransaction.findMany as jest.Mock).mockResolvedValue([
+        { amount: new Decimal(-100) },
+      ]);
+      (prisma.enterpriseWallet.updateMany as jest.Mock).mockResolvedValue({ count: 1 });
+      (prisma.walletTransaction.create as jest.Mock).mockResolvedValue({ id: 'refund-1' });
+
+      const result = await service.refundDeposit({
+        enterpriseId: 'ent-1',
+        depositTransactionId: 'deposit-1',
+        amount: 200,
+        operatorId: 'admin-1',
+      });
+
+      expect(result.refundAmount).toBe(200);
+      expect(result.remainingRefundableAmount).toBe(700);
+      expect(prisma.walletTransaction.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({
+          type: 'REFUND',
+          amount: new Decimal(-200),
+          createdBy: 'admin-1',
+          metadata: { sourceTransactionId: 'deposit-1', refundKind: 'DEPOSIT_REFUND' },
+        }),
+      }));
+    });
+
+    it('rejects a refund above the deposit remainder or spendable balance', async () => {
+      (prisma.enterpriseWallet.findUnique as jest.Mock).mockResolvedValue({
+        ...mockWallet,
+        balance: new Decimal(50),
+      });
+      (prisma.walletTransaction.findFirst as jest.Mock).mockResolvedValue({
+        id: 'deposit-1', walletId: 'wallet-1', type: 'DEPOSIT', amount: new Decimal(1000),
+      });
+      (prisma.walletTransaction.findMany as jest.Mock).mockResolvedValue([]);
+
+      await expect(service.refundDeposit({
+        enterpriseId: 'ent-1',
+        depositTransactionId: 'deposit-1',
+        amount: 51,
+        operatorId: 'admin-1',
+      })).rejects.toThrow(BadRequestException);
+      expect(prisma.enterpriseWallet.updateMany).not.toHaveBeenCalled();
     });
   });
 
