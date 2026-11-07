@@ -39,6 +39,15 @@ reload_caddy() {
   docker exec sep-caddy caddy reload --config /etc/caddy/Caddyfile >/dev/null
 }
 
+ensure_builder_image() {
+  local image=$1 archive=/www/sep/backups/bootstrap-20261103/images.tar.gz
+  if docker image inspect "$image" >/dev/null 2>&1; then return 0; fi
+  [[ -s "$archive" ]] || { error "Build base image is missing and bootstrap archive is unavailable: $image"; return 1; }
+  gzip -t "$archive"
+  docker image load --input "$archive" >/dev/null
+  docker image inspect "$image" >/dev/null || { error "Bootstrap archive did not contain required build image: $image"; return 1; }
+}
+
 enable_maintenance() {
   cat > "$CADDYFILE" <<'CADDY'
 sep.longdaoec.com {
@@ -71,12 +80,12 @@ queue_idle() {
 preflight() {
   [[ "$(id -u)" == 0 && "$(findmnt -n -o SOURCE /www)" == /dev/sdb1 ]]
   docker network inspect "$SHARED_NETWORK" >/dev/null
+  ensure_builder_image "$(release_value SEP_MIGRATOR_IMAGE sep-migrator:42fc2644a38b)"
   check_env
   compose --profile edge config -q
   for name in sep-postgres sep-redis sep-green-backend sep-green-web; do
     [[ "$(docker inspect --format '{{.State.Health.Status}}' "$name")" == healthy ]]
   done
-  docker exec sep-green-backend test -d /app/backend/node_modules
   python3 - "$RELEASE_SOURCE" /www/sep/source <<'PY'
 import json
 import difflib
@@ -149,9 +158,9 @@ build_images() {
       return 1
     fi
   done
-  docker build --pull=false --network=none --build-arg "SEP_BUILDER_BASE_IMAGE=$OLD_BACKEND" --build-arg "SEP_RUNNER_BASE_IMAGE=$OLD_BACKEND" --target migrator -f "$RELEASE_SOURCE/deploy/standalone/Dockerfile.backend-release" -t "$SEP_MIGRATOR_IMAGE" "$RELEASE_SOURCE"
-  docker build --pull=false --network=none --build-arg "SEP_BUILDER_BASE_IMAGE=$OLD_BACKEND" --build-arg "SEP_RUNNER_BASE_IMAGE=$OLD_BACKEND" --target runner -f "$RELEASE_SOURCE/deploy/standalone/Dockerfile.backend-release" -t "$SEP_BACKEND_IMAGE" "$RELEASE_SOURCE"
-  docker build --pull=false --network=none --build-arg "SEP_WEB_BASE_IMAGE=$OLD_WEB" --build-arg "SEP_BACKEND_MODULES_IMAGE=$OLD_BACKEND" -f "$RELEASE_SOURCE/deploy/standalone/Dockerfile.web-domain" -t "$SEP_WEB_IMAGE" "$RELEASE_SOURCE"
+  docker build --pull=false --network=none --build-arg "SEP_BUILDER_BASE_IMAGE=$OLD_MIGRATOR" --build-arg "SEP_RUNNER_BASE_IMAGE=$OLD_BACKEND" --target migrator -f "$RELEASE_SOURCE/deploy/standalone/Dockerfile.backend-release" -t "$SEP_MIGRATOR_IMAGE" "$RELEASE_SOURCE"
+  docker build --pull=false --network=none --build-arg "SEP_BUILDER_BASE_IMAGE=$OLD_MIGRATOR" --build-arg "SEP_RUNNER_BASE_IMAGE=$OLD_BACKEND" --target runner -f "$RELEASE_SOURCE/deploy/standalone/Dockerfile.backend-release" -t "$SEP_BACKEND_IMAGE" "$RELEASE_SOURCE"
+  docker build --pull=false --network=none --build-arg "SEP_WEB_BASE_IMAGE=$OLD_WEB" --build-arg "SEP_BACKEND_MODULES_IMAGE=$OLD_MIGRATOR" -f "$RELEASE_SOURCE/deploy/standalone/Dockerfile.web-domain" -t "$SEP_WEB_IMAGE" "$RELEASE_SOURCE"
 }
 
 rollback() {

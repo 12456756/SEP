@@ -16,7 +16,7 @@ SEP_RELEASE_SHA=<完整40位提交> bash deploy/standalone/sep-deploy.sh check
 SEP_RELEASE_SHA=<完整40位提交> bash deploy/standalone/sep-deploy.sh deploy
 ```
 
-如发布包含待提交修复，必须归档基线提交与全部修复文件，记录归档 SHA256，并使用 `SEP_RELEASE_TAG=<提交前12位>-<归档SHA256前12位>` 区分该构建；`SEP_RELEASE_SHA` 仍记录真实基线提交。`check` 和 `deploy` 使用同一组变量。脚本拒绝覆盖已存在的镜像标签；实际构建标签记录在备份的 `release-tag` 和 `/www/sep/.deploy/active-artifact` 中。每次构建以当前运行的 backend/web 镜像作为依赖和运行时基础镜像，不依赖初始迁移时创建的 migrator 标签仍留在服务器。
+如发布包含待提交修复，必须归档基线提交与全部修复文件，记录归档 SHA256，并使用 `SEP_RELEASE_TAG=<提交前12位>-<归档SHA256前12位>` 区分该构建；`SEP_RELEASE_SHA` 仍记录真实基线提交。`check` 和 `deploy` 使用同一组变量。脚本拒绝覆盖已存在的镜像标签；实际构建标签记录在备份的 `release-tag` 和 `/www/sep/.deploy/active-artifact` 中。每次构建以当前运行的 backend/web 镜像作为运行时基础镜像；构建依赖使用初始迁移备份中的 `sep-migrator` 镜像，若本机标签缺失则从 `/www/sep/backups/bootstrap-20261103/images.tar.gz` 恢复。
 
 脚本固定使用新机 `/www/sep`、独立 Docker 网络和新域名；先检查健康、有效中转计费契约、队列及依赖基线，再构建。当前发布 Dockerfile 只适用于锁文件和全部 workspace package.json 与 `/www/sep/source` 原生产归档完全相同的版本；依赖变化会拒绝发布，届时应改用完整 Dockerfile 安装依赖。
 

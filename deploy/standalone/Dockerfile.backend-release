@@ -1,6 +1,6 @@
 # Dependency reuse is allowed only after the deployment script compares all
 # workspace manifests and the lockfile with the archived production source.
-ARG SEP_BUILDER_BASE_IMAGE=sep-green-backend:42fc2644a38b
+ARG SEP_BUILDER_BASE_IMAGE=sep-migrator:42fc2644a38b
 ARG SEP_RUNNER_BASE_IMAGE=sep-green-backend:42fc2644a38b
 FROM ${SEP_BUILDER_BASE_IMAGE} AS builder
 WORKDIR /app
