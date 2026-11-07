@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { CenteredSpinner, EmptyState } from '@/components/ui/feedback';
 import { Input } from '@/components/ui/input';
-import { useRequestEmailChange, useRequestEmailVerification } from '@/features/auth/use-auth';
+import { useRequestEmailChange } from '@/features/auth/use-auth';
 import { useChangePassword, useMe } from '@/features/user/use-user';
 import { ApiError } from '@/lib/api-client';
 import { ChangePasswordDtoSchema, RequestEmailChangeDtoSchema } from 'shared/index';
@@ -24,6 +24,7 @@ const passwordSchema = ChangePasswordDtoSchema.extend({
 });
 
 type PasswordValues = z.infer<typeof passwordSchema>;
+const emailChangeSchema = RequestEmailChangeDtoSchema.required({ currentPassword: true });
 
 function errorMessage(error: unknown, fallback: string) {
   if (error instanceof ApiError || error instanceof Error) return error.message;
@@ -34,8 +35,8 @@ export default function AdminAccountSettingsPage() {
   const profile = useMe();
   const changePassword = useChangePassword();
   const requestEmailChange = useRequestEmailChange();
-  const requestEmailVerification = useRequestEmailVerification();
   const [newEmail, setNewEmail] = useState('');
+  const [emailChangePassword, setEmailChangePassword] = useState('');
   const [emailMessage, setEmailMessage] = useState('');
   const [passwordSaved, setPasswordSaved] = useState(false);
   const form = useForm<PasswordValues>({
@@ -59,30 +60,24 @@ export default function AdminAccountSettingsPage() {
 
   function submitEmailChange() {
     setEmailMessage('');
-    const result = RequestEmailChangeDtoSchema.safeParse({ newEmail });
+    const result = emailChangeSchema.safeParse({ newEmail, currentPassword: emailChangePassword });
     if (!result.success) {
-      setEmailMessage('请输入有效的邮箱地址');
+      setEmailMessage(result.error.issues[0]?.path[0] === 'currentPassword' ? '请输入当前密码' : '请输入有效的邮箱地址');
       return;
     }
-    requestEmailChange.mutate(result.data.newEmail, {
+    requestEmailChange.mutate(result.data, {
       onSuccess: ({ message }) => {
         setEmailMessage(message);
         setNewEmail('');
+        setEmailChangePassword('');
       },
-    });
-  }
-
-  function sendVerificationEmail() {
-    setEmailMessage('');
-    requestEmailVerification.mutate(undefined, {
-      onSuccess: ({ message }) => setEmailMessage(message),
     });
   }
 
   const passwordError = changePassword.error
     ? errorMessage(changePassword.error, '修改密码失败，请稍后重试')
     : '';
-  const emailError = requestEmailChange.error || requestEmailVerification.error;
+  const emailError = requestEmailChange.error;
 
   return (
     <div className="max-w-3xl space-y-6 p-6">
@@ -106,47 +101,42 @@ export default function AdminAccountSettingsPage() {
             </Badge>
           </div>
 
-          {emailVerified ? (
+          <div className="max-w-xl space-y-3">
+            {!emailVerified && <p className="text-sm text-fg-muted">当前邮箱未验证或无法收信时，可通过当前密码确认身份，直接更换为可用邮箱。</p>}
+            <label htmlFor="new-login-email" className="block text-sm font-medium">修改登录邮箱</label>
             <div className="space-y-3">
-              <label htmlFor="new-login-email" className="block text-sm font-medium">修改登录邮箱</label>
-              <div className="flex flex-wrap gap-2">
-                <Input
-                  id="new-login-email"
-                  aria-label="新的登录邮箱"
-                  className="min-w-[220px] flex-1"
-                  type="email"
-                  autoComplete="email"
-                  value={newEmail}
-                  onChange={(event) => setNewEmail(event.target.value)}
-                  placeholder="新的邮箱地址"
-                  disabled={requestEmailChange.isPending}
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={submitEmailChange}
-                  disabled={!newEmail.trim() || requestEmailChange.isPending}
-                >
-                  {requestEmailChange.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-                  发送确认邮件
-                </Button>
-              </div>
-              <p className="text-xs text-fg-muted">确认邮件会发送到新邮箱，点击邮件中的链接后才会生效。</p>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              <p className="text-sm text-fg-muted">验证当前邮箱后，才能申请修改登录邮箱。</p>
+              <Input
+                id="new-login-email"
+                aria-label="新的登录邮箱"
+                type="email"
+                autoComplete="email"
+                value={newEmail}
+                onChange={(event) => setNewEmail(event.target.value)}
+                placeholder="新的邮箱地址"
+                disabled={requestEmailChange.isPending}
+              />
+              <label htmlFor="email-change-password" className="block text-sm font-medium">确认当前密码</label>
+              <Input
+                id="email-change-password"
+                type="password"
+                autoComplete="current-password"
+                value={emailChangePassword}
+                onChange={(event) => setEmailChangePassword(event.target.value)}
+                placeholder="输入当前登录密码"
+                disabled={requestEmailChange.isPending}
+              />
               <Button
                 type="button"
                 variant="outline"
-                onClick={sendVerificationEmail}
-                disabled={requestEmailVerification.isPending}
+                onClick={submitEmailChange}
+                disabled={!newEmail.trim() || requestEmailChange.isPending}
               >
-                {requestEmailVerification.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-                发送验证邮件
+                {requestEmailChange.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
+                发送确认邮件
               </Button>
             </div>
-          )}
+            <p className="text-xs text-fg-muted">确认邮件会发送到新邮箱，点击邮件中的链接后才会生效。更换成功后，请使用新邮箱登录或找回密码。</p>
+          </div>
           {emailMessage && <p role="status" className="text-sm text-success">{emailMessage}</p>}
           {emailError && <p role="alert" className="text-sm text-danger">{errorMessage(emailError, '邮件发送失败，请稍后重试')}</p>}
         </CardContent>

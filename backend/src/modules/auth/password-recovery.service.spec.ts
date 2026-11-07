@@ -1,4 +1,6 @@
 import { AuthService } from './auth.service';
+import * as bcrypt from 'bcrypt';
+import { RequestEmailChangeDtoSchema } from 'shared';
 
 describe('AuthService password and email recovery', () => {
   function make() {
@@ -43,7 +45,7 @@ describe('AuthService password and email recovery', () => {
     expect(prisma.user.update).toHaveBeenCalledWith({ where: { id: 'u1' }, data: { emailVerifiedAt: expect.any(Date) } });
   });
 
-  it('修改密码要求当前邮箱已验证后才允许变更邮箱', async () => {
+  it('普通用户要求当前邮箱已验证后才允许变更邮箱', async () => {
     const { service, prisma } = make();
     prisma.user.findUnique
       .mockResolvedValueOnce(null)
@@ -51,6 +53,92 @@ describe('AuthService password and email recovery', () => {
     await expect(
       service.requestEmailChange('u1', { newEmail: 'new@example.com' }),
     ).rejects.toThrow('请先验证当前邮箱');
+  });
+
+  describe('修改登录邮箱', () => {
+    const currentPassword = 'AdminPassword123';
+    let passwordHash: string;
+
+    beforeAll(async () => { passwordHash = await bcrypt.hash(currentPassword, 4); });
+
+    function makeEmailChange(role: string, emailVerifiedAt: Date | null = null) {
+      const setup = make();
+      setup.prisma.user.findUnique.mockImplementation(({ where }: any) => Promise.resolve(
+        where.id ? { ...setup.user, email: 'admin@sep.local', role, emailVerifiedAt } : null,
+      ));
+      setup.prisma.authCredential.findUnique.mockResolvedValue({ passwordHash });
+      return setup;
+    }
+
+    it.each([null, new Date('2026-11-07')])('管理员使用当前密码即可申请更换邮箱，旧邮箱验证时间为 %s', async (emailVerifiedAt) => {
+      const { service, tokens, mail, prisma } = makeEmailChange('ADMIN', emailVerifiedAt);
+      await expect(service.requestEmailChange('u1', { newEmail: 'new@example.com', currentPassword }))
+        .resolves.toEqual({ message: '确认邮件已发送到新邮箱' });
+      expect(tokens.issue).toHaveBeenCalledWith({ userId: 'u1', type: 'EMAIL_CHANGE', metadata: { newEmail: 'new@example.com' } });
+      expect(mail.sendEmailVerification).toHaveBeenCalledTimes(1);
+      expect(mail.sendEmailVerification).toHaveBeenCalledWith({
+        to: 'new@example.com', verificationUrl: 'http://localhost:3000/verify-email-change?token=secret-token',
+      });
+      expect(prisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it.each([undefined, 'wrong-password'])('管理员未提供正确密码时拒绝申请：%s', async (password) => {
+      const { service, tokens, mail } = makeEmailChange('ADMIN');
+      await expect(service.requestEmailChange('u1', { newEmail: 'new@example.com', currentPassword: password }))
+        .rejects.toThrow(password ? '当前密码不正确' : '请输入当前密码');
+      expect(tokens.issue).not.toHaveBeenCalled();
+      expect(mail.sendEmailVerification).not.toHaveBeenCalled();
+    });
+
+    it('管理员没有本地密码凭据时拒绝申请', async () => {
+      const { service, prisma, tokens, mail } = makeEmailChange('ADMIN');
+      prisma.authCredential.findUnique.mockResolvedValue(null);
+      await expect(service.requestEmailChange('u1', { newEmail: 'new@example.com', currentPassword })).rejects.toThrow('当前密码不正确');
+      expect(tokens.issue).not.toHaveBeenCalled();
+      expect(mail.sendEmailVerification).not.toHaveBeenCalled();
+    });
+
+    it('普通未验证用户提供密码也不能绕过旧邮箱验证', async () => {
+      const { service, tokens, mail } = makeEmailChange('USER');
+      await expect(service.requestEmailChange('u1', { newEmail: 'new@example.com', currentPassword })).rejects.toThrow('请先验证当前邮箱');
+      expect(tokens.issue).not.toHaveBeenCalled();
+      expect(mail.sendEmailVerification).not.toHaveBeenCalled();
+    });
+
+    it('普通已验证用户保持原有更换流程', async () => {
+      const { service, tokens } = makeEmailChange('USER', new Date());
+      await service.requestEmailChange('u1', { newEmail: 'new@example.com' });
+      expect(tokens.issue).toHaveBeenCalledTimes(1);
+    });
+
+    it('已占用的新邮箱不能用于更换', async () => {
+      const { service, prisma, tokens, mail } = makeEmailChange('ADMIN');
+      prisma.user.findUnique.mockResolvedValueOnce({ id: 'another-user' });
+      await expect(service.requestEmailChange('u1', { newEmail: 'used@example.com', currentPassword })).rejects.toThrow('该邮箱已被使用');
+      expect(tokens.issue).not.toHaveBeenCalled();
+      expect(mail.sendEmailVerification).not.toHaveBeenCalled();
+    });
+
+    it('停用管理员不能申请更换邮箱', async () => {
+      const { service, prisma, tokens, mail } = makeEmailChange('ADMIN');
+      prisma.user.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({ role: 'ADMIN', status: 'DISABLED' });
+      await expect(service.requestEmailChange('u1', { newEmail: 'new@example.com', currentPassword })).rejects.toThrow('账号当前不可用');
+      expect(tokens.issue).not.toHaveBeenCalled();
+      expect(mail.sendEmailVerification).not.toHaveBeenCalled();
+    });
+
+    it('只有确认新邮箱的令牌后才修改邮箱并标为已验证', async () => {
+      const { service, tokens, prisma } = makeEmailChange('ADMIN');
+      tokens.consume.mockResolvedValue({ userId: 'u1', type: 'EMAIL_CHANGE', metadata: { newEmail: 'new@example.com' } });
+      await expect(service.confirmEmailChange({ token: 'secret-token' })).resolves.toEqual({ message: '邮箱修改成功', email: 'new@example.com' });
+      expect(tokens.consume).toHaveBeenCalledWith('secret-token', 'EMAIL_CHANGE');
+      expect(prisma.user.update).toHaveBeenCalledWith({ where: { id: 'u1' }, data: { email: 'new@example.com', emailVerifiedAt: expect.any(Date) } });
+    });
+
+    it('共享 DTO 保留当前密码并归一化新邮箱', () => {
+      expect(RequestEmailChangeDtoSchema.parse({ newEmail: ' NEW@EXAMPLE.COM ', currentPassword })).toEqual({ newEmail: 'new@example.com', currentPassword });
+      expect(RequestEmailChangeDtoSchema.safeParse({ newEmail: 'new@example.com', currentPassword: '' }).success).toBe(false);
+    });
   });
 
   it.each(['CLOSURE_PENDING', 'CLOSED', 'DISABLED'])('does not send password reset mail for %s accounts', async (status) => {

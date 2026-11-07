@@ -851,6 +851,7 @@ export type ConfirmEmailVerificationDto = z.infer<typeof ConfirmEmailVerificatio
 
 export const RequestEmailChangeDtoSchema = z.object({
   newEmail: EmailSchema,
+  currentPassword: z.string().min(1, '请输入当前密码').optional(),
 });
 export type RequestEmailChangeDto = z.infer<typeof RequestEmailChangeDtoSchema>;
 

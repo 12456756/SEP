@@ -11,6 +11,7 @@ import {
   useAcceptInvitation,
   useCreateEnterprise,
   useLeaveEnterprise,
+  useRequestEmailChange,
   safeRedirect,
 } from '../use-auth';
 import { useAuthStore } from '@/lib/auth-store';
@@ -46,6 +47,20 @@ function createWrapper() {
     );
   };
 }
+
+describe('useRequestEmailChange', () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it.each([
+    ['new@example.com', { newEmail: 'new@example.com' }],
+    [{ newEmail: 'new@example.com', currentPassword: 'admin-password' }, { newEmail: 'new@example.com', currentPassword: 'admin-password' }],
+  ])('支持现有邮箱参数和管理员密码确认参数：%j', async (input, body) => {
+    vi.mocked(api.post).mockResolvedValueOnce({ message: '确认邮件已发送到新邮箱' });
+    const { result } = renderHook(() => useRequestEmailChange(), { wrapper: createWrapper() });
+    await result.current.mutateAsync(input);
+    expect(api.post).toHaveBeenCalledWith('/auth/email/change/request', body);
+  });
+});
 
 describe('safeRedirect', () => {
   it('should return null for null/undefined input', () => {

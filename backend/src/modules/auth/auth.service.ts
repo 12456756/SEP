@@ -650,10 +650,18 @@ export class AuthService {
     if (existing) throw new ConflictException('该邮箱已被使用');
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { email: true, emailVerifiedAt: true, status: true },
+      select: { email: true, emailVerifiedAt: true, status: true, role: true },
     });
     if (!user || user.status !== 'ACTIVE') throw new UnauthorizedException('账号当前不可用');
-    if (!user.emailVerifiedAt) throw new BadRequestException('请先验证当前邮箱');
+    if (user.role === 'ADMIN') {
+      if (!dto.currentPassword) throw new BadRequestException('请输入当前密码');
+      const currentHash = await this.passwordHashFor(userId);
+      if (!currentHash || !(await bcrypt.compare(dto.currentPassword, currentHash))) {
+        throw new UnauthorizedException('当前密码不正确');
+      }
+    } else if (!user.emailVerifiedAt) {
+      throw new BadRequestException('请先验证当前邮箱');
+    }
     const issued = await tokens.issue({ userId, type: 'EMAIL_CHANGE', metadata: { newEmail: dto.newEmail } });
     await mail.sendEmailVerification({
       to: dto.newEmail,

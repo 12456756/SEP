@@ -9,6 +9,7 @@ import {
   type AuthPayload,
 } from '@/lib/auth-store';
 import type { EnterpriseRole, InvitationPreview } from '@/lib/types';
+import type { RequestEmailChangeDto } from 'shared/index';
 import { qk } from '@/lib/query-keys';
 import type {
   AccountClosureEligibility,
@@ -353,8 +354,8 @@ export function useRequestEmailVerification() {
 
 export function useRequestEmailChange() {
   return useMutation({
-    mutationFn: (newEmail: string) =>
-      api.post<{ message: string }>('/auth/email/change/request', { newEmail }),
+    mutationFn: (input: string | RequestEmailChangeDto) =>
+      api.post<{ message: string }>('/auth/email/change/request', typeof input === 'string' ? { newEmail: input } : input),
   });
 }
 

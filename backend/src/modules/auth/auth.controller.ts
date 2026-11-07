@@ -282,7 +282,11 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth()
-  @ApiOperation({ summary: '请求修改登录邮箱' })
+  @ApiOperation({ summary: '请求修改登录邮箱，平台管理员需确认当前密码，无需验证旧邮箱' })
+  @ApiResponse({ status: 200, description: '确认邮件已发送到新邮箱，确认后生效' })
+  @ApiResponse({ status: 400, description: '缺少当前密码，或普通用户尚未验证旧邮箱' })
+  @ApiResponse({ status: 401, description: '账号不可用或当前密码错误' })
+  @ApiResponse({ status: 409, description: '新邮箱已被使用' })
   async requestEmailChange(
     @Request() req: ExpressRequest & { user: { id: string } },
     @Body(new ZodValidationPipe(RequestEmailChangeDtoSchema)) dto: RequestEmailChangeDto,
