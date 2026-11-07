@@ -87,6 +87,7 @@ export class ConversationService {
     const session = await this.prisma.conversationSession.create({
       data: {
         userId,
+        enterpriseId: ctx.enterpriseId,
         employeeId: dto.employeeId,
         title: dto.title ?? null,
         source,

@@ -24,6 +24,8 @@ import { UserRole, UserStatus } from '@prisma/client';
 import { CapabilityUploadDtoSchema, CnyAmountSchema, DigitalEmployeeCreateDtoSchema, EmployeeAvatarUrlSchema, RefundDepositDtoSchema, type RefundDepositDto } from 'shared';
 import { EmployeeCopyDraftDtoSchema, type EmployeeCopyDraftDto } from '../../shared/employee-copy.dto';
 import { EmployeeCopyDraftService } from './employee-copy-draft.service';
+import { EnterpriseDeletionService } from './enterprise-deletion.service';
+import { RequestEnterpriseDeletionSchema, type RequestEnterpriseDeletion } from 'shared';
 
 const EmployeeDescriptionSchema = z.string().trim().min(1, '描述不能为空')
   .max(DigitalEmployeeCreateDtoSchema.shape.description.maxLength ?? 2000);
@@ -146,6 +148,7 @@ export class AdminController {
     private readonly adminService: AdminService,
     private readonly adminAuthService: AdminAuthService,
     private readonly employeeCopyDraftService: EmployeeCopyDraftService,
+    private readonly enterpriseDeletionService: EnterpriseDeletionService,
   ) {}
 
   @Get('stats')
@@ -260,6 +263,42 @@ export class AdminController {
   @ApiResponse({ status: 404, description: '企业不存在' })
   getEnterpriseDetail(@Param('id') id: string) {
     return this.adminService.getEnterpriseDetail(id);
+  }
+
+  @Get('enterprises/:id/deletion-preview')
+  @ApiOperation({ summary: '预览企业永久删除影响' })
+  @ApiResponse({ status: 200, description: '返回企业数据与资金影响预览' })
+  deletionPreview(@Param('id') id: string) {
+    return this.enterpriseDeletionService.preview(id);
+  }
+
+  @Get('enterprises/:id/deletion')
+  @ApiOperation({ summary: '查询企业当前删除任务' })
+  deletionForEnterprise(@Param('id') id: string) {
+    return this.enterpriseDeletionService.current(id);
+  }
+
+  @Post('enterprises/:id/deletion')
+  @ApiOperation({ summary: '确认并提交企业永久删除' })
+  @ApiResponse({ status: 202, description: '已创建删除任务' })
+  requestEnterpriseDeletion(
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(RequestEnterpriseDeletionSchema)) dto: RequestEnterpriseDeletion,
+    @Request() req: any,
+  ) {
+    return this.enterpriseDeletionService.request(id, dto, req.user.id);
+  }
+
+  @Get('enterprise-deletions/:jobId')
+  @ApiOperation({ summary: '查询企业删除进度' })
+  getEnterpriseDeletion(@Param('jobId') jobId: string) {
+    return this.enterpriseDeletionService.get(jobId);
+  }
+
+  @Post('enterprise-deletions/:jobId/retry')
+  @ApiOperation({ summary: '重试失败的企业删除任务' })
+  retryEnterpriseDeletion(@Param('jobId') jobId: string) {
+    return this.enterpriseDeletionService.retry(jobId);
   }
 
   @Post('enterprises/:id/credit')

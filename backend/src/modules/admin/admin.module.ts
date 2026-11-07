@@ -12,6 +12,10 @@ import { CapabilityContributionModule } from '../capability-contribution/capabil
 import { EmployeeReadinessModule } from '../digital-employee/employee-readiness.module';
 import { EmployeeCopyDraftService } from './employee-copy-draft.service';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { UploadModule } from '../upload/upload.module';
+import { EnterpriseDeletionCleanupService } from './enterprise-deletion-cleanup.service';
+import { EnterpriseDeletionService } from './enterprise-deletion.service';
+import { MediaGatewayModule } from '../media-gateway/media-gateway.module';
 
 @Module({
   imports: [
@@ -23,9 +27,11 @@ import { NotificationsModule } from '../notifications/notifications.module';
     CapabilityContributionModule,
     EmployeeReadinessModule,
     NotificationsModule,
+    UploadModule,
+    MediaGatewayModule,
   ],
   controllers: [AdminController, AdminUploadController],
-  providers: [AdminService, AdminAuthService, EmployeeCopyDraftService],
+  providers: [AdminService, AdminAuthService, EmployeeCopyDraftService, EnterpriseDeletionCleanupService, EnterpriseDeletionService],
   exports: [AdminService, AdminAuthService],
 })
 export class AdminModule {}

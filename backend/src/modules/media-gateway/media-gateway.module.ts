@@ -41,5 +41,6 @@ import { MediaVideoRealGuard } from './media-video-real.guard';
         new MediaVideoGatewayService(prisma, store, configuration),
       inject: [PrismaService, MediaVideoGatewayStore, MediaVideoConfigService],
     }],
+  exports: [MediaRealBillingService, MediaByteCacheService, MediaConfigModule],
 })
 export class MediaGatewayModule {}

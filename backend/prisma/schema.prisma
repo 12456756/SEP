@@ -252,6 +252,28 @@ model AuditLog {
   @@map("audit_logs")
 }
 
+/// Durable deletion journal; deliberately has no enterprise foreign key.
+model EnterpriseDeletionJob {
+  id             String   @id @default(cuid())
+  enterpriseId   String   @unique
+  enterpriseName String
+  requestedById  String
+  status         String   @default("PENDING")
+  phase          String   @default("PREPARE")
+  snapshot       Json
+  manifest       Json?
+  attempts       Int      @default(0)
+  leaseToken     String?
+  leaseUntil     DateTime?
+  error          String?  @db.Text
+  completedAt    DateTime?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([status, leaseUntil, createdAt])
+  @@map("enterprise_deletion_jobs")
+}
+
 /// 部门。树形结构，parentId 自引用。
 model Department {
   id String @id @default(cuid())
@@ -1426,6 +1448,9 @@ enum SubscriptionStatus {
 model ConversationSession {
   id String @id @default(cuid())
 
+  /// Immutable tenant attribution; historical rows are resolved using billing/task evidence.
+  enterpriseId String?
+
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -1453,6 +1478,7 @@ model ConversationSession {
   knowledgeUsageLogs KnowledgeUsageLog[]
 
   @@index([userId, source])
+  @@index([enterpriseId, createdAt])
   @@index([taskPlanId, taskStepId])
   @@map("conversation_sessions")
 }

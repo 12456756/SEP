@@ -1,6 +1,6 @@
 'use client';
 
-import { Building2, ChevronLeft, ChevronRight, ExternalLink, Lock, Search } from 'lucide-react';
+import { Building2, ChevronLeft, ChevronRight, ExternalLink, Lock, Search, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import Link from 'next/link';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -10,11 +10,13 @@ import { Skeleton, EmptyState } from '@/components/ui/feedback';
 import { useAdminEnterpriseList } from '@/features/admin/use-admin';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { EnterpriseDeletionDialog } from '@/features/admin/enterprise-deletion-dialog';
 
 export default function EnterprisesPage() {
   const [page, setPage] = useState(1);
   const [keyword, setKeyword] = useState('');
   const [suspended, setSuspended] = useState<'all' | 'true' | 'false'>('all');
+  const [deletionTarget, setDeletionTarget] = useState<{ id: string; name: string } | null>(null);
   const pageSize = 20;
   const filter = { keyword: keyword.trim() || undefined, suspended: suspended === 'all' ? undefined : suspended === 'true' };
   const { data, isLoading, isFetching, isError, error } = useAdminEnterpriseList(page, pageSize, filter);
@@ -126,6 +128,9 @@ export default function EnterprisesPage() {
                               查看详情
                             </Button>
                           </Link>
+                          <Button variant="danger" size="icon" aria-label={`永久删除 ${ent.name}`} title="永久删除企业" onClick={() => setDeletionTarget({ id: ent.id, name: ent.name })}>
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
                         </div>
                       </td>
                     </tr>
@@ -161,6 +166,7 @@ export default function EnterprisesPage() {
           )}
         </CardContent>
       </Card>
+      {deletionTarget && <EnterpriseDeletionDialog open={Boolean(deletionTarget)} onOpenChange={(open) => { if (!open) setDeletionTarget(null); }} enterpriseId={deletionTarget.id} enterpriseName={deletionTarget.name} onCompleted={() => setDeletionTarget(null)} />}
     </div>
   );
 }

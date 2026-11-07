@@ -1,6 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 import { NotFoundException } from '@nestjs/common';
-import { mkdtemp, rm } from 'fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { LocalStorageDriver } from './local-storage.driver';
@@ -147,6 +147,40 @@ describe('LocalStorageDriver', () => {
           filename: 'escape.txt',
         }),
       ).rejects.toThrow();
+    });
+  });
+
+  describe('deletePrefix', () => {
+    it('只删除企业目录，拒绝根目录，并允许重复删除', async () => {
+      await driver.put({ key: 'enterprise-a/u1/a.txt', buffer: Buffer.from('a'), mime: 'text/plain', filename: 'a.txt' });
+      await driver.put({ key: 'enterprise-a/u2/b.txt', buffer: Buffer.from('b'), mime: 'text/plain', filename: 'b.txt' });
+      await driver.put({ key: 'enterprise-a2/u1/c.txt', buffer: Buffer.from('c'), mime: 'text/plain', filename: 'c.txt' });
+
+      await driver.deletePrefix('enterprise-a/');
+      await driver.deletePrefix('enterprise-a/');
+
+      await expect(driver.get('enterprise-a/u1/a.txt')).rejects.toThrow(NotFoundException);
+      await expect(driver.get('enterprise-a/u2/b.txt')).rejects.toThrow(NotFoundException);
+      expect(await driver.get('enterprise-a2/u1/c.txt')).toEqual(Buffer.from('c'));
+      await expect(driver.deletePrefix('/')).rejects.toThrow();
+      await expect(driver.deletePrefix('')).rejects.toThrow();
+      await expect(driver.deletePrefix('../')).rejects.toThrow();
+    });
+
+    it('删除企业目录中的符号链接本身，不跟随链接到根目录外', async () => {
+      const outside = await mkdtemp(join(tmpdir(), 'sep-outside-'));
+      const secret = join(outside, 'secret.txt');
+      try {
+        await writeFile(secret, 'keep');
+        await mkdir(join(root, 'enterprise-link'));
+        await symlink(outside, join(root, 'enterprise-link', 'outside'));
+
+        await driver.deletePrefix('enterprise-link/');
+
+        expect(await readFile(secret, 'utf8')).toBe('keep');
+      } finally {
+        await rm(outside, { recursive: true, force: true });
+      }
     });
   });
 });

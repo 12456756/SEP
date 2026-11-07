@@ -1,7 +1,7 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHmac, timingSafeEqual } from 'crypto';
-import { mkdir, readFile, unlink, writeFile } from 'fs/promises';
+import { lstat, mkdir, readdir, readFile, rmdir, unlink, writeFile } from 'fs/promises';
 import { dirname, join, normalize, resolve, sep } from 'path';
 import {
   DEFAULT_URL_TTL_SECONDS,
@@ -67,6 +67,15 @@ export class LocalStorageDriver implements StorageDriver {
     }
   }
 
+  async deletePrefix(prefix: string): Promise<void> {
+    const target = this.resolveEnterprisePrefix(prefix);
+    try {
+      await this.removeTree(target);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+  }
+
   async getSignedUrl(
     key: string,
     expiresInSeconds = DEFAULT_URL_TTL_SECONDS,
@@ -127,5 +136,59 @@ export class LocalStorageDriver implements StorageDriver {
       throw new NotFoundException('文件不存在或已过期');
     }
     return target;
+  }
+
+  private resolveEnterprisePrefix(prefix: string): string {
+    if (
+      !prefix ||
+      prefix.includes('\0') ||
+      prefix.includes('\\') ||
+      prefix.startsWith('/') ||
+      !prefix.endsWith('/')
+    ) {
+      throw new NotFoundException('文件不存在或已过期');
+    }
+    const normalized = normalize(prefix);
+    const canonical = normalized.endsWith(sep) ? normalized : `${normalized}${sep}`;
+    const segments = canonical.split(sep).filter(Boolean);
+    if (
+      segments.length !== 1 ||
+      segments[0] === '..' ||
+      segments[0] === '.' ||
+      !/^[A-Za-z0-9_-]+$/.test(segments[0]) ||
+      canonical !== prefix
+    ) {
+      throw new NotFoundException('文件不存在或已过期');
+    }
+    const target = resolve(join(this.root, canonical));
+    if (target === this.root || !target.startsWith(this.root + sep)) {
+      throw new NotFoundException('文件不存在或已过期');
+    }
+    return target;
+  }
+
+  /** 删除树时只对 lstat 结果采取动作，永不跟随符号链接。 */
+  private async removeTree(path: string): Promise<void> {
+    let stat;
+    try {
+      stat = await lstat(path);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw err;
+    }
+
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      await unlink(path);
+      return;
+    }
+
+    for (const entry of await readdir(path)) {
+      await this.removeTree(join(path, entry));
+    }
+    try {
+      await rmdir(path);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
   }
 }

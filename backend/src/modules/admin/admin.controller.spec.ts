@@ -64,7 +64,7 @@ describe('AdminController shared form contracts', () => {
 
   it('partial employee updates leave avatar absent and preserve explicit zero gift', () => {
     const service = { updateEmployee: jest.fn() };
-    const controller = new AdminController(service as never, {} as never, {} as never);
+    const controller = new AdminController(service as never, {} as never, {} as never, {} as never);
     const body = parseBody('updateEmployee', { includedComputeCNY: 0 });
     expect(body).not.toHaveProperty('avatar');
     expect(body).not.toHaveProperty('description');
@@ -81,7 +81,7 @@ describe('AdminController shared form contracts', () => {
 
   it('forwards normalized avatar and short employee description without changing the approval flow', () => {
     const service = { createEmployee: jest.fn(), approveEmployee: jest.fn(), updateEmployee: jest.fn() };
-    const controller = new AdminController(service as never, {} as never, {} as never);
+    const controller = new AdminController(service as never, {} as never, {} as never, {} as never);
     const request = { user: { id: 'admin-1' } };
     const body = parseBody('createEmployee', { name: '测试员工', description: '短描述', avatar: '' });
     controller.createEmployee(body, request);

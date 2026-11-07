@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomBytes } from 'crypto';
 import { LocalStorageDriver } from './local-storage.driver';
@@ -69,6 +69,17 @@ export class StorageService {
 
   delete(key: string): Promise<void> {
     return this.driver.delete(key);
+  }
+
+  /**
+   * 永久删除企业的全部上传文件。企业 ID 必须是单一路径段，避免把
+   * 任意路径交给存储驱动。
+   */
+  deleteEnterpriseFiles(enterpriseId: string): Promise<void> {
+    if (!/^[A-Za-z0-9_-]+$/.test(enterpriseId)) {
+      throw new BadRequestException('企业 ID 格式不正确');
+    }
+    return this.driver.deletePrefix(`${enterpriseId}/`);
   }
 
   getSignedUrl(

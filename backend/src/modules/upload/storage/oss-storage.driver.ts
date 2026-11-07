@@ -91,6 +91,45 @@ export class OssStorageDriver implements StorageDriver {
     await this.client.delete(key);
   }
 
+  async deletePrefix(prefix: string): Promise<void> {
+    if (!prefix || prefix.includes('\0') || !prefix.endsWith('/') || prefix.startsWith('/')) {
+      throw new Error('Invalid object prefix');
+    }
+
+    let continuationToken: string | undefined;
+    do {
+      const result = await this.client.listV2({
+        prefix,
+        'max-keys': 1000,
+        ...(continuationToken ? { 'continuation-token': continuationToken } : {}),
+      });
+      const names = result.objects
+        .map((object) => object.name)
+        .filter((name): name is string => typeof name === 'string' && name.startsWith(prefix));
+      for (let offset = 0; offset < names.length; offset += 1000) {
+        await this.deleteBatchWithRetry(names.slice(offset, offset + 1000));
+      }
+      continuationToken = result.isTruncated ? result.nextContinuationToken : undefined;
+    } while (continuationToken);
+  }
+
+  private async deleteBatchWithRetry(names: string[]): Promise<void> {
+    if (names.length === 0) return;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        await this.client.deleteMulti(names, { quiet: true });
+        return;
+      } catch (err) {
+        lastError = err;
+        if (attempt < 3) {
+          this.logger.warn(`OSS deleteMulti failed (attempt ${attempt}/3), retrying`);
+        }
+      }
+    }
+    throw lastError;
+  }
+
   async getSignedUrl(
     key: string,
     expiresInSeconds = DEFAULT_URL_TTL_SECONDS,

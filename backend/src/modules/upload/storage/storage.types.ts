@@ -37,6 +37,9 @@ export interface StorageDriver {
 
   delete(key: string): Promise<void>;
 
+  /** 删除指定目录前缀下的所有对象。操作必须幂等。 */
+  deletePrefix(prefix: string): Promise<void>;
+
   /**
    * 生成带时效的访问地址。
    * @param expiresInSeconds 有效期，默认 1 小时

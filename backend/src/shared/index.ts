@@ -2174,3 +2174,4 @@ export * from './media-real.dto';
 export * from './skill-import-schema';
 export * from './employee-copy.dto';
 export * from './employee-bundle.dto';
+export * from './enterprise-deletion.dto';

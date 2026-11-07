@@ -117,6 +117,13 @@ export class VideoFileCacheService {
     return this.read('output', scope, id, expected);
   }
 
+  async removeScoped(scope: string, id: string): Promise<void> {
+    for (const kind of ['reference', 'output'] as const) {
+      const target = await this.path(kind, scope, id);
+      await rm(target, { recursive: true, force: true });
+    }
+  }
+
   /** Verify from the opened inode, then stream that same descriptor to avoid buffering 256MiB outputs. */
   async streamOutput(scope: string, id: string, expected: Expected): Promise<{ metadata: Metadata; stream: ReadStream }> {
     const target = await this.path('output', scope, id);

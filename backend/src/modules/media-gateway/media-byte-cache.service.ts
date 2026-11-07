@@ -85,6 +85,11 @@ export class MediaByteCacheService {
     return bytes;
   }
 
+  async remove(kind: CacheKind, scope: string, id: string): Promise<void> {
+    const key = this.key(kind, scope, id);
+    try { await this.redis.redis.del(key); } catch { unavailable(); }
+  }
+
   private key(kind: CacheKind, scope: string, id: string): string {
     if ((kind !== 'reference' && kind !== 'output') || typeof scope !== 'string' ||
       !scope.trim() || !MediaGatewayIdSchema.safeParse(id).success) {

@@ -28,7 +28,9 @@ import {
   Minus,
   Lock,
   Unlock,
+  Trash2,
 } from 'lucide-react';
+import { EnterpriseDeletionDialog } from '@/features/admin/enterprise-deletion-dialog';
 import { RefundDepositDtoSchema } from 'shared/refund-deposit.dto';
 
 /**
@@ -87,6 +89,7 @@ export default function EnterpriseDetailPage() {
   const [suspendDialogOpen, setSuspendDialogOpen] = useState(false);
   const [suspendReason, setSuspendReason] = useState('');
   const [resumeDialogOpen, setResumeDialogOpen] = useState(false);
+  const [deletionDialogOpen, setDeletionDialogOpen] = useState(false);
 
   const isSuspended = enterprise?.metadata?.suspended === true;
 
@@ -204,8 +207,8 @@ export default function EnterpriseDetailPage() {
   return (
     <div className="container mx-auto py-8 space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="flex min-w-0 items-center gap-4">
           <Button
             variant="ghost"
             size="icon"
@@ -213,8 +216,8 @@ export default function EnterpriseDetailPage() {
           >
             <ArrowLeft className="h-4 w-4" />
           </Button>
-          <div>
-            <h1 className="text-3xl font-bold flex items-center gap-2">
+          <div className="min-w-0">
+            <h1 className="flex flex-wrap items-center gap-2 break-words text-2xl font-bold">
               {enterprise.name}
               {isSuspended && (
                 <Badge className="bg-danger text-white">已冻结</Badge>
@@ -225,7 +228,7 @@ export default function EnterpriseDetailPage() {
             )}
           </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button
             variant="secondary"
             size="sm"
@@ -265,6 +268,10 @@ export default function EnterpriseDetailPage() {
               冻结
             </Button>
           )}
+          <Button variant="danger" size="sm" onClick={() => setDeletionDialogOpen(true)}>
+            <Trash2 className="h-4 w-4" />
+            永久删除
+          </Button>
         </div>
       </div>
 
@@ -674,6 +681,7 @@ export default function EnterpriseDetailPage() {
         loading={resumeEnterprise.isPending}
         onConfirm={handleResume}
       />
+      <EnterpriseDeletionDialog open={deletionDialogOpen} onOpenChange={setDeletionDialogOpen} enterpriseId={enterpriseId} enterpriseName={enterprise.name} onCompleted={() => router.push('/admin/enterprises')} />
     </div>
   );
 }
