@@ -1,6 +1,8 @@
 # Dependency reuse is allowed only after the deployment script compares all
 # workspace manifests and the lockfile with the archived production source.
-FROM sep-migrator:42fc2644a38b AS builder
+ARG SEP_BUILDER_BASE_IMAGE=sep-green-backend:42fc2644a38b
+ARG SEP_RUNNER_BASE_IMAGE=sep-green-backend:42fc2644a38b
+FROM ${SEP_BUILDER_BASE_IMAGE} AS builder
 WORKDIR /app
 COPY . .
 RUN ln -s .pnpm/tar-stream@3.2.0/node_modules/tar-stream /app/node_modules/tar-stream && \
@@ -11,7 +13,7 @@ RUN cp -r /app/backend/prisma /prod-bundle/prisma && \
 FROM builder AS migrator
 CMD ["sh", "-c", "pnpm --filter backend exec prisma migrate deploy"]
 
-FROM sep-green-backend:42fc2644a38b AS runner
+FROM ${SEP_RUNNER_BASE_IMAGE} AS runner
 USER root
 COPY --from=builder /prod-bundle/node_modules /app/node_modules
 RUN ln -s .pnpm/tar-stream@3.2.0/node_modules/tar-stream /app/node_modules/tar-stream
