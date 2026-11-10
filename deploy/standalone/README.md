@@ -20,6 +20,8 @@ SEP_RELEASE_SHA=<完整40位提交> bash deploy/standalone/sep-deploy.sh deploy
 
 脚本固定使用新机 `/www/sep`、独立 Docker 网络和新域名；先检查健康、有效中转计费契约、队列及依赖基线，再构建。当前发布 Dockerfile 只适用于锁文件和全部 workspace package.json 与 `/www/sep/source` 原生产归档完全相同的版本；依赖变化会拒绝发布，届时应改用完整 Dockerfile 安装依赖。
 
+后端构建后，`prisma-client-artifact.cjs` 按 Node 实际解析的路径，将最新生成的 Prisma Client 同步到生产包，避免 pnpm 虚拟依赖目录中残留旧模型。生产包和最终运行镜像都会校验 schema、完整 datamodel 和全部模型查询接口，校验失败将中止构建。修改该打包流程后运行 `node --test deploy/standalone/prisma-client-artifact.test.cjs`，并使用当前构建基础镜像验证最终镜像；回归测试不连接数据库。
+
 构建成功后，SEP 短暂返回 503 和 Retry-After，客户端下载及线上 `LONGDAO-AI` 标记区块保持服务；排空并仅 TERM 停止旧应用后备份 PostgreSQL、Redis 和业务文件，应用增量迁移，再替换前后端。失败时先隔离新流量、确认新进程退出，按旧镜像恢复应用及持久配置；不反向迁移数据库，不恢复旧备份覆盖新数据。停止超时会保留维护状态，禁止强杀或启动第二套 Worker。
 
 成功后镜像指针和显式功能开关保存于 `/www/sep/deploy/release.env`，版本记录位于 `/www/sep/.deploy/active-release`，备份保存在 `/www/sep/backups/release-*`。本机 Skills 导入默认关闭；正式客户端 0.4.0 测试配置为 `SKILL_IMPORT_ENABLED=true`、`SKILL_IMPORT_INSTANCE_ID=sep-default` 和 `SKILL_IMPORT_MIN_CLIENT_VERSION=0.4.0`。实例 ID 必须与客户端受信站点配置完全一致，不能只满足格式校验后任意命名，否则客户端会拒绝深链接。部署脚本会校验并保留这些设置。关闭时将开关改回 `false`，并排空、重建后端容器。
