@@ -1,6 +1,7 @@
 import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus, PayloadTooLargeException } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { SkillArtifactBlockedReasonSchema, SkillImportErrorCodeSchema } from 'shared';
+import { captureHttpException } from '../middleware/http-logging.middleware';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -77,6 +78,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
   catch(exception: unknown, host: ArgumentsHost) {
     const response = host.switchToHttp().getResponse<Response>();
     const request = host.switchToHttp().getRequest<Request & { requestId?: string }>();
+    captureHttpException(response, exception);
     // Express parser errors are not Nest HttpExceptions. Only normalize its known size error.
     if (isRecord(exception) && exception.type === 'entity.too.large' && exception.status === 413) {
       exception = new PayloadTooLargeException({

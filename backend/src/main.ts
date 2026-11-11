@@ -1,7 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { ValidationPipe, Logger } from '@nestjs/common';
+import { ValidationPipe } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { WsAdapter } from '@nestjs/platform-ws';
 import cookieParser from 'cookie-parser';
@@ -9,6 +9,7 @@ import express from 'express';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { requestContextMiddleware } from './common/middleware/request-context.middleware';
+import { httpLoggingMiddleware } from './common/middleware/http-logging.middleware';
 import { createBasicRateLimitMiddleware } from './common/middleware/basic-rate-limit.middleware';
 import { createJsonBodyMiddleware } from './common/middleware/json-body.middleware';
 import { CspMiddleware } from './common/middleware/csp.middleware';
@@ -48,11 +49,14 @@ async function bootstrap() {
     );
   }
 
+  // Install before ingress, rate limiting and body parsing so their failures are logged too.
+  app.use(requestContextMiddleware, httpLoggingMiddleware);
+
   // CSP middleware (applied in all environments for consistency)
   const cspMiddleware = new CspMiddleware();
   app.use((req, res, next) => cspMiddleware.use(req, res, next));
 
-  app.use(requestContextMiddleware, createBasicRateLimitMiddleware(
+  app.use(createBasicRateLimitMiddleware(
     businessTracker(app.get(ConfigService), app.get(JwtService)),
   ));
   const importConfig = app.get(ConfigService);
@@ -64,11 +68,6 @@ async function bootstrap() {
   app.use(createJsonBodyMiddleware(process.env, createSkillImportEventByteConsumer(() => app.get(RedisService).redis, importIngressSettings)));
   app.use(express.urlencoded({ limit: process.env.REQUEST_URLENCODED_LIMIT || '2mb', extended: true }));
   app.useGlobalFilters(new HttpExceptionFilter());
-  app.use((req, res, next) => {
-    const started = Date.now();
-    res.on('finish', () => Logger.log(`${req.method} ${req.originalUrl} ${res.statusCode} ${Date.now() - started}ms`, 'HTTP'));
-    next();
-  });
 
   // WebSocket adapter
   app.useWebSocketAdapter(new WsAdapter(app));
