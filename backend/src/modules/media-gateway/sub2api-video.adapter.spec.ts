@@ -138,7 +138,7 @@ describe('Sub2apiVideoAdapter (mock fetch only)', () => {
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ model: 'minimax-h3', operation: 'text-to-video', resolution: '720p', duration_seconds: 4 });
   });
 
-  it('prices and submits a V3 non-default specification without changing or dropping explicit fields', async () => {
+  it('prices and submits supported V3 fields while omitting unsupported fps', async () => {
     fetchMock.mockResolvedValueOnce(response(price({ resolution: '1080p', duration_seconds: 8 })))
       .mockResolvedValueOnce(response(task()));
     const value = inputV3();
@@ -146,7 +146,21 @@ describe('Sub2apiVideoAdapter (mock fetch only)', () => {
     await expect(adapter.submit(CONNECTION, value, 'minimax-h3', [], 'client-v3', 'price-1')).resolves.toMatchObject({ taskId: TASK_ID });
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ model: 'minimax-h3', operation: 'text-to-video', resolution: '1080p', duration_seconds: 8 });
     expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ model: 'minimax-h3', prompt: value.creativeBrief,
-      seconds: 8, resolution: '1080p', aspect_ratio: '9:16', fps: 30, generate_audio: false, output_format: 'video/mp4' });
+      seconds: 8, resolution: '1080p', aspect_ratio: '9:16', generate_audio: false, output_format: 'video/mp4' });
+    expect(value.requestedSpec.frameRate).toBe(30);
+  });
+
+  it('omits unsupported fps from V3 image-to-video multipart requests', async () => {
+    const value = MediaVideoGatewayQuoteRequestV3Schema.parse({ ...inputV3(),
+      operation: 'image-to-video', referenceIds: ['reference-1'] });
+    fetchMock.mockResolvedValueOnce(response(task({ model: 'seedance-2.0' })));
+    await adapter.submit(CONNECTION, value, 'seedance-2.0', [PNG], 'client-v3-image', 'price-1');
+    const form = fetchMock.mock.calls[0][1].body as FormData;
+    expect(form.has('fps')).toBe(false);
+    expect(form.get('model')).toBe('seedance-2.0');
+    expect(form.get('seconds')).toBe('8');
+    expect(form.get('aspect_ratio')).toBe('9:16');
+    expect(Buffer.from(await (form.get('input_reference') as Blob).arrayBuffer())).toEqual(PNG);
   });
 
   it('rejects missing V3 pricing dimensions before any upstream request', async () => {

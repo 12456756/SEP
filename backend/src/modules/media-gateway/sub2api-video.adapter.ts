@@ -252,7 +252,7 @@ export class Sub2apiVideoAdapter {
       seconds: dimensions.durationSeconds, resolution: dimensions.resolution };
     if (spec.width !== undefined && spec.height !== undefined) fields.size = `${spec.width}x${spec.height}`;
     if (spec.aspectRatio !== undefined) fields.aspect_ratio = spec.aspectRatio;
-    if (spec.frameRate !== undefined) fields.fps = spec.frameRate;
+    // sub2api does not support selecting fps; retain it only in the original request.
     if (spec.audio !== undefined) fields.generate_audio = spec.audio;
     if (spec.outputFormat !== undefined) fields.output_format = spec.outputFormat;
     return fields;

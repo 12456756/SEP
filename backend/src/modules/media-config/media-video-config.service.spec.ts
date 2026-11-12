@@ -136,6 +136,7 @@ describe('MediaVideoConfigService real configuration', () => {
       field: 'durationSeconds', values: [4], confidence: 'declared',
     }));
     expect(runtime.profiles[0].capabilityHints).toContainEqual(expect.objectContaining({ field: 'audio', values: [true] }));
+    expect(runtime.profiles[0].capabilityHints).not.toContainEqual(expect.objectContaining({ field: 'frameRate' }));
     expect(JSON.stringify(runtime)).not.toContain('defaults');
   });
 

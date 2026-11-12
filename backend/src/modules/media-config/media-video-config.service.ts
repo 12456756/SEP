@@ -438,7 +438,6 @@ export class MediaVideoConfigService {
         { field: 'durationSeconds', values: profile.capabilities.durationsSeconds, source: 'profile-config', observedAt: null, confidence: 'declared' as const },
         { field: 'aspectRatio', values: profile.capabilities.aspectRatios, source: 'profile-config', observedAt: null, confidence: 'declared' as const },
         { field: 'resolution', values: profile.capabilities.resolutions, source: 'profile-config', observedAt: null, confidence: 'declared' as const },
-        { field: 'frameRate', values: profile.capabilities.frameRates, source: 'profile-config', observedAt: null, confidence: 'declared' as const },
         ...(profile.capabilities.supportsAudio
           ? [{ field: 'audio', values: [true], source: 'profile-config', observedAt: null, confidence: 'declared' as const }]
           : []),
