@@ -2,7 +2,7 @@ declare module 'tar-stream' {
   import { Writable, Readable } from 'node:stream';
 
   interface Header { name: string; type?: string; size?: number }
-  interface ExtractStream extends Readable {}
+  type ExtractStream = Readable;
   interface Extract extends Writable {
     on(event: 'entry', listener: (header: Header, stream: ExtractStream, next: (error?: Error) => void) => void): this;
   }
