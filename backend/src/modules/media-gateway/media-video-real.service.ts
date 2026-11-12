@@ -584,15 +584,13 @@ export class MediaVideoRealService {
     const unknown = spec.audio === undefined || hasAudio === null || spec.resolution !== undefined && !expectedResolution;
     // Container duration may include a final partial frame; allow at most one measured video frame.
     const durationTolerance = 1 / metadata.frameRate + 1e-6;
-    // ffprobe avg_frame_rate is a rational; tolerate numeric conversion only, not nearby frame-rate standards.
-    const frameRateTolerance = 1e-6;
+    // sub2api selects fps upstream, so requested frameRate is not a delivery constraint.
     const matches = metadata.byteLength > 0 && metadata.byteLength <= 256 * 1024 * 1024 &&
       (spec.outputFormat === undefined || metadata.mimeType === spec.outputFormat) &&
       (spec.durationSeconds === undefined || Math.abs(metadata.durationSeconds - spec.durationSeconds) <= durationTolerance) &&
       (spec.width === undefined || metadata.width === spec.width && metadata.height === spec.height) &&
       (ratio === undefined || BigInt(metadata.width) * BigInt(ratio[1]) === BigInt(metadata.height) * BigInt(ratio[0])) &&
       (!expectedResolution || Math.min(metadata.width, metadata.height) === Number(expectedResolution[1])) &&
-      (spec.frameRate === undefined || Math.abs(metadata.frameRate - spec.frameRate) <= frameRateTolerance) &&
       (spec.audio === undefined || hasAudio === null || spec.audio === hasAudio);
     return !matches ? 'mismatched' : unknown ? 'unknown' : 'matched';
   }

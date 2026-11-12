@@ -139,7 +139,8 @@ describe('V3 HTTP with production video adapter, cache and fake upstream', () =>
     expect(quote.body).toMatchObject({ protocolVersion: 3, effectiveSpec: input.requestedSpec });
     const submitted = await post('/requests', { ...input, quoteId: quote.body.quoteId, clientRequestId: 'v3-complete' }).expect(202);
     expect(submissions.at(-1)?.fields).toMatchObject({ model: modelId, seconds: 2, resolution: '90p',
-      size: '90x160', aspect_ratio: '9:16', fps: 30, generate_audio: false, output_format: 'video/mp4' });
+      size: '90x160', aspect_ratio: '9:16', generate_audio: false, output_format: 'video/mp4' });
+    expect(submissions.at(-1)?.fields).not.toHaveProperty('fps');
     const done = await get(`/requests/${submitted.body.receiptId}`).expect(200);
     expect(done.body).toMatchObject({ status: 'SUCCEEDED', billingStatus: 'SETTLED', deliveryStatus: 'matched',
       actualSpec: { durationSeconds: 2, width: 90, height: 160, frameRate: 30, hasAudio: false } });
@@ -151,6 +152,19 @@ describe('V3 HTTP with production video adapter, cache and fake upstream', () =>
     await post('/requests', { ...input, quoteId: quote.body.quoteId, clientRequestId: 'v3-complete' }).expect(200);
     expect(submissions).toHaveLength(count);
     await post('/requests', { ...input, specRevision: 2, quoteId: quote.body.quoteId, clientRequestId: 'v3-complete' }).expect(409);
+  });
+
+  it('delivers the measured frame rate when the upstream cannot honor requested fps', async () => {
+    const value = { ...input, requestedSpec: { ...input.requestedSpec, frameRate: 24 } };
+    const quote = await post('/quotes', value).expect(201);
+    const submitted = await post('/requests', { ...value, quoteId: quote.body.quoteId, clientRequestId: 'v3-native-fps' }).expect(202);
+    expect(submissions.at(-1)?.fields).not.toHaveProperty('fps');
+    const done = await get(`/requests/${submitted.body.receiptId}`).expect(200);
+    expect(done.body).toMatchObject({ status: 'SUCCEEDED', billingStatus: 'SETTLED', deliveryStatus: 'matched',
+      errorCode: null, effectiveSpec: { frameRate: 24 }, actualSpec: { frameRate: 30 },
+      outputs: [{ frameRate: 30 }], recovery: { canDownload: true } });
+    const content = await get(`/requests/${done.body.receiptId}/outputs/${done.body.outputs[0].outputId}/content`).expect(200);
+    expect(content.body).toEqual(matchedBytes);
   });
 
   it('retains a measured 15-second original for an 8-second request while independently settling frozen billing dimensions', async () => {

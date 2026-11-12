@@ -66,8 +66,12 @@ describe('MediaVideoRealService', () => {
     { label: 'unmeasured audio', spec: {}, measured: { hasAudio: null }, deliveryStatus: 'unknown' },
     { label: 'missing requested audio', spec: { audio: true }, measured: { hasAudio: false }, deliveryStatus: 'mismatched' },
     { label: 'duration beyond one frame', spec: {}, measured: { durationSeconds: 8.05 }, deliveryStatus: 'mismatched' },
-    { label: '29.97 fps differs from a frozen 30 fps', spec: {}, measured: { frameRate: 30000 / 1001 }, deliveryStatus: 'mismatched' },
-    { label: 'rational frame rate tolerates numeric conversion only', spec: { frameRate: 30000 / 1001 },
+    { label: 'upstream-selected 24 fps despite requested 30 fps', spec: {}, measured: { frameRate: 24 }, deliveryStatus: 'matched' },
+    { label: 'upstream-selected 25 fps despite requested 30 fps', spec: {}, measured: { frameRate: 25 }, deliveryStatus: 'matched' },
+    { label: 'upstream-selected 29.97 fps despite requested 30 fps', spec: {}, measured: { frameRate: 30000 / 1001 }, deliveryStatus: 'matched' },
+    { label: 'one-frame duration rounding uses measured fps', spec: {},
+      measured: { frameRate: 24, durationSeconds: 8 + 1 / 24 }, deliveryStatus: 'matched' },
+    { label: 'measured rational frame rate', spec: { frameRate: 30000 / 1001 },
       measured: { frameRate: 29.97002997 }, deliveryStatus: 'matched' },
     { label: 'mismatch takes precedence over unspecified audio', spec: { audio: undefined },
       measured: { durationSeconds: 15 }, deliveryStatus: 'mismatched' },
@@ -97,7 +101,8 @@ describe('MediaVideoRealService', () => {
     expect(pending).not.toHaveProperty('actualSpec');
     const done = await service.receipt(videoClaims, pending.receiptId);
     expect(done).toMatchObject({ status: 'SUCCEEDED', billingStatus: 'SETTLED', deliveryStatus,
-      actualSpec: { durationSeconds: actual.durationSeconds, width: 720, height: 720, hasAudio: actual.hasAudio } });
+      actualSpec: { durationSeconds: actual.durationSeconds, width: 720, height: 720, frameRate: actual.frameRate, hasAudio: actual.hasAudio },
+      outputs: [{ frameRate: actual.frameRate }] });
     expect(done.errorCode).toBe(deliveryStatus === 'mismatched' ? 'OUTPUT_SPEC_MISMATCH' : null);
     expect(adapter.submit).toHaveBeenCalledTimes(1);
     expect(billing.settleVideo).toHaveBeenCalledWith(pending.receiptId, '0.700000', '0.100000', 'minimax-h3', 'minimax-h3');
@@ -107,6 +112,10 @@ describe('MediaVideoRealService', () => {
     cache.streamOutput.mockResolvedValueOnce({ metadata: { ...actual, hasAudio: actual.hasAudio !== true }, stream: tampered });
     await expect(service.content(videoClaims, done.receiptId, done.outputs[0].outputId)).rejects.toMatchObject({ status: 502 });
     expect(tampered.destroyed).toBe(true);
+    const tamperedFrameRate = Readable.from(videoBytes);
+    cache.streamOutput.mockResolvedValueOnce({ metadata: { ...actual, frameRate: actual.frameRate + 1 }, stream: tamperedFrameRate });
+    await expect(service.content(videoClaims, done.receiptId, done.outputs[0].outputId)).rejects.toMatchObject({ status: 502 });
+    expect(tamperedFrameRate.destroyed).toBe(true);
   });
 
   it('persists an explicit V3 upstream spec rejection without releasing funds or repeating dispatch', async () => {
