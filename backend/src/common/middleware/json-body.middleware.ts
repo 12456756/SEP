@@ -9,7 +9,7 @@ export function createJsonBodyMiddleware(
   env: NodeJS.ProcessEnv = process.env,
   consumeSkillImportEventBytes?: SkillImportEventByteConsumer,
 ): RequestHandler {
-  const gateway = express.json({ limit: env.GATEWAY_HTTP_JSON_LIMIT || '4mb' });
+  const gateway = express.json({ limit: env.GATEWAY_HTTP_JSON_LIMIT || '64mb' });
   const ordinary = express.json({ limit: env.REQUEST_JSON_LIMIT || '2mb' });
   // Escaped Markdown can occupy six JSON bytes per source byte, plus DTO metadata.
   const skill = express.json({ limit: env.SKILL_REQUEST_JSON_LIMIT || '16mb' });

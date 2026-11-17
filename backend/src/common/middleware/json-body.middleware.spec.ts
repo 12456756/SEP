@@ -35,9 +35,9 @@ describe('JSON request body policies', () => {
 
   afterEach(async () => { await app?.close(); });
 
-  it('accepts model JSON above 2 MiB without raising ordinary REST limits', async () => {
+  it('accepts model JSON above the previous 4 MiB limit without raising ordinary REST limits', async () => {
     await start();
-    const body = { value: 'a'.repeat(2 * 1024 * 1024) };
+    const body = { value: 'a'.repeat(6 * 1024 * 1024) };
     const bytes = Buffer.byteLength(JSON.stringify(body));
     const gateway = await request(app.getHttpServer()).post(endpoint).send(body).expect(201);
     expect(gateway.body).toEqual({ bytes });
@@ -47,7 +47,7 @@ describe('JSON request body policies', () => {
   });
 
   it('returns an actionable, correlated 413 above the model HTTP limit without exposing input', async () => {
-    await start();
+    await start({ GATEWAY_HTTP_JSON_LIMIT: '4mb' });
     const response = await request(app.getHttpServer()).post(endpoint)
       .set('x-request-id', 'body-limit-test')
       .send({ value: 'private-input'.repeat(Math.ceil(4 * 1024 * 1024 / 13)) }).expect(413);

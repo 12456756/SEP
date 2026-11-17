@@ -160,7 +160,7 @@ export class GatewayModelPolicyService {
     }
     // UTF-8 字节限制不是 context token 校验，也不用于计费。
     const inputBytes = Buffer.byteLength(serialized, 'utf8');
-    if (inputBytes > this.positiveConfig('GATEWAY_MAX_REQUEST_BYTES', 4 * 1024 * 1024)) {
+    if (inputBytes > this.positiveConfig('GATEWAY_MAX_REQUEST_BYTES', 64 * 1024 * 1024)) {
       throw new PayloadTooLargeException(platformErrorResponse(
         'MODEL_REQUEST_TOO_LARGE', '模型请求超过序列化资源上限', null,
       ));

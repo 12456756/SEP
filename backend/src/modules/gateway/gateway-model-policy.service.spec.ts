@@ -290,6 +290,14 @@ describe('GatewayModelPolicyService', () => {
     ] }))).rejects.toThrow('functionCalling');
   });
 
+  it('accepts history above the previous 4 MiB default', async () => {
+    const dto = request({ messages: Array.from({ length: 6 }, () => ({
+      role: 'user', content: 'a'.repeat(1024 * 1024),
+    })) });
+    const result = await service.prepare(identity, dto);
+    expect(result.inputBytes).toBeGreaterThan(6 * 1024 * 1024);
+  });
+
   it('bounds the whole UTF-8 serialization including tools and injected output budget', async () => {
     const dto = request({ messages: [{ role: 'user', content: '中文' }] });
     const bytes = Buffer.byteLength(JSON.stringify({ ...dto, max_tokens: 4096 }), 'utf8');
@@ -371,9 +379,9 @@ describe('GatewayModelPolicyService', () => {
     await expect(service.prepare(identity, request())).rejects.toBe(failure);
   });
 
-  it('enforces the default 4 MiB limit without pretending to count context tokens', async () => {
+  it('enforces the default 64 MiB limit without pretending to count context tokens', async () => {
     const content = 'x'.repeat(1024 * 1024);
-    await expect(service.prepare(identity, request({ messages: Array(4).fill({ role: 'user', content }) }))).rejects.toThrow(PayloadTooLargeException);
+    await expect(service.prepare(identity, request({ messages: Array(64).fill({ role: 'user', content }) }))).rejects.toThrow(PayloadTooLargeException);
   });
 
   it('uses the same policy for the client subscription list and prepared requests', async () => {
