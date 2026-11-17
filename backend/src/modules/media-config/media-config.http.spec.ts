@@ -86,14 +86,14 @@ describe('media configuration HTTP contracts', () => {
     expect(media.getAvailableProfiles).toHaveBeenCalledWith('user-1');
   });
 
-  it('preserves the old runtime contract without a media version', async () => {
+  it('defaults both media versions to V3', async () => {
     await request(app.getHttpServer()).get('/api/client/subscriptions/sub-1/runtime').set('x-test-role', 'MEMBER').expect(200);
-    expect(client.getRuntime).toHaveBeenCalledWith('user-1', 'sub-1', undefined);
+    expect(client.getRuntime).toHaveBeenCalledWith('user-1', 'sub-1', 3, undefined, 3);
   });
 
   it('parses the media version before passing it to the client service', async () => {
-    await request(app.getHttpServer()).get('/api/client/subscriptions/sub-1/runtime?mediaProtocolVersion=1').set('x-test-role', 'MEMBER').expect(200);
-    expect(client.getRuntime).toHaveBeenCalledWith('user-1', 'sub-1', 1);
+    await request(app.getHttpServer()).get('/api/client/subscriptions/sub-1/runtime?mediaProtocolVersion=3').set('x-test-role', 'MEMBER').expect(200);
+    expect(client.getRuntime).toHaveBeenCalledWith('user-1', 'sub-1', 3, undefined, 3);
   });
 
   it('rejects malformed runtime queries before service dispatch', async () => {
@@ -107,15 +107,14 @@ describe('media configuration HTTP contracts', () => {
   });
 
   it.each([
-    ['skillArtifactProtocolVersion=1', undefined, 1],
-    ['mediaProtocolVersion=1&skillArtifactProtocolVersion=1', 1, 1],
-    ['mediaProtocolVersion=2&skillArtifactProtocolVersion=1', 2, 1],
-    ['mediaProtocolVersion=1&skillArtifactProtocolVersion=2', 1, 2],
-    ['skillArtifactProtocolVersion=99', undefined, 99],
+    ['skillArtifactProtocolVersion=1', 3, 1],
+    ['mediaProtocolVersion=3&skillArtifactProtocolVersion=1', 3, 1],
+    ['mediaProtocolVersion=3&skillArtifactProtocolVersion=2', 3, 2],
+    ['skillArtifactProtocolVersion=99', 3, 99],
   ])('passes independently negotiated protocol versions to runtime: %s', async (query, mediaVersion, artifactVersion) => {
     await request(app.getHttpServer()).get(`/api/client/subscriptions/sub-1/runtime?${query}`).set('x-test-role', 'MEMBER').expect(200);
     expect(client.getRuntime).toHaveBeenCalledTimes(1);
-    expect(client.getRuntime).toHaveBeenCalledWith('user-1', 'sub-1', mediaVersion, artifactVersion);
+    expect(client.getRuntime).toHaveBeenCalledWith('user-1', 'sub-1', mediaVersion, artifactVersion, 3);
   });
 
   it.each([

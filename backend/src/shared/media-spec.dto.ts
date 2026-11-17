@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MediaProfileParametersSchema } from './media-runtime-parameters';
 
 export const MediaProfileIdV3Schema = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/);
 export const MediaConfigVersionV3Schema = z.string().trim().min(1).max(80).regex(/^[^\p{Cc}\p{Cf}]+$/u);
@@ -67,32 +68,48 @@ export const MediaVideoSpecV3Schema = z.object({
 }).strict().superRefine(refineDimensions);
 export type MediaVideoSpecV3 = z.infer<typeof MediaVideoSpecV3Schema>;
 
-export const MediaCapabilityHintSchema = z.object({
-  field: LabelSchema, values: z.array(z.union([LabelSchema, z.number().finite(), z.boolean()])).max(128),
-  source: z.string().trim().min(1).max(256), observedAt: z.string().datetime({ offset: true }).nullable(),
-  confidence: z.enum(['verified', 'declared', 'unknown']),
-}).strict();
 export const MediaAdapterV3Schema = z.object({
   id: LabelSchema, version: LabelSchema, available: z.boolean(), reason: LabelSchema.optional(),
   operations: z.array(LabelSchema).max(8),
   referenceSupport: z.object({
-    maxCount: z.number().int().nonnegative().safe(), maxInputBytes: PositiveIntegerSchema,
+    maxCount: z.number().int().nonnegative().safe(), maxInputBytes: z.number().int().nonnegative().safe(),
     mimeTypes: z.array(LabelSchema).max(16),
   }).strict(),
   supportsTaskQuery: z.boolean(), supportsCancel: z.boolean(),
 }).strict();
 export const MediaRuntimeV3ProfileSchema = z.object({
   profileId: MediaProfileIdV3Schema, configVersion: MediaConfigVersionV3Schema, kind: z.enum(['image', 'video']),
-  displayName: z.string().trim().min(1).max(80), operations: z.array(LabelSchema).min(1).max(8),
+  modelId: z.string().min(1).max(160), modelDisplayName: z.string().min(1).max(160),
+  displayName: z.string().trim().min(1).max(80), operations: z.array(LabelSchema).max(8),
   executionMode: z.enum(['sync-response', 'async-query']), authorized: z.boolean(),
-  adapter: MediaAdapterV3Schema, capabilityHints: z.array(MediaCapabilityHintSchema).max(32),
-  unavailableReason: LabelSchema.optional(),
-}).strict();
+  adapter: MediaAdapterV3Schema,
+  parameters: MediaProfileParametersSchema.innerType().shape.parameters,
+  constraints: MediaProfileParametersSchema.innerType().shape.constraints,
+  referenceRules: MediaProfileParametersSchema.innerType().shape.referenceRules,
+  unavailableReason: LabelSchema.nullable(), unavailableMessage: z.string().min(1).max(256).nullable(),
+}).strict().superRefine((value, ctx) => {
+  const rules = MediaProfileParametersSchema.safeParse({ parameters: value.parameters, constraints: value.constraints, referenceRules: value.referenceRules });
+  if (!rules.success) rules.error.issues.forEach(issue => ctx.addIssue(issue));
+  const issue = (path: string, message: string) => ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
+  if (Object.values(value.parameters).some(parameter => parameter.operations.some(op => !value.operations.includes(op)))
+    || value.constraints.some(rule => rule.operations.some(op => !value.operations.includes(op)))) issue('parameters', '参数操作必须属于配置支持的操作');
+  if (value.operations.some(op => !value.referenceRules.some(rule => rule.operation === op))
+    || value.referenceRules.some(rule => !value.operations.includes(rule.operation))) issue('referenceRules', '参考图规则必须覆盖且仅覆盖配置操作');
+  if (value.referenceRules.some(rule => rule.maxCount > value.adapter.referenceSupport.maxCount
+    || rule.maxInputBytes > value.adapter.referenceSupport.maxInputBytes
+    || rule.mimeTypes.some(mime => !value.adapter.referenceSupport.mimeTypes.includes(mime)))) issue('referenceRules', '参考图规则超出适配器上限');
+  if ((value.unavailableReason === null) !== (value.unavailableMessage === null)
+    || (value.adapter.available && value.unavailableReason !== null)
+    || (!value.adapter.available && value.unavailableReason === null)) issue('unavailableReason', '可用状态和原因不一致');
+  if (value.adapter.available && !value.operations.some(op => value.adapter.operations.includes(op)))
+    issue('operations', '可用配置必须有适配器支持的操作');
+});
 export type MediaRuntimeV3Profile = z.infer<typeof MediaRuntimeV3ProfileSchema>;
 
 function runtimeSchema(kind: 'image' | 'video') {
   return z.object({
     protocolVersion: z.literal(3), executionMode: z.enum(['real', 'disabled', 'mock']),
+    status: z.enum(['ready', 'empty', 'disabled', 'unavailable']),
     executionAvailable: z.boolean(), defaultProfileId: MediaProfileIdV3Schema.nullable(),
     tools: z.array(LabelSchema).max(8), profiles: z.array(MediaRuntimeV3ProfileSchema).max(64),
   }).strict().superRefine((value, ctx) => {
@@ -102,8 +119,12 @@ function runtimeSchema(kind: 'image' | 'video') {
     if (value.defaultProfileId !== null && !value.profiles.some(p => p.profileId === value.defaultProfileId)) issue('defaultProfileId', '默认路由不可用');
     const executable = value.profiles.some(p => p.authorized && p.adapter.available && !p.unavailableReason
       && p.operations.some(op => p.adapter.operations.includes(op)));
-    if (value.executionAvailable && (value.executionMode !== 'real' || !executable)) issue('executionAvailable', '缺少可执行的授权适配器');
+    if (value.executionAvailable !== (value.executionMode === 'real' && executable)) issue('executionAvailable', '执行状态与授权适配器不一致');
     if (!value.executionAvailable && value.tools.length) issue('tools', '不可执行时不能暴露执行工具');
+    if (value.defaultProfileId !== null && !value.profiles.some(p => p.profileId === value.defaultProfileId && p.authorized && p.adapter.available && !p.unavailableReason)) issue('defaultProfileId', '默认配置必须可执行');
+    const status = !value.profiles.length ? 'empty' : value.profiles.every(p => p.unavailableReason === 'EXECUTION_DISABLED')
+      ? 'disabled' : value.executionAvailable ? 'ready' : 'unavailable';
+    if (value.status !== status && !(value.status === 'disabled' && value.executionMode !== 'real' && !value.executionAvailable && value.profiles.length > 0)) issue('status', '配置状态不一致');
   });
 }
 export const MediaRuntimeV3Schema = runtimeSchema('image');

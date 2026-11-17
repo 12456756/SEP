@@ -10,6 +10,7 @@ import { ApiError } from '@/lib/api-client';
 import type { MediaConnection, MediaProfile } from './use-media-config';
 import type { MediaVideoProfile } from './use-video-config';
 import type { UpdateMediaConnectionDto } from 'shared/media.dto';
+import { effectiveImageLimits } from 'shared/media-runtime-parameters';
 import { MediaProfileWorkflow } from './media-profile-workflow';
 
 type ProfileStatus = MediaProfile | MediaVideoProfile;
@@ -34,20 +35,22 @@ const yesNo = (value: boolean | undefined) => value === undefined ? '未提供' 
 function ProfileCapabilities({ profile }: { profile: ProfileStatus }) {
   if (profile.kind === 'image') {
     const { capabilities } = profile;
-    return <><p className="mt-3 text-xs text-fg-muted">能力提示来源：Profile 配置声明；更新时间：未知；验证程度：声明，未执行生成验证，不作为规格白名单。</p><dl className="mt-2 grid min-w-0 gap-x-5 gap-y-1 text-xs sm:grid-cols-2">
+    const limits = effectiveImageLimits(capabilities);
+    return <><p className="mt-3 text-xs text-fg-muted">尺寸、质量为配置声明的建议选项；数量为当前执行上限；未执行生成验证。</p><dl className="mt-2 grid min-w-0 gap-x-5 gap-y-1 text-xs sm:grid-cols-2">
       <div><dt className="inline text-fg-muted">操作：</dt><dd className="inline break-words">{list(profile.operations)}</dd></div>
       <div><dt className="inline text-fg-muted">尺寸：</dt><dd className="inline break-words">{list(capabilities.sizes)}</dd></div>
-      <div><dt className="inline text-fg-muted">质量：</dt><dd className="inline">未提供</dd></div>
-      <div><dt className="inline text-fg-muted">声明输出数量提示：</dt><dd className="inline">{capabilities.maxOutputs}</dd></div>
+      <div><dt className="inline text-fg-muted">质量：</dt><dd className="inline break-words">{list(capabilities.qualities)}</dd></div>
+      <div><dt className="inline text-fg-muted">最大输出数量：</dt><dd className="inline">{limits.maxOutputs}</dd></div>
       <div><dt className="inline text-fg-muted">参考图：</dt><dd className="inline">{yesNo(capabilities.supportsReferenceImage)}</dd></div>
-      <div><dt className="inline text-fg-muted">参考图数量上限：</dt><dd className="inline">{capabilities.supportsReferenceImage ? capabilities.maxReferenceCount : 0}</dd></div>
+      <div><dt className="inline text-fg-muted">最大参考图数量：</dt><dd className="inline">{limits.maxReferenceCount}</dd></div>
       <div><dt className="inline text-fg-muted">输出尺寸 / 字节上限：</dt><dd className="inline">未提供</dd></div>
     </dl></>;
   }
   const { capabilities } = profile;
   return <><p className="mt-3 text-xs text-fg-muted">能力提示来源：Profile 配置声明；更新时间：未知；验证程度：声明，未执行生成验证，不作为规格白名单。</p><dl className="mt-2 grid min-w-0 gap-x-5 gap-y-1 text-xs sm:grid-cols-2">
     <div><dt className="inline text-fg-muted">操作：</dt><dd className="inline break-words">{list(profile.operations)}</dd></div>
-    <div><dt className="inline text-fg-muted">时长（秒）：</dt><dd className="inline break-words">{list(capabilities.durationsSeconds)}</dd></div>
+    <div><dt className="inline text-fg-muted">时长（秒）：</dt><dd className="inline break-words">{capabilities.durationRange
+      ? `${capabilities.durationRange.minimum} 至 ${capabilities.durationRange.maximum}` : list(capabilities.durationsSeconds)}</dd></div>
     <div><dt className="inline text-fg-muted">画幅：</dt><dd className="inline break-words">{list(capabilities.aspectRatios)}</dd></div>
     <div><dt className="inline text-fg-muted">分辨率：</dt><dd className="inline break-words">{list(capabilities.resolutions)}</dd></div>
     <div><dt className="inline text-fg-muted">帧率：</dt><dd className="inline break-words">{list(capabilities.frameRates)}</dd></div>

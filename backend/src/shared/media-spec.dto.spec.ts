@@ -47,18 +47,22 @@ describe('negotiated media V3 specification contract', () => {
 
   it('exposes unknown capability evidence without inventing defaults', () => {
     const runtime = MediaVideoRuntimeV3Schema.parse({
-      protocolVersion: 3, executionMode: 'real', executionAvailable: true,
+      protocolVersion: 3, status: 'ready', executionMode: 'real', executionAvailable: true,
       defaultProfileId: 'video', tools: ['video_generate', 'video_get_job'], profiles: [{
         profileId: 'video', configVersion: 'cfg_3', kind: 'video', displayName: 'Video',
+        modelId: 'video-model', modelDisplayName: 'video-model',
         operations: ['text-to-video'], executionMode: 'async-query', authorized: true,
         adapter: { id: 'sub2api-video', version: '3', available: true, operations: ['text-to-video'],
           referenceSupport: { maxCount: 1, maxInputBytes: 10485760, mimeTypes: ['image/png'] },
-          supportsTaskQuery: true, supportsCancel: false }, capabilityHints: [],
+          supportsTaskQuery: true, supportsCancel: false }, parameters: {}, constraints: [],
+        referenceRules: [{ operation: 'text-to-video', minCount: 0, maxCount: 0, maxInputBytes: 0, mimeTypes: [] }],
+        unavailableReason: null, unavailableMessage: null,
       }],
     });
-    expect(runtime.profiles[0].capabilityHints).toEqual([]);
+    expect(runtime.profiles[0].parameters).toEqual({});
     expect(JSON.stringify(runtime)).not.toContain('defaults');
     expect(MediaVideoRuntimeV3Schema.safeParse({ ...runtime, profiles: [], defaultProfileId: null }).success).toBe(false);
+    expect(MediaVideoRuntimeV3Schema.safeParse({ ...runtime, status: 'unavailable', executionAvailable: false, tools: [] }).success).toBe(false);
     expect(MediaVideoRuntimeV3Schema.safeParse({ ...runtime, defaultProfileId: 'video.v3',
       profiles: [{ ...runtime.profiles[0], profileId: 'video.v3', configVersion: 'cfg.v3' }] }).success).toBe(true);
   });

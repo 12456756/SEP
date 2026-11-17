@@ -25,9 +25,11 @@ function effectiveSpecs(value: unknown, protocolVersion: 1 | 2 | 3) {
   if (protocolVersion === 3) {
     const profile = MediaRuntimeV3ProfileSchema.safeParse(value);
     if (!profile.success) return 'V3 Profile 信息无效';
-    const hints = profile.data.capabilityHints.map(hint => {
-      const observedAt = hint.observedAt ? new Date(hint.observedAt).toLocaleString() : '未验证';
-      return `${hint.field}: ${hint.values.join(' / ') || '未知'}（${hint.confidence}；来源 ${hint.source}；更新时间 ${observedAt}）`;
+    const hints = Object.entries(profile.data.parameters).map(([field, parameter]) => {
+      const observedAt = parameter.observedAt ? new Date(parameter.observedAt).toLocaleString() : '未验证';
+      const values = parameter.support === 'unsupported' ? '不支持' : parameter.values?.join(' / ')
+        || (parameter.minimum !== undefined || parameter.maximum !== undefined ? `${parameter.minimum ?? '未知'} ~ ${parameter.maximum ?? '未知'}` : '未知');
+      return `${field}: ${values}（${parameter.confidence}；来源 ${parameter.source}；更新时间 ${observedAt}）`;
     });
     const adapter = profile.data.adapter.available ? `适配器 ${profile.data.adapter.id} 已就绪`
       : `适配器未就绪：${profile.data.adapter.reason ?? profile.data.unavailableReason ?? '原因未知'}`;

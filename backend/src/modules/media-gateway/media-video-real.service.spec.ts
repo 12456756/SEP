@@ -122,6 +122,40 @@ describe('MediaVideoRealService', () => {
     expect(billing.release).not.toHaveBeenCalled();
   });
 
+  it.each(['quote', 'submit'] as const)('rejects a duration outside configured bounds before %s reserves or dispatches', async stage => {
+    Object.assign(db.state.model.capabilities, { durationRange: { minimum: 5, maximum: 10 } });
+    const value = MediaVideoGatewayQuoteRequestV3Schema.parse({ protocolVersion: 3, specRevision: 1,
+      profileId: input.profileId, configVersion: input.configVersion, operation: input.operation,
+      referenceIds: [], creativeBrief: 'Range check', requestedSpec: { durationSeconds: 4, resolution: '720p' } });
+    const action = stage === 'quote' ? service.quote(videoClaims, value) : service.submit(videoClaims, {
+      ...value, clientRequestId: 'outside-range', quoteId: 'missing-quote',
+    });
+    await expect(action).rejects.toMatchObject({ response: { error: {
+      code: 'INVALID_PARAMETER', field: 'requestedSpec.durationSeconds', stage: `video-${stage}`,
+    } } });
+    expect(adapter.pricing).not.toHaveBeenCalled();
+    expect(adapter.submit).not.toHaveBeenCalled();
+    expect(billing.reserve).not.toHaveBeenCalled();
+  });
+
+  it.each([4, 7, 10])('accepts duration %s within the explicit range including its boundaries', async durationSeconds => {
+    Object.assign(db.state.model.capabilities, { durationRange: { minimum: 4, maximum: 10 }, durationsSeconds: [4, 10] });
+    Object.assign(runtime, { getRuntimeVideoV3: jest.fn(async () => ({ executionAvailable: true, executionMode: 'real', profiles: [{
+      profileId: input.profileId, configVersion: input.configVersion, operations: ['text-to-video'], authorized: true,
+      adapter: { available: true, operations: ['text-to-video'] },
+    }] })) });
+    adapter.pricing.mockResolvedValue({ model: 'minimax-h3', operation: input.operation, resolution: '720p', duration_seconds: durationSeconds,
+      pricing_status: 'quoted', amount_usd: '0.2', pricing_version: 'range-1', expires_at: new Date(Date.now() + 60_000).toISOString() });
+    const value = MediaVideoGatewayQuoteRequestV3Schema.parse({ protocolVersion: 3, specRevision: 1,
+      profileId: input.profileId, configVersion: input.configVersion, operation: input.operation,
+      referenceIds: [], creativeBrief: 'Range check', requestedSpec: { durationSeconds, resolution: '720p' } });
+    await expect(service.quote(videoClaims, value)).resolves.toMatchObject({ pricingStatus: 'quoted' });
+    expect(adapter.pricing).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ requestedSpec: {
+      durationSeconds, resolution: '720p',
+    } }), 'minimax-h3');
+    expect(billing.reserve).not.toHaveBeenCalled();
+  });
+
   it.each([
     { label: 'equivalent ratio and one-frame container rounding', spec: { aspectRatio: '2:2' },
       measured: { durationSeconds: 8 + 1 / 30 }, deliveryStatus: 'matched' },

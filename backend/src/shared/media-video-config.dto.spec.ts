@@ -26,6 +26,20 @@ describe('video configuration v1 boundary', () => {
     expect(UpdateMediaVideoProfileDtoSchema.parse({ expectedConfigVersion: 'cfg_v1', enabled: false }).enabled).toBe(false);
   });
 
+  it('validates positive integer video duration bounds on create and partial updates', () => {
+    const durationRange = { minimum: 4, maximum: 10 };
+    expect(CreateMediaVideoProfileDtoSchema.parse({ ...create(), capabilities: { ...create().capabilities, durationRange } })
+      .capabilities.durationRange).toEqual(durationRange);
+    for (const range of [{ minimum: 0, maximum: 10 }, { minimum: 4.5, maximum: 10 },
+      { minimum: 10, maximum: 4 }, { minimum: 4 }, { maximum: 10 }, { minimum: 4, maximum: Infinity }]) {
+      expect(CreateMediaVideoProfileDtoSchema.safeParse({ ...create(), capabilities: { ...create().capabilities, durationRange: range } }).success).toBe(false);
+      expect(UpdateMediaVideoProfileDtoSchema.safeParse({ expectedConfigVersion: 'cfg_1', capabilities: { durationRange: range } }).success).toBe(false);
+    }
+    expect(UpdateMediaVideoProfileDtoSchema.safeParse({ expectedConfigVersion: 'cfg_1', capabilities: {
+      durationRange: { minimum: 5, maximum: 5 },
+    } }).success).toBe(true);
+  });
+
   it('defaults to no video grants, independently from existing image grants', () => {
     const image = { enabledProfileIds: ['product-image'], defaultProfileId: 'product-image' };
     const policy = MediaPolicySchema.parse({ ...image, video: { enabledProfileIds: ['video-a'], defaultProfileId: 'video-a' } });
@@ -49,9 +63,9 @@ describe('video configuration v1 boundary', () => {
   });
 
   it('negotiates video independently while keeping old query inputs valid', () => {
-    expect(MediaRuntimeQuerySchema.parse({})).toEqual({});
-    expect(MediaRuntimeQuerySchema.parse({ mediaProtocolVersion: '1', skillArtifactProtocolVersion: '1', videoProtocolVersion: '1' }))
-      .toEqual({ mediaProtocolVersion: 1, skillArtifactProtocolVersion: 1, videoProtocolVersion: 1 });
+    expect(MediaRuntimeQuerySchema.parse({})).toEqual({ mediaProtocolVersion: 3, videoProtocolVersion: 3 });
+    expect(MediaRuntimeQuerySchema.parse({ mediaProtocolVersion: '3', skillArtifactProtocolVersion: '1', videoProtocolVersion: '3' }))
+      .toEqual({ mediaProtocolVersion: 3, skillArtifactProtocolVersion: 1, videoProtocolVersion: 3 });
     expect(MediaRuntimeQuerySchema.safeParse({ videoProtocolVersion: 'bad' }).success).toBe(false);
     expect(MediaRuntimeQuerySchema.safeParse({ videoProtocolVersion: '1', provider: 'upstream' }).success).toBe(false);
   });

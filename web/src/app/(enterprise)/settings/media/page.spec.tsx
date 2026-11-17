@@ -152,10 +152,15 @@ describe('enterprise media configuration page', () => {
       profiles: [{ profileId: 'image-basic', configVersion: 'version-7', status: 'effective', reasons: [],
         effectiveProfile: {
           profileId: 'image-basic', kind: 'image', displayName: 'Basic Image', configVersion: 'version-7',
+          modelId: 'image-model', modelDisplayName: 'image-model',
           operations: ['generate'], executionMode: 'sync-response', authorized: true,
           adapter: { id: 'sub2api-image', version: '3', available: true, operations: ['generate'],
-            referenceSupport: { maxCount: 0, maxInputBytes: 5242880, mimeTypes: [] }, supportsTaskQuery: false, supportsCancel: false },
-          capabilityHints: [{ field: 'size', values: ['2048x2048'], source: 'profile-config', observedAt: null, confidence: 'declared' }],
+            referenceSupport: { maxCount: 0, maxInputBytes: 0, mimeTypes: [] }, supportsTaskQuery: false, supportsCancel: false },
+          parameters: { size: { label: '尺寸', type: 'string', support: 'supported', required: false,
+            operations: ['generate'], valuesMode: 'suggested', values: ['2048x2048'], source: 'profile-config',
+            observedAt: null, confidence: 'declared' } }, constraints: [],
+          referenceRules: [{ operation: 'generate', minCount: 0, maxCount: 0, maxInputBytes: 0, mimeTypes: [] }],
+          unavailableReason: null, unavailableMessage: null,
         } }],
     });
     renderPage();

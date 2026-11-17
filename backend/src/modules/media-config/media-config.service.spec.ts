@@ -118,15 +118,17 @@ describe('MediaConfigService', () => {
         profileId: row.profileId, authorized: true, adapter: { id: 'sub2api-image', available: true,
           referenceSupport: { maxCount: 4, maxInputBytes: 5 * 1024 * 1024, mimeTypes: ['image/png'] } },
       }] });
-    expect(runtime.profiles[0].capabilityHints).toEqual([
-      expect.objectContaining({ field: 'size', values: row.capabilities.sizes, confidence: 'declared' }),
-    ]);
+    expect(runtime.profiles[0]).toMatchObject({ modelId: row.modelId, modelDisplayName: row.modelId,
+      parameters: { size: { values: row.capabilities.sizes, valuesMode: 'suggested', confidence: 'declared' },
+        count: { minimum: 1, maximum: 4, required: true } } });
+    expect(runtime.profiles[0]).not.toHaveProperty('capabilityHints');
     expect(JSON.stringify(runtime)).not.toContain('defaultSize');
     row.verified = false;
     const unavailable = await service.getRuntimeMediaV3('ent-1');
     expect(unavailable).toMatchObject({ executionAvailable: false, tools: [], profiles: [{
       authorized: true, adapter: { available: false, reason: 'PROFILE_UNVERIFIED' }, unavailableReason: 'PROFILE_UNVERIFIED',
     }] });
+    expect(unavailable.defaultProfileId).toBeNull();
   });
 
   it('creates an unverified profile with a server-owned version', async () => {
@@ -138,6 +140,27 @@ describe('MediaConfigService', () => {
     const result = await service.createProfile(dto);
     expect(result).toMatchObject({ verified: false, enabled: false, configVersion: expect.stringMatching(/^cfg_/) });
     expect(prisma.mediaModelProfile.create.mock.calls[0][0].data).not.toHaveProperty('apiKey');
+  });
+
+  it('retains an authorized profile with no executable operation and clears its default', async () => {
+    const { service, row } = fixture({ get: jest.fn(() => 'true') });
+    row.operations = ['edit'];
+    row.capabilities.supportsReferenceImage = false;
+    expect(await service.getRuntimeMediaV3('ent-1')).toMatchObject({ status: 'unavailable', executionAvailable: false,
+      defaultProfileId: null, tools: [], profiles: [{ profileId: row.profileId, modelId: row.modelId, operations: [],
+        parameters: {}, constraints: [], referenceRules: [], unavailableReason: 'ADAPTER_OPERATION_UNSUPPORTED',
+        unavailableMessage: '当前适配器不支持该操作', adapter: { available: false } }] });
+  });
+
+  it('distinguishes empty grants and connection read failures without contacting the model', async () => {
+    const { service, prisma, settings, imageAdapter } = fixture({ get: jest.fn(() => 'true') });
+    prisma.enterpriseModelConfig.findUnique.mockResolvedValue({ mediaPolicy: { enabledProfileIds: [] } });
+    expect(await service.getRuntimeMediaV3('ent-1')).toMatchObject({ status: 'empty', profiles: [], executionAvailable: false });
+    const failure = new ServiceUnavailableException({ message: '读取连接失败', errors: [{ field: 'connection', message: 'storage unavailable' }] });
+    settings.getMediaConnection.mockRejectedValue(failure);
+    await expect(service.getRuntimeMediaV3('ent-1')).rejects.toBe(failure);
+    expect(imageAdapter.pricing).not.toHaveBeenCalled();
+    expect(imageAdapter.discoverModels).not.toHaveBeenCalled();
   });
 
   it('rejects creating or enabling a profile before configuration verification', async () => {
@@ -183,7 +206,7 @@ describe('MediaConfigService', () => {
     expect(imageAdapter.pricing).not.toHaveBeenCalled();
   });
 
-  it('does not synchronize a failed catalog and keeps managed model identity immutable', async () => {
+  it('does not synchronize a failed catalog or permit manual identity edits to managed models', async () => {
     const { service, imageAdapter, sync, row } = fixture();
     imageAdapter.discoverModels.mockRejectedValue(new ServiceUnavailableException());
     await expect(service.discoverModels()).rejects.toBeInstanceOf(ServiceUnavailableException);
@@ -191,6 +214,39 @@ describe('MediaConfigService', () => {
     row.profileId = 'auto-image-123456789';
     await expect(service.updateProfile(row.profileId, { expectedConfigVersion: row.configVersion, modelId: 'other-model' }))
       .rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('persists image settings on managed profiles, clears verification and publishes the saved limits', async () => {
+    const { service, prisma, row } = fixture({ get: jest.fn(() => 'true') });
+    row.profileId = 'auto-image-example';
+    prisma.mediaModelProfile.updateMany.mockImplementation(async ({ data }) => { Object.assign(row, data); return { count: 1 }; });
+    const saved = await service.updateProfile(row.profileId, { expectedConfigVersion: row.configVersion,
+      capabilities: { maxOutputs: 2, qualities: ['auto', 'high'], maxReferenceCount: 2 } });
+    expect(saved).toMatchObject({ verified: false, capabilities: { maxOutputs: 2, qualities: ['auto', 'high'], maxReferenceCount: 2 } });
+    expect(saved.configVersion).not.toBe('cfg_1');
+    prisma.enterpriseModelConfig.findUnique.mockResolvedValue({ mediaPolicy: { enabledProfileIds: [row.profileId] } });
+    const runtime = await service.getRuntimeMediaV3('ent-1');
+    expect(runtime.profiles[0]).toMatchObject({ unavailableReason: 'PROFILE_UNVERIFIED',
+      parameters: { count: { maximum: 2 }, quality: { values: ['auto', 'high'], valuesMode: 'suggested' } },
+      adapter: { referenceSupport: { maxCount: 2 } } });
+  });
+
+  it('rejects a verification count above the configured output limit without requesting a price', async () => {
+    const { service, row, imageAdapter } = fixture();
+    row.modelId = 'gpt-image-2';
+    row.capabilities.maxOutputs = 1;
+    await expect(service.verifyProfile(row.profileId, { expectedConfigVersion: row.configVersion,
+      verificationSpec: { size: '1024x1024', quality: 'auto', count: 2 } })).rejects.toBeInstanceOf(BadRequestException);
+    expect(imageAdapter.pricing).not.toHaveBeenCalled();
+  });
+
+  it('requires an explicit pricing spec for configured quality suggestions instead of assuming legacy quality names', async () => {
+    const { service, row, imageAdapter } = fixture();
+    row.modelId = 'gpt-image-2';
+    Object.assign(row.capabilities, { qualities: ['auto', 'studio'] });
+    await expect(service.verifyProfile(row.profileId, { expectedConfigVersion: row.configVersion }))
+      .rejects.toThrow('显式填写报价校验规格');
+    expect(imageAdapter.pricing).not.toHaveBeenCalled();
   });
 
   it('verifies each advertised operation, size, quality, and output boundary using pricing only', async () => {

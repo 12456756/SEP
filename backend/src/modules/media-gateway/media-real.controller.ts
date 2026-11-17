@@ -12,7 +12,7 @@ import type { ClientEmploymentClaims } from '../client/client-employment.guard';
 import { ClientEmployment } from '../client/client-employment.decorator';
 import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import {
-  MediaGatewayIdSchema, MediaRealAnyQuoteRequestSchema, MediaRealAnyRequestSchema,
+  IMAGE_REFERENCE_MAX_BYTES, MediaGatewayIdSchema, MediaRealAnyQuoteRequestSchema, MediaRealAnyRequestSchema,
 } from 'shared';
 import type { MediaRealAnyQuoteRequest, MediaRealAnyRequest } from 'shared';
 import { MediaRealService } from './media-real.service';
@@ -53,7 +53,7 @@ export class MediaRealController {
   @UseInterceptors(FileInterceptor('file', {
     storage: memoryStorage(),
     // Busboy emits partsLimit when the threshold is reached, not exceeded.
-    limits: { fileSize: 5 * 1024 * 1024 + 1, files: 1, fields: 0, parts: 2 },
+    limits: { fileSize: IMAGE_REFERENCE_MAX_BYTES + 1, files: 1, fields: 0, parts: 2 },
   }))
   reference(@ClientEmployment() claims: ClientEmploymentClaims, @UploadedFile() file: Express.Multer.File, @Body() fields: unknown) {
     return this.media.uploadReference(claims, file, fields);

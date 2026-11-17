@@ -109,6 +109,34 @@ describe('MediaRealService', () => {
     expect(h.adapter.execute).toHaveBeenCalledTimes(1);
     expect(h.billing.release).not.toHaveBeenCalled();
   });
+
+  it.each(['quote', 'submit'] as const)('enforces the configured image output limit before %s can spend funds', async stage => {
+    const h = harness();
+    h.prisma.mediaModelProfile.findUnique.mockResolvedValue({ ...profile, modelId: 'gpt-image-2', enabled: true, verified: true,
+      capabilities: { ...profile.capabilities, maxOutputs: 1 } });
+    const input = { ...quoteInputV3, requestedSpec: { ...quoteInputV3.requestedSpec, count: 2 } };
+    const action = stage === 'quote' ? h.service.quote(claims, input)
+      : h.service.submit(claims, { ...input, quoteId: 'quote', clientRequestId: 'over-output-limit' });
+    await expect(action).rejects.toMatchObject({ status: 400, response: { error: {
+      code: 'UNSUPPORTED_MEDIA_PARAMETERS', field: 'requestedSpec.count' } } });
+    expect(h.adapter.pricing).not.toHaveBeenCalled();
+    expect(h.billing.reserve).not.toHaveBeenCalled();
+    expect(h.adapter.execute).not.toHaveBeenCalled();
+  });
+
+  it.each(['quote', 'submit'] as const)('enforces the configured reference count before %s', async stage => {
+    const h = harness();
+    h.prisma.mediaModelProfile.findUnique.mockResolvedValue({ ...profile, modelId: 'gpt-image-2', enabled: true, verified: true,
+      capabilities: { ...profile.capabilities, supportsReferenceImage: true, maxReferenceCount: 1 } });
+    const input = { ...quoteInputV3, operation: 'edit' as const, referenceIds: ['ref-1', 'ref-2'] };
+    const action = stage === 'quote' ? h.service.quote(claims, input)
+      : h.service.submit(claims, { ...input, quoteId: 'quote', clientRequestId: 'over-reference-limit' });
+    await expect(action).rejects.toMatchObject({ status: 422, response: { error: {
+      code: 'INVALID_REFERENCE', field: 'referenceIds' } } });
+    expect(h.adapter.pricing).not.toHaveBeenCalled();
+    expect(h.billing.reserve).not.toHaveBeenCalled();
+    expect(h.adapter.execute).not.toHaveBeenCalled();
+  });
   it.each(['subscription', 'policy', 'profile', 'model', 'switch'] as const)(
     'rechecks V3 execution authorization after reservation when %s changes', async change => {
       const h = harness();

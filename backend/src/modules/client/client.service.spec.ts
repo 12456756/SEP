@@ -1,5 +1,5 @@
 import { SkillVersionService } from '../skill-version/skill-version.service';
-import { NotFoundException } from '@nestjs/common';
+import { NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
@@ -411,19 +411,15 @@ describe('ClientService', () => {
     expect(listed.template.avatar).toBe(expected.avatarAsset.portraitUrl);
     expect(runtime.employee).not.toHaveProperty('systemPrompt');
     expect(runtime.employee).not.toHaveProperty('bindings');
-    expect(runtime.runtime).not.toHaveProperty('media');
+    expect(runtime.runtime.media).toMatchObject({ protocolVersion: 3, profiles: [] });
+    expect(runtime.runtime.video).toMatchObject({ protocolVersion: 3, profiles: [] });
+    expect(Number.isNaN(Date.parse(runtime.fetchedAt))).toBe(false);
     expect(mediaConfig.getRuntimeMedia).not.toHaveBeenCalled();
-    const negotiated = await service.getRuntime('user-1', 'sub-1', 1);
-    expect(negotiated.runtime.media).toMatchObject({ protocolVersion: 1, executionAvailable: false, tools: [] });
-    expect(mediaConfig.getRuntimeMedia).toHaveBeenCalledWith('ent-1');
-    mediaConfig.getRuntimeMedia.mockClear();
-    const unsupported = await service.getRuntime('user-1', 'sub-1', 2);
-    expect(unsupported.runtime.media).toHaveProperty('protocolVersion', 2);
-    expect(mediaConfig.getRuntimeMedia).not.toHaveBeenCalled();
-    expect(mediaConfig.getRuntimeMediaV2).toHaveBeenCalledWith('ent-1');
     const v3 = await service.getRuntime('user-1', 'sub-1', 3);
     expect(v3.runtime.media).toHaveProperty('protocolVersion', 3);
-    expect(mediaConfig.getRuntimeMediaV3).toHaveBeenCalledWith('ent-1');
+    expect(mediaConfig.getRuntimeMediaV3).toHaveBeenCalledWith('ent-1', expect.objectContaining({ enabledProfileIds: [] }));
+    expect(prisma.enterpriseModelConfig.findUnique).toHaveBeenCalledWith({ where: { enterpriseId: 'ent-1' }, select: { allowedChatModels: true, mediaPolicy: true } });
+    expect(mediaConfig.getRuntimeMediaV2).not.toHaveBeenCalled();
   });
 
   it('uses the shared enterprise resolver for runtime and omits skills without an approved version', async () => {
@@ -458,10 +454,29 @@ describe('ClientService', () => {
     prisma.subscription.findFirst.mockResolvedValue(null);
     await expect(service.getRuntime('user-1', 'revoked-subscription', 1)).rejects.toBeInstanceOf(NotFoundException);
     expect(mediaConfig.getRuntimeMedia).not.toHaveBeenCalled();
+    expect(mediaConfig.getRuntimeMediaV3).not.toHaveBeenCalled();
+    expect(videoConfig.getRuntimeVideoV3).not.toHaveBeenCalled();
     expect(prisma.subscription.findFirst.mock.calls[0][0].where).toMatchObject({
       id: 'revoked-subscription', enterpriseId: 'ent-1', status: 'ACTIVE',
       grants: { some: { OR: [{ memberId: 'member-1' }, { departmentId: 'dept-1' }] } },
     });
+  });
+
+  it('passes the same stored authorization snapshot to both builders and propagates read failures', async () => {
+    prisma.subscription.findFirst.mockResolvedValue({ id: 'sub-1', templateVersion: '1',
+      employee: { id: 'emp-1', name: 'Employee', version: '1', maxSteps: 10, bindings: [] } });
+    prisma.platformModel.findMany.mockResolvedValue([]);
+    prisma.enterpriseModelConfig.findUnique.mockResolvedValue({ allowedChatModels: [], mediaPolicy: {
+      enabledProfileIds: ['image-test'], defaultProfileId: 'image-test',
+      video: { enabledProfileIds: ['video-test'], defaultProfileId: 'video-test' },
+    } });
+    await service.getRuntime('user-1', 'sub-1');
+    expect(prisma.enterpriseModelConfig.findUnique).toHaveBeenCalledTimes(1);
+    expect(mediaConfig.getRuntimeMediaV3).toHaveBeenCalledWith('ent-1', expect.objectContaining({ enabledProfileIds: ['image-test'] }));
+    expect(videoConfig.getRuntimeVideoV3).toHaveBeenCalledWith('ent-1', expect.objectContaining({ enabledProfileIds: ['video-test'] }));
+    const failure = new ServiceUnavailableException({ message: '视频配置读取失败', errors: [{ field: 'profile', message: 'storage unavailable' }] });
+    videoConfig.getRuntimeVideoV3.mockRejectedValueOnce(failure);
+    await expect(service.getRuntime('user-1', 'sub-1')).rejects.toBe(failure);
   });
 
   describe('skill artifact runtime negotiation', () => {
@@ -505,14 +520,14 @@ describe('ClientService', () => {
       }]);
       expect(skillArtifacts.describe).toHaveBeenCalledTimes(1);
       expect(skillArtifacts.describe).toHaveBeenCalledWith('sub-mock', approvedVersion.capabilityId, approvedVersion);
-      expect(result.runtime).not.toHaveProperty('media');
+      expect(result.runtime.media).toHaveProperty('protocolVersion', 3);
       expect(mediaConfig.getRuntimeMedia).not.toHaveBeenCalled();
     });
 
   it.each([
-    [undefined, undefined, undefined], [1, undefined, undefined], [undefined, 1, undefined],
-    [undefined, undefined, 1], [1, 1, 1], [2, 2, 1], [1, 1, 2], [2, 1, 2], [3, 1, 3],
-  ])('negotiates video independently of image and artifact versions (%s, %s, %s)', async (media, artifacts, video) => {
+    [undefined, undefined, undefined], [3, undefined, undefined], [undefined, 1, undefined],
+    [undefined, undefined, 3], [3, 1, 3],
+  ])('always returns both V3 media blocks independently of artifact negotiation (%s, %s, %s)', async (media, artifacts, video) => {
     prisma.subscription.findFirst.mockResolvedValue({
       id: 'sub-1', templateVersion: '1.0.0', config: null,
       employee: { id: 'emp-1', name: 'Employee', avatar: null, version: '1.0.0',
@@ -522,17 +537,11 @@ describe('ClientService', () => {
     prisma.enterpriseModelConfig.findUnique.mockResolvedValue(null);
     const baseline = await service.getRuntime('user-1', 'sub-1', media, artifacts);
     const result = await service.getRuntime('user-1', 'sub-1', media, artifacts, video);
-    if (video === 1 || video === 2 || video === 3) {
-      const getter = video === 3 ? videoConfig.getRuntimeVideoV3 : video === 2 ? videoConfig.getRuntimeVideoV2 : videoConfig.getRuntimeVideo;
-      expect(result.runtime.video).toEqual(await getter.mock.results[0].value);
-      expect(getter).toHaveBeenCalledWith('ent-1');
-      const { video: _video, ...runtime } = result.runtime;
-      expect(runtime).toEqual(baseline.runtime);
-    } else {
-      expect(result).toEqual(baseline);
-      expect(result.runtime).not.toHaveProperty('video');
-      expect(videoConfig.getRuntimeVideo).not.toHaveBeenCalled();
-    }
+    expect(result.runtime).toEqual(baseline.runtime);
+    expect(result.runtime.video).toEqual(await videoConfig.getRuntimeVideoV3.mock.results[0].value);
+    expect(videoConfig.getRuntimeVideoV3).toHaveBeenCalledWith('ent-1', expect.objectContaining({ enabledProfileIds: [] }));
+    expect(videoConfig.getRuntimeVideo).not.toHaveBeenCalled();
+    expect(videoConfig.getRuntimeVideoV2).not.toHaveBeenCalled();
   });
 
   it('does not resolve video configuration before subscription authorization', async () => {
@@ -550,23 +559,20 @@ describe('ClientService', () => {
     });
 
     it.each([
-      [1, undefined, true, false],
-      [1, 2, true, false],
-      [2, 1, true, true],
+      [3, undefined, true, false],
+      [3, 2, true, false],
       [3, 1, true, true],
-      [undefined, 1, false, true],
-      [1, 1, true, true],
+      [undefined, 1, true, true],
     ])('negotiates media (%s) and artifact (%s) independently', async (mediaVersion, artifactVersion, expectsMedia, expectsArtifact) => {
       const result = await service.getRuntime('user-1', 'sub-mock', mediaVersion, artifactVersion);
-      expect(mediaConfig.getRuntimeMedia).toHaveBeenCalledTimes(expectsMedia && mediaVersion === 1 ? 1 : 0);
-      expect(mediaConfig.getRuntimeMediaV2).toHaveBeenCalledTimes(expectsMedia && mediaVersion === 2 ? 1 : 0);
-      expect(mediaConfig.getRuntimeMediaV3).toHaveBeenCalledTimes(expectsMedia && mediaVersion === 3 ? 1 : 0);
+      expect(mediaConfig.getRuntimeMedia).not.toHaveBeenCalled();
+      expect(mediaConfig.getRuntimeMediaV2).not.toHaveBeenCalled();
+      expect(mediaConfig.getRuntimeMediaV3).toHaveBeenCalledTimes(1);
       expect(skillArtifacts.describe).toHaveBeenCalledTimes(expectsArtifact ? 1 : 0);
       expect('media' in result.runtime).toBe(expectsMedia);
       expect('skillArtifactProtocolVersion' in result.runtime).toBe(expectsArtifact);
       expect('artifact' in result.runtime.skills[0]).toBe(expectsArtifact);
-      if (expectsMedia) expect(mediaVersion === 3 ? mediaConfig.getRuntimeMediaV3
-        : mediaVersion === 2 ? mediaConfig.getRuntimeMediaV2 : mediaConfig.getRuntimeMedia).toHaveBeenCalledWith('ent-1');
+      expect(mediaConfig.getRuntimeMediaV3).toHaveBeenCalledWith('ent-1', expect.objectContaining({ enabledProfileIds: [] }));
     });
 
     it.each(SkillArtifactBlockedReasonSchema.options)('keeps chat runtime usable when installation is BLOCKED (%s)', async (reason) => {
@@ -585,6 +591,7 @@ describe('ClientService', () => {
       expect(chatRuntime).toEqual({
         systemPrompt: 'Mock chat instructions', modelId: 'mock-chat-model', allowedModels: ['mock-chat-model'],
         config: { temperature: 0.2 },
+        media: baseline.runtime.media, video: baseline.runtime.video,
       });
       expect(negotiated.employee).toEqual(baseline.employee);
       expect(skillArtifactProtocolVersion).toBe(1);
@@ -607,6 +614,7 @@ describe('ClientService', () => {
           { provide: SkillVersionService, useValue: skillVersions },
           { provide: GatewayModelPolicyService, useValue: modelPolicy },
           { provide: MediaConfigService, useValue: mediaConfig },
+          { provide: MediaVideoConfigService, useValue: videoConfig },
         ],
       }).compile();
       try {
@@ -614,7 +622,7 @@ describe('ClientService', () => {
         expect(result.runtime).not.toHaveProperty('skillArtifactProtocolVersion');
         expect(result.runtime.skills[0]).not.toHaveProperty('artifact');
         expect(result.runtime.skills[0].content).toBe(approvedVersion.content);
-        expect(result.runtime.media).toHaveProperty('protocolVersion', 1);
+        expect(result.runtime.media).toHaveProperty('protocolVersion', 3);
       } finally {
         await legacy.close();
       }

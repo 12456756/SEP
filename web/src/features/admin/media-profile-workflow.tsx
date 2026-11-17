@@ -7,8 +7,10 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { MediaImageSpecV3Schema, MediaVideoSpecV3Schema } from 'shared/media-spec.dto';
 import { MAX_MEDIA_REFERENCE_COUNT } from 'shared/media-reference.dto';
+import { effectiveImageLimits, IMAGE_ADAPTER_MAX_OUTPUTS, IMAGE_REFERENCE_DEFAULT_COUNT } from 'shared/media-runtime-parameters';
 import { CreateMediaProfileDtoSchema } from 'shared/media.dto';
 import { CreateMediaVideoProfileDtoSchema } from 'shared/media-video-config.dto';
+import { MediaVideoDurationRangeSchema } from 'shared/media-video.dto';
 import { useCreateMediaProfile, useUpdateMediaProfile, useVerifyMediaProfile, type MediaProfile } from './use-media-config';
 import { useCreateVideoProfile, useUpdateVideoProfile, useVerifyVideoProfile, type MediaVideoProfile } from './use-video-config';
 
@@ -33,20 +35,23 @@ export function MediaProfileWorkflow({ kind, model, profile }: Props) {
   const [mode, setMode] = useState<'configure' | 'quote'>('configure');
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<Record<string, string>>({});
+  const autoProfile = profile?.profileId.startsWith('auto-') ?? false;
   const busy = [imageCreate, imageVerify, imageUpdate, videoCreate, videoVerify, videoUpdate].some(mutation => mutation.isPending);
   const edit = (key: string, value: string) => setDraft(current => ({ ...current, [key]: value }));
   const fail = (failure: unknown) => setError(failure instanceof Error ? failure.message : '操作失败');
   const setForm = (nextMode: typeof mode) => {
     setError(null);
     setMode(nextMode);
-    if (!profile || nextMode === 'quote') { setDraft(nextMode === 'configure' ? { maxReferenceCount: kind === 'image' ? '4' : '1' } : {}); return; }
+    if (!profile || nextMode === 'quote') { setDraft(nextMode === 'configure' ? { maxReferenceCount: kind === 'image' ? String(IMAGE_REFERENCE_DEFAULT_COUNT) : '1' } : {}); return; }
     if (kind === 'image' && profile.kind === 'image') {
       setDraft({ operations: profile.operations.join(','), sizes: listValue(profile.capabilities.sizes),
-        maxOutputs: String(profile.capabilities.maxOutputs), supportsReferenceImage: String(profile.capabilities.supportsReferenceImage),
-        maxReferenceCount: String(profile.capabilities.maxReferenceCount || 4) });
+        maxOutputs: String(effectiveImageLimits(profile.capabilities).maxOutputs), supportsReferenceImage: String(profile.capabilities.supportsReferenceImage),
+        qualities: listValue(profile.capabilities.qualities), maxReferenceCount: String(profile.capabilities.maxReferenceCount || IMAGE_REFERENCE_DEFAULT_COUNT) });
     } else if (kind === 'video' && profile.kind === 'video') {
       const c = profile.capabilities;
-      setDraft({ operations: profile.operations.join(','), durationsSeconds: listValue(c.durationsSeconds),
+      setDraft({ operations: profile.operations.join(','),
+        minDurationSeconds: String(c.durationRange?.minimum ?? Math.min(...c.durationsSeconds)),
+        maxDurationSeconds: String(c.durationRange?.maximum ?? Math.max(...c.durationsSeconds)),
         resolutions: listValue(c.resolutions), aspectRatios: listValue(c.aspectRatios), frameRates: listValue(c.frameRates),
         outputFormats: listValue(c.outputFormats), supportsAudio: String(c.supportsAudio), maxReferenceCount: String(c.maxReferenceCount || 1) });
     }
@@ -90,17 +95,22 @@ export function MediaProfileWorkflow({ kind, model, profile }: Props) {
       } else if (kind === 'image') {
         const operations = (draft.operations ?? '').split(',').filter(Boolean);
         const capabilities = { sizes: splitValues(draft.sizes), maxOutputs: Number(draft.maxOutputs),
-          maxReferenceCount: draft.supportsReferenceImage === 'true' ? Number(draft.maxReferenceCount) : 0,
-          supportsReferenceImage: draft.supportsReferenceImage === 'true' };
+          supportsReferenceImage: draft.supportsReferenceImage === 'true',
+          ...((draft.qualities?.trim() || profile?.kind === 'image' && profile.capabilities.qualities !== undefined)
+            ? { qualities: splitValues(draft.qualities ?? '') } : {}),
+          maxReferenceCount: draft.supportsReferenceImage === 'true' ? Number(draft.maxReferenceCount) : 0 };
         if (profile) await imageUpdate.mutateAsync({ profileId: profile.profileId,
-          dto: { expectedConfigVersion: profile.configVersion, operations: operations as ('generate' | 'edit')[], capabilities } });
+          dto: { expectedConfigVersion: profile.configVersion,
+            ...(!autoProfile ? { operations: operations as ('generate' | 'edit')[] } : {}), capabilities } });
         else await imageCreate.mutateAsync(CreateMediaProfileDtoSchema.parse({ profileId: draft.profileId, displayName: draft.displayName,
           kind: 'image', modelId: model.modelId, executionMode: 'sync-response', enabled: false,
           operations, capabilities }));
       } else {
         const operations = (draft.operations ?? '').split(',').filter(Boolean);
+        const durationRange = MediaVideoDurationRangeSchema.parse({ minimum: Number(draft.minDurationSeconds), maximum: Number(draft.maxDurationSeconds) });
         const capabilities = { supportsTextToVideo: operations.includes('text-to-video'), supportsImageToVideo: operations.includes('image-to-video'),
-          supportsAudio: draft.supportsAudio === 'true', durationsSeconds: splitValues(draft.durationsSeconds).map(Number),
+          supportsAudio: draft.supportsAudio === 'true', durationRange,
+          durationsSeconds: [...new Set([durationRange.minimum, durationRange.maximum])],
           aspectRatios: splitValues(draft.aspectRatios), resolutions: splitValues(draft.resolutions),
           frameRates: splitValues(draft.frameRates).map(Number), outputFormats: splitValues(draft.outputFormats) as ('video/mp4' | 'video/webm')[],
           maxInputBytes: profile?.kind === 'video' ? profile.capabilities.maxInputBytes : 10 * 1024 * 1024,
@@ -108,22 +118,23 @@ export function MediaProfileWorkflow({ kind, model, profile }: Props) {
           supportsTaskQuery: true as const, supportsCancel: profile?.kind === 'video' ? profile.capabilities.supportsCancel : false,
           resultRetentionSeconds: profile?.kind === 'video' ? profile.capabilities.resultRetentionSeconds : 86400 };
         if (profile) await videoUpdate.mutateAsync({ profileId: profile.profileId,
-          dto: { expectedConfigVersion: profile.configVersion, operations: operations as ('text-to-video' | 'image-to-video')[], capabilities } });
+          dto: { expectedConfigVersion: profile.configVersion,
+            ...(!autoProfile ? { operations: operations as ('text-to-video' | 'image-to-video')[] } : {}), capabilities } });
         else await videoCreate.mutateAsync(CreateMediaVideoProfileDtoSchema.parse({ profileId: draft.profileId, displayName: draft.displayName,
           kind: 'video', modelId: model.modelId, executionMode: 'async-query', enabled: false, operations, capabilities }));
       }
       setOpen(false);
     } catch (failure) { fail(failure); }
   };
-  const field = (key: string, label: string, numeric = false, required = true) => <label key={key} className="min-w-0 text-xs">{label}
-    <Input required={required} type={numeric ? 'number' : 'text'} min={numeric ? 1 : undefined} step={numeric ? 'any' : undefined}
+  const field = (key: string, label: string, numeric = false, required = true, maximum?: number, integer = false) => <label key={key} className="min-w-0 text-xs">{label}
+    <Input required={required} type={numeric ? 'number' : 'text'} min={numeric ? 1 : undefined} max={maximum} step={numeric ? maximum || integer ? 1 : 'any' : undefined}
       value={draft[key] ?? ''} disabled={busy} onChange={event => edit(key, event.target.value)} /></label>;
   const referenceCountField = <label className="min-w-0 text-xs">最多参考图数量
     <Input aria-label="最多参考图数量" required type="number" min={1} max={MAX_MEDIA_REFERENCE_COUNT} step={1}
       value={draft.maxReferenceCount ?? ''} disabled={busy} onChange={event => edit('maxReferenceCount', event.target.value)} />
   </label>;
-  const multiField = (key: string, label: string, limits: string) => <label key={key} className="min-w-0 text-xs">{label}
-    <Textarea required rows={2} placeholder="逗号或换行分隔" aria-label={label} aria-describedby={`${key}-limits`}
+  const multiField = (key: string, label: string, limits: string, required = true) => <label key={key} className="min-w-0 text-xs">{label}
+    <Textarea required={required} rows={2} placeholder="逗号或换行分隔" aria-label={label} aria-describedby={`${key}-limits`}
       value={draft[key] ?? ''} disabled={busy} onChange={event => edit(key, event.target.value)} />
     <span id={`${key}-limits`} className="mt-1 block text-[11px] text-fg-muted">可用逗号或换行输入多项；{limits}</span></label>;
   const operationChoices: Operation[] = kind === 'image' ? ['generate', 'edit'] : ['text-to-video', 'image-to-video'];
@@ -137,12 +148,15 @@ export function MediaProfileWorkflow({ kind, model, profile }: Props) {
       {field('frameRate', '帧率', true, false)}<label className="text-xs">音频<select value={draft.audio ?? ''} onChange={event => edit('audio', event.target.value)} className="mt-1 block w-full border border-border bg-background p-2">
         <option value="">不指定</option><option value="true">有音频</option><option value="false">无音频</option></select></label>
       {field('outputFormat', '输出格式', false, false)}</>;
-  const configurationFields = <>{!profile && <>{field('profileId', 'Profile ID')}{field('displayName', '显示名称')}</>}{operationsControl}
-    {kind === 'image' ? <>{multiField('sizes', '支持尺寸', '最多 32 项，格式如 1024x1024')}{field('maxOutputs', '最大输出数量', true)}
-      <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={draft.supportsReferenceImage === 'true'} disabled={busy}
+  const configurationFields = <>{!profile && <>{field('profileId', 'Profile ID')}{field('displayName', '显示名称')}</>}{!autoProfile && operationsControl}
+    {kind === 'image' ? <>{multiField('sizes', '支持尺寸', '最多 32 项，格式如 1024x1024')}
+      {multiField('qualities', '质量选项', '最多 128 项，每项最多 128 字符；留空表示未确认', false)}
+      {field('maxOutputs', '最大输出数量', true, true, IMAGE_ADAPTER_MAX_OUTPUTS)}
+      <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={draft.supportsReferenceImage === 'true'} disabled={busy || autoProfile && selected('edit')}
         onChange={event => edit('supportsReferenceImage', String(event.target.checked))} />支持参考图编辑</label>
       {draft.supportsReferenceImage === 'true' && referenceCountField}</>
-      : <>{multiField('durationsSeconds', '支持时长（秒）', '最多 32 项，正整数')}{multiField('aspectRatios', '支持画幅比例', '最多 16 项，如 16:9')}
+      : <>{field('minDurationSeconds', '最短时长（秒）', true, true, undefined, true)}{field('maxDurationSeconds', '最长时长（秒）', true, true, undefined, true)}
+        {multiField('aspectRatios', '支持画幅比例', '最多 16 项，如 16:9')}
         {multiField('resolutions', '支持分辨率', '最多 8 项，如 720p')}{multiField('frameRates', '支持帧率', '最多 8 项，正数')}
         {multiField('outputFormats', '支持输出格式', '最多 4 项：video/mp4、video/webm')}
         <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={draft.supportsAudio === 'true'} disabled={busy}

@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { MAX_MEDIA_REFERENCE_TOTAL_BYTES } from 'shared';
 import { MediaUpstreamException } from '../../common/errors/media-upstream.exception';
 import { z } from 'zod';
-import { parseUsdToCnyRate, SETTING_KEYS } from 'shared';
+import { isVideoDurationInRange, MediaVideoDurationRangeSchema, parseUsdToCnyRate, SETTING_KEYS, VIDEO_REFERENCE_MAX_BYTES } from 'shared';
 import type { MediaVideoGatewayQuoteRequest, MediaVideoGatewayQuoteRequestV3,
   MediaVideoGatewayRequest } from 'shared';
 import { MediaVideoAuthorizationSchema, MediaVideoRealProfilesSchema, MediaVideoRealQuoteRequestSchema, MediaVideoRealReceiptSchema, MediaVideoRealRequestSchema } from 'shared';
@@ -73,9 +73,9 @@ export class MediaVideoRealService {
     const profiles = await this.profiles(claims, 3);
     if (!profiles.profiles.some((profile: any) => profile.operations.includes('image-to-video') && profile.adapter.available && profile.adapter.referenceSupport.maxCount >= 1)) fail(403, 'MEDIA_FORBIDDEN', '无图生视频授权');
     if (fields && Object.keys(fields as object).length) fail(400, 'INVALID_REFERENCE', '参考上传不接受额外字段');
-    if (!file || !Buffer.isBuffer(file.buffer) || file.size !== file.buffer.length || file.mimetype !== 'image/png' || file.size > 10 * 1024 * 1024) fail(400, 'INVALID_REFERENCE', '需要不超过 10MiB 的 PNG 参考图');
+    if (!file || !Buffer.isBuffer(file.buffer) || file.size !== file.buffer.length || file.mimetype !== 'image/png' || file.size > VIDEO_REFERENCE_MAX_BYTES) fail(400, 'INVALID_REFERENCE', '需要不超过 10MiB 的 PNG 参考图');
     let dimensions: { width: number; height: number };
-    try { dimensions = inspectMediaPng(file.buffer, 10 * 1024 * 1024); } catch { fail(400, 'INVALID_REFERENCE', '参考 PNG 无效'); }
+    try { dimensions = inspectMediaPng(file.buffer, VIDEO_REFERENCE_MAX_BYTES); } catch { fail(400, 'INVALID_REFERENCE', '参考 PNG 无效'); }
     if (!profiles.profiles.some((profile: any) => profile.operations.includes('image-to-video') && profile.adapter.referenceSupport.maxInputBytes >= file.size)) fail(400, 'INVALID_REFERENCE', '参考图超过 Profile 输入限制');
     const expiresAt = new Date(Date.now() + REFERENCE_TTL).toISOString();
     const scope = this.scope(claims);
@@ -491,6 +491,7 @@ export class MediaVideoRealService {
     const capabilities = this.parse(z.object({
       supportsTextToVideo: z.boolean(), supportsImageToVideo: z.boolean(), supportsAudio: z.boolean(),
       durationsSeconds: z.array(z.number()), resolutions: z.array(z.string()), aspectRatios: z.array(z.string()),
+      durationRange: MediaVideoDurationRangeSchema.optional(),
       frameRates: z.array(z.number()), outputFormats: z.array(z.string()), maxInputBytes: z.number().positive(), maxReferenceCount: z.number().int().nonnegative(),
     }), row.capabilities);
     if (execution && input.operation === 'image-to-video' && input.referenceIds &&
@@ -500,6 +501,13 @@ export class MediaVideoRealService {
       });
     }
     const parameters = v3 ? null : (input as Pick<MediaVideoGatewayQuoteRequest, 'parameters'>).parameters;
+    const duration = v3 ? (input as Pick<MediaVideoGatewayQuoteRequestV3, 'requestedSpec'>).requestedSpec.durationSeconds : parameters.durationSeconds;
+    if (execution && !isVideoDurationInRange(duration, capabilities.durationRange)) {
+      fail(400, 'INVALID_PARAMETER', `视频时长须为 ${capabilities.durationRange.minimum} 至 ${capabilities.durationRange.maximum} 秒`, {
+        field: v3 ? 'requestedSpec.durationSeconds' : 'parameters.durationSeconds', stage, recovery: 'revise_request',
+        submissionState: 'not_submitted', billingState: 'not_reserved',
+      });
+    }
     if (!v3 && (parameters.durationSeconds !== 4 || parameters.resolution !== '720p' || parameters.aspectRatio !== '16:9' || parameters.frameRate !== 24 || !parameters.audio || parameters.outputFormat !== 'video/mp4' ||
       !capabilities.durationsSeconds.includes(4) || !capabilities.resolutions.includes('720p') || !capabilities.aspectRatios.includes('16:9') ||
       !capabilities.frameRates.includes(24) || !capabilities.supportsAudio || !capabilities.outputFormats.includes('video/mp4') ||

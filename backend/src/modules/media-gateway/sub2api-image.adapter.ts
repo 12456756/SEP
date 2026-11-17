@@ -2,6 +2,7 @@ import { HttpException, Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { MediaImageSpecV3, MediaRealAnyQuoteRequest, MediaRealQuoteRequestV3 } from 'shared';
+import { IMAGE_ADAPTER_MAX_OUTPUTS, IMAGE_REFERENCE_MAX_BYTES } from 'shared';
 import { SettingService } from '../setting/setting.service';
 import { isSupportedImageModel } from './image-model-contract';
 import { inspectMediaPng } from './media-png';
@@ -59,7 +60,7 @@ export function resolveSub2apiImageSpec(input: MediaRealAnyQuoteRequest, stage: 
   for (const [field, value] of [['requestedSpec.size', size], ['requestedSpec.count', requested.count], ['requestedSpec.quality', requested.quality]] as const) {
     if (value === undefined) reject('MISSING_SPEC', field, '报价所需计价字段缺失');
   }
-  if (requested.count! > 4) reject('ADAPTER_FIELD_UNMAPPED', 'requestedSpec.count', '当前图片适配器最多可安全接收4个输出');
+  if (requested.count! > IMAGE_ADAPTER_MAX_OUTPUTS) reject('ADAPTER_FIELD_UNMAPPED', 'requestedSpec.count', '当前图片适配器最多可安全接收4个输出');
   if (!/^([1-9]\d*)x([1-9]\d*)$/.test(size!)) {
     if (requested.width !== undefined) reject('ADAPTER_FIELD_UNMAPPED', 'requestedSpec.width', '命名尺寸没有可核验的像素宽高映射');
     if (requested.aspectRatio !== undefined) reject('ADAPTER_FIELD_UNMAPPED', 'requestedSpec.aspectRatio', '命名尺寸没有可核验的比例映射');
@@ -149,7 +150,7 @@ export class Sub2apiImageAdapter {
       if (!references.length || references.length !== input.referenceIds.length) unavailable('INVALID_REFERENCE');
       const form = new FormData();
       for (const [index, bytes] of references.entries()) {
-        inspectMediaPng(bytes, 5 * 1024 * 1024);
+        inspectMediaPng(bytes, IMAGE_REFERENCE_MAX_BYTES);
         form.append('image[]', new Blob([new Uint8Array(bytes)], { type: 'image/png' }), `reference-${index}.png`);
       }
       for (const [key, value] of Object.entries({ model: modelId, prompt: input.creativeBrief,
@@ -159,7 +160,7 @@ export class Sub2apiImageAdapter {
     const result = await this.call(`/images/${input.operation === 'generate' ? 'generations' : 'edits'}`, { method: 'POST', headers, body }, 180_000, 140 * 1024 * 1024, true, onRequestId, snapshot, !('parameters' in input));
     if (!result.requestId) throw new ImageDispatchError(null, false);
     const value = z.object({ model: ModelIdSchema.optional(),
-      data: z.array(z.object({ b64_json: z.string().min(1) })).min(1).max(4) }).safeParse(result.value);
+      data: z.array(z.object({ b64_json: z.string().min(1) })).min(1).max(IMAGE_ADAPTER_MAX_OUTPUTS) }).safeParse(result.value);
     if (!value.success || (value.data.model !== undefined && value.data.model !== modelId) ||
       ('parameters' in input && value.data.data.length > spec.count)) throw new ImageDispatchError(result.requestId, false);
     const images: Buffer[] = [];

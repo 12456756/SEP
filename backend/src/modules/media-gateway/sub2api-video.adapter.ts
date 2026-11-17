@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { MediaUpstreamException, mediaFailure, readMediaUpstreamError, protectMediaCredential } from '../../common/errors/media-upstream.exception';
 import type { MediaUpstreamError } from 'shared';
-import { MediaJsonValueSchema, MediaVideoUsdSchema } from 'shared';
+import { MediaJsonValueSchema, MediaVideoUsdSchema, VIDEO_OUTPUT_FORMAT, VIDEO_REFERENCE_MAX_BYTES } from 'shared';
 import { MediaVideoGatewayQuoteRequestSchema, MediaVideoGatewayQuoteRequestV3Schema,
   type MediaVideoGatewayQuoteRequest, type MediaVideoGatewayQuoteRequestV3 } from 'shared';
 import { SettingService } from '../setting/setting.service';
@@ -145,7 +145,7 @@ export class Sub2apiVideoAdapter {
     } else {
       const form = new FormData();
       for (const [index, bytes] of references.entries()) {
-        try { inspectMediaPng(bytes, 10 * 1024 * 1024); }
+        try { inspectMediaPng(bytes, VIDEO_REFERENCE_MAX_BYTES); }
         catch { unavailable('INVALID_REFERENCE'); }
         form.append('input_reference', new Blob([new Uint8Array(bytes)], { type: 'image/png' }), `reference-${index}.png`);
       }
@@ -173,9 +173,9 @@ export class Sub2apiVideoAdapter {
   }
 
   /** Caller owns cancellation and file validation. Enforce the byte cap even without Content-Length. */
-  async rawContent(connection: Sub2apiVideoConnection, taskId: string, outputFormat = 'video/mp4'): Promise<Response> {
+  async rawContent(connection: Sub2apiVideoConnection, taskId: string, outputFormat: string = VIDEO_OUTPUT_FORMAT): Promise<Response> {
     if (!TaskIdSchema.safeParse(taskId).success) unavailable('OUTPUT_FAILED');
-    if (outputFormat !== 'video/mp4') unavailable('ADAPTER_FIELD_UNMAPPED');
+    if (outputFormat !== VIDEO_OUTPUT_FORMAT) unavailable('ADAPTER_FIELD_UNMAPPED');
     let response: Response;
     try {
       response = await this.fetch(connection, `/videos/${encodeURIComponent(taskId)}/content`, { method: 'GET',
@@ -243,7 +243,7 @@ export class Sub2apiVideoAdapter {
       return { durationSeconds: parameters.durationSeconds, resolution: parameters.resolution };
     }
     const spec = input.requestedSpec;
-    if (spec.outputFormat !== undefined && spec.outputFormat !== 'video/mp4') {
+    if (spec.outputFormat !== undefined && spec.outputFormat !== VIDEO_OUTPUT_FORMAT) {
       specError('ADAPTER_FIELD_UNMAPPED', 'requestedSpec.outputFormat', '当前视频下载与文件校验适配器仅实现 video/mp4', stage);
     }
     if (spec.durationSeconds === undefined) specError('MISSING_SPEC', 'requestedSpec.durationSeconds', '上游报价合同需要明确时长', stage);

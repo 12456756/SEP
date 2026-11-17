@@ -1,0 +1,214 @@
+{
+  "manifestVersion": 1,
+  "fetchedAt": "2026-11-13T06:00:00.000Z",
+  "subscriptionId": "subscription_example",
+  "templateVersion": "1",
+  "employee": {
+    "id": "employee_example",
+    "name": "示例员工",
+    "version": "1",
+    "maxSteps": 100
+  },
+  "runtime": {
+    "systemPrompt": "员工系统提示词",
+    "modelId": "chat_model_example",
+    "allowedModels": [
+      "chat_model_example"
+    ],
+    "config": null,
+    "skills": [],
+    "media": {
+      "protocolVersion": 3,
+      "executionMode": "real",
+      "status": "empty",
+      "executionAvailable": false,
+      "defaultProfileId": null,
+      "tools": [],
+      "profiles": []
+    },
+    "video": {
+      "protocolVersion": 3,
+      "executionMode": "real",
+      "status": "ready",
+      "executionAvailable": true,
+      "defaultProfileId": "video_example",
+      "tools": [
+        "video_generate",
+        "video_from_image",
+        "video_get_job"
+      ],
+      "profiles": [
+        {
+          "profileId": "video_example",
+          "configVersion": "1",
+          "modelId": "video_model_example",
+          "modelDisplayName": "video_model_example",
+          "kind": "video",
+          "displayName": "企业视频生成配置",
+          "operations": [
+            "text-to-video",
+            "image-to-video"
+          ],
+          "executionMode": "async-query",
+          "authorized": true,
+          "adapter": {
+            "id": "sub2api-video",
+            "version": "3",
+            "available": true,
+            "operations": [
+              "text-to-video",
+              "image-to-video"
+            ],
+            "referenceSupport": {
+              "maxCount": 1,
+              "maxInputBytes": 10485760,
+              "mimeTypes": [
+                "image/png"
+              ]
+            },
+            "supportsTaskQuery": true,
+            "supportsCancel": false
+          },
+          "parameters": {
+            "durationSeconds": {
+              "label": "视频时长",
+              "type": "integer",
+              "support": "supported",
+              "required": true,
+              "operations": [
+                "text-to-video",
+                "image-to-video"
+              ],
+              "valuesMode": "suggested",
+              "values": [
+                4,
+                8
+              ],
+              "minimum": 1,
+              "unit": "seconds",
+              "source": "profile-config",
+              "confidence": "declared",
+              "observedAt": null
+            },
+            "resolution": {
+              "label": "分辨率",
+              "type": "string",
+              "support": "supported",
+              "required": false,
+              "operations": [
+                "text-to-video",
+                "image-to-video"
+              ],
+              "valuesMode": "unknown",
+              "source": "adapter",
+              "confidence": "unknown",
+              "observedAt": null
+            },
+            "width": {
+              "label": "宽度",
+              "type": "integer",
+              "support": "supported",
+              "required": false,
+              "operations": [
+                "text-to-video",
+                "image-to-video"
+              ],
+              "valuesMode": "unknown",
+              "minimum": 1,
+              "unit": "pixels",
+              "source": "adapter",
+              "confidence": "unknown",
+              "observedAt": null
+            },
+            "height": {
+              "label": "高度",
+              "type": "integer",
+              "support": "supported",
+              "required": false,
+              "operations": [
+                "text-to-video",
+                "image-to-video"
+              ],
+              "valuesMode": "unknown",
+              "minimum": 1,
+              "unit": "pixels",
+              "source": "adapter",
+              "confidence": "unknown",
+              "observedAt": null
+            },
+            "outputFormat": {
+              "label": "输出格式",
+              "type": "string",
+              "support": "supported",
+              "required": false,
+              "operations": [
+                "text-to-video",
+                "image-to-video"
+              ],
+              "valuesMode": "allowed",
+              "values": [
+                "video/mp4"
+              ],
+              "source": "adapter",
+              "confidence": "verified",
+              "observedAt": null
+            }
+          },
+          "constraints": [
+            {
+              "type": "requireAny",
+              "operations": [
+                "text-to-video",
+                "image-to-video"
+              ],
+              "alternatives": [
+                [
+                  "resolution"
+                ],
+                [
+                  "width",
+                  "height"
+                ]
+              ],
+              "code": "VIDEO_DIMENSIONS_REQUIRED",
+              "message": "请选择分辨率，或同时填写宽度和高度"
+            },
+            {
+              "type": "requiredTogether",
+              "operations": [
+                "text-to-video",
+                "image-to-video"
+              ],
+              "fields": [
+                "width",
+                "height"
+              ],
+              "code": "DIMENSIONS_PAIR_REQUIRED",
+              "message": "宽度和高度必须同时填写"
+            }
+          ],
+          "referenceRules": [
+            {
+              "operation": "text-to-video",
+              "minCount": 0,
+              "maxCount": 0,
+              "maxInputBytes": 0,
+              "mimeTypes": []
+            },
+            {
+              "operation": "image-to-video",
+              "minCount": 1,
+              "maxCount": 1,
+              "maxInputBytes": 10485760,
+              "mimeTypes": [
+                "image/png"
+              ]
+            }
+          ],
+          "unavailableReason": null,
+          "unavailableMessage": null
+        }
+      ]
+    }
+  }
+}

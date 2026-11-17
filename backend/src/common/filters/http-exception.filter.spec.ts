@@ -21,7 +21,7 @@ describe('HttpExceptionFilter', () => {
     expect(body).toBe('upstream socket closed');
   });
 
-  it.each(['/api/client/subscriptions/sub-1/runtime', '/api/skills', gatewayPath])('does not extend unrelated error envelopes with artifact fields: %s', (path) => {
+  it.each(['/api/client/subscriptions/sub-1/runtime-extra', '/api/skills', gatewayPath])('does not extend unrelated error envelopes with artifact fields: %s', (path) => {
     const { body } = catchException(new HttpException({ message: 'Not installable', code: 'SKILL_ARTIFACT_BLOCKED', reason: 'INVALID_ENTRY' }, 409), path);
     expect(body.code).toBeUndefined();
     expect(body.reason).toBeUndefined();

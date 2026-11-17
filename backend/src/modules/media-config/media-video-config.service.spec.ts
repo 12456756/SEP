@@ -71,6 +71,19 @@ describe('MediaVideoConfigService real configuration', () => {
     expect(row.verified).toBe(false);
     expect(row.enabled).toBe(false);
   });
+  it('saves duration bounds for managed profiles, resets readiness and publishes the same bounds', async () => {
+    const f = setup(true);
+    f.row.profileId = 'auto-video-range';
+    f.row.modelId = 'minimax-h3';
+    const saved = await f.service.updateProfile(f.row.profileId, { expectedConfigVersion: f.row.configVersion,
+      capabilities: { durationRange: { minimum: 4, maximum: 10 }, durationsSeconds: [4, 10] } });
+    expect(saved).toMatchObject({ enabled: false, verified: false, capabilities: { durationRange: { minimum: 4, maximum: 10 } } });
+    const runtime = await f.service.getRuntimeVideoV3('ent-1', { ...f.videoPolicy, enabledProfileIds: [f.row.profileId] });
+    expect(runtime.profiles[0].parameters.durationSeconds).toMatchObject({ minimum: 4, maximum: 10, step: 1 });
+    await expect(f.service.verifyProfile(f.row.profileId, { expectedConfigVersion: f.row.configVersion,
+      verificationSpec: { durationSeconds: 11, resolution: '720p' } })).rejects.toThrow('校验时长超出');
+    expect(f.videoAdapter.pricing).not.toHaveBeenCalled();
+  });
   it('ignores retired video limits in V1/V2 runtime and preview while still requiring model authorization', async () => {
     const f = setup(true);
     f.row.modelId = 'minimax-h3';
@@ -143,11 +156,12 @@ describe('MediaVideoConfigService real configuration', () => {
         adapter: { id: 'sub2api-video', available: true, supportsTaskQuery: true, supportsCancel: false,
           referenceSupport: { maxCount: 1, maxInputBytes: 10 * 1024 * 1024, mimeTypes: ['image/png'] } },
       }] });
-    expect(runtime.profiles[0].capabilityHints).toContainEqual(expect.objectContaining({
-      field: 'durationSeconds', values: [4], confidence: 'declared',
-    }));
-    expect(runtime.profiles[0].capabilityHints).toContainEqual(expect.objectContaining({ field: 'audio', values: [true] }));
-    expect(runtime.profiles[0].capabilityHints).not.toContainEqual(expect.objectContaining({ field: 'frameRate' }));
+    expect(runtime.profiles[0].parameters).toMatchObject({
+      durationSeconds: { values: [4], valuesMode: 'suggested', confidence: 'declared' },
+      audio: { values: [false, true] }, frameRate: { support: 'unsupported' },
+      outputFormat: { values: ['video/mp4'], valuesMode: 'allowed' },
+    });
+    expect(runtime.profiles[0]).not.toHaveProperty('capabilityHints');
     expect(JSON.stringify(runtime)).not.toContain('defaults');
   });
 
@@ -173,7 +187,7 @@ describe('MediaVideoConfigService real configuration', () => {
     expect(f.prisma.mediaModelProfile.findMany).not.toHaveBeenCalled();
   });
 
-  it('keeps automatic video model identity immutable', async () => {
+  it('protects automatic video model identity and operations', async () => {
     const f = realSetup();
     await expect(f.service.updateProfile('auto-video-model', { expectedConfigVersion: 'cfg_video', modelId: 'other-model' }))
       .rejects.toBeInstanceOf(BadRequestException);
@@ -242,9 +256,9 @@ describe('video configuration shared contracts', () => {
   });
 
   it('negotiates video independently and rejects malformed video queries', () => {
-    expect(MediaRuntimeQuerySchema.parse({ videoProtocolVersion: '1' })).toEqual({ videoProtocolVersion: 1 });
-    expect(MediaRuntimeQuerySchema.parse({ mediaProtocolVersion: '1', videoProtocolVersion: '2', skillArtifactProtocolVersion: '1' }))
-      .toEqual({ mediaProtocolVersion: 1, videoProtocolVersion: 2, skillArtifactProtocolVersion: 1 });
+    expect(MediaRuntimeQuerySchema.parse({ videoProtocolVersion: '3' })).toEqual({ mediaProtocolVersion: 3, videoProtocolVersion: 3 });
+    expect(MediaRuntimeQuerySchema.parse({ mediaProtocolVersion: '3', videoProtocolVersion: '3', skillArtifactProtocolVersion: '1' }))
+      .toEqual({ mediaProtocolVersion: 3, videoProtocolVersion: 3, skillArtifactProtocolVersion: 1 });
     for (const value of ['', 'bad', '0', '-1', '1.5', ['1', '2'], 'Infinity']) {
       expect(MediaRuntimeQuerySchema.safeParse({ videoProtocolVersion: value }).success).toBe(false);
     }

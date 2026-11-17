@@ -7,11 +7,12 @@ import { lstat, mkdir, open, readdir, rename, rm, rmdir } from 'node:fs/promises
 import { join, parse, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { z } from 'zod';
+import { VIDEO_REFERENCE_MAX_BYTES } from 'shared';
 import { inspectMediaPng } from './media-png';
 
 const run = promisify(execFile);
 export const VIDEO_CACHE_MAX_BYTES = 256 * 1024 * 1024;
-const referenceMax = 10 * 1024 * 1024;
+const referenceMax = VIDEO_REFERENCE_MAX_BYTES;
 const hour = 60 * 60 * 1000;
 type Expected = { sha256: string; byteLength: number; expiresAt: string | null };
 const MetadataSchema = z.object({

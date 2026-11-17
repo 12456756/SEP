@@ -23,6 +23,36 @@ afterEach(cleanup);
 beforeEach(() => vi.resetAllMocks());
 
 describe('explicit media profile management', () => {
+  it('saves quality suggestions, reference count and output limit for an auto-discovered image profile', async () => {
+    const managed = { ...profile, profileId: 'auto-image-example', operations: ['generate', 'edit'] as MediaProfile['operations'],
+      capabilities: { ...profile.capabilities, supportsReferenceImage: true, qualities: ['low', 'high'], maxReferenceCount: 3 } };
+    vi.mocked(api.patch).mockResolvedValue(managed);
+    mount(managed);
+    fireEvent.click(screen.getByRole('button', { name: '编辑能力配置' }));
+    expect(screen.getByLabelText('质量选项')).toHaveValue('low, high');
+    expect(screen.getByLabelText('最多参考图数量')).toHaveValue(3);
+    fireEvent.change(screen.getByLabelText('质量选项'), { target: { value: 'auto,medium,high,high' } });
+    fireEvent.change(screen.getByLabelText('最多参考图数量'), { target: { value: '2' } });
+    fireEvent.change(screen.getByLabelText('最大输出数量'), { target: { value: '2' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存能力配置' }));
+    await waitFor(() => expect(api.patch).toHaveBeenCalledWith('/admin/media/profiles/auto-image-example', {
+      expectedConfigVersion: 'cfg_1', capabilities: { sizes: ['2048x2048'], maxOutputs: 2, supportsReferenceImage: true,
+        qualities: ['auto', 'medium', 'high'], maxReferenceCount: 2 },
+    }));
+  });
+
+  it('clears saved quality suggestions without inventing replacement values', async () => {
+    const configured = { ...profile, capabilities: { ...profile.capabilities, qualities: ['high'] } };
+    vi.mocked(api.patch).mockResolvedValue(configured);
+    mount(configured);
+    fireEvent.click(screen.getByRole('button', { name: '编辑能力配置' }));
+    fireEvent.change(screen.getByLabelText('质量选项'), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存能力配置' }));
+    await waitFor(() => expect(api.patch).toHaveBeenCalledWith('/admin/media/profiles/explicit-image', expect.objectContaining({
+      capabilities: { sizes: ['2048x2048'], maxOutputs: 1, supportsReferenceImage: false, qualities: [], maxReferenceCount: 0 },
+    })));
+  });
+
   it('creates a disabled profile only after the administrator supplies a model spec and operation', async () => {
     vi.mocked(api.post).mockResolvedValue(profile);
     mount();
@@ -82,7 +112,8 @@ describe('explicit media profile management', () => {
     fireEvent.click(screen.getByLabelText('文生视频'));
     fireEvent.click(screen.getByLabelText('图生视频'));
     fireEvent.change(screen.getByLabelText('最多参考图数量'), { target: { value: '8' } });
-    fireEvent.change(screen.getByLabelText('支持时长（秒）'), { target: { value: '5, 10' } });
+    fireEvent.change(screen.getByLabelText('最短时长（秒）'), { target: { value: '5' } });
+    fireEvent.change(screen.getByLabelText('最长时长（秒）'), { target: { value: '10' } });
     fireEvent.change(screen.getByLabelText('支持画幅比例'), { target: { value: '16:9，9:16' } });
     fireEvent.change(screen.getByLabelText('支持分辨率'), { target: { value: '720p,1080p' } });
     fireEvent.change(screen.getByLabelText('支持帧率'), { target: { value: '24,30' } });
@@ -91,7 +122,7 @@ describe('explicit media profile management', () => {
     fireEvent.click(screen.getByRole('button', { name: '创建停用 Profile' }));
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/media/video/profiles', expect.objectContaining({
       operations: ['text-to-video', 'image-to-video'],
-      capabilities: expect.objectContaining({ durationsSeconds: [5, 10], aspectRatios: ['16:9', '9:16'], resolutions: ['720p', '1080p'],
+      capabilities: expect.objectContaining({ durationsSeconds: [5, 10], durationRange: { minimum: 5, maximum: 10 }, aspectRatios: ['16:9', '9:16'], resolutions: ['720p', '1080p'],
         frameRates: [24, 30], outputFormats: ['video/mp4', 'video/webm'], supportsAudio: true, maxReferenceCount: 8 }),
     })));
   });
@@ -114,6 +145,27 @@ describe('explicit media profile management', () => {
     await waitFor(() => expect(api.patch).toHaveBeenCalledWith('/admin/media/profiles/auto-image-model', expect.objectContaining({
       expectedConfigVersion: 'cfg_1', capabilities: expect.objectContaining({ maxReferenceCount: 8 }),
     })));
+  });
+
+  it('edits duration bounds on managed video profiles, keeps fps and blocks an inverted range', async () => {
+    const video = MediaVideoProfileSchema.parse({ ...videoFixture.profile, profileId: 'auto-video-range', enabled: false, verified: false,
+      capabilities: { ...videoFixture.profile.capabilities, durationRange: { minimum: 4, maximum: 10 } } });
+    vi.mocked(api.patch).mockResolvedValue(video);
+    render(<QueryClientProvider client={new QueryClient()}><MediaProfileWorkflow kind="video" model={video} profile={video} /></QueryClientProvider>);
+    fireEvent.click(screen.getByRole('button', { name: '编辑能力配置' }));
+    expect(screen.getByLabelText('最短时长（秒）')).toHaveValue(4);
+    expect(screen.getByLabelText('最长时长（秒）')).toHaveValue(10);
+    expect(screen.getByLabelText('支持帧率')).toHaveValue('24');
+    fireEvent.change(screen.getByLabelText('最短时长（秒）'), { target: { value: '12' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存能力配置' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('最长时长不能小于最短时长');
+    expect(api.patch).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText('最长时长（秒）'), { target: { value: '15' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存能力配置' }));
+    await waitFor(() => expect(api.patch).toHaveBeenCalledWith('/admin/media/video/profiles/auto-video-range', expect.objectContaining({
+      expectedConfigVersion: video.configVersion, capabilities: expect.objectContaining({ durationRange: { minimum: 12, maximum: 15 }, frameRates: [24] }),
+    })));
+    expect(vi.mocked(api.patch).mock.calls[0][1]).not.toHaveProperty('operations');
   });
 
   it('uses explicit custom quality for read-only verification without enabling or generating', async () => {

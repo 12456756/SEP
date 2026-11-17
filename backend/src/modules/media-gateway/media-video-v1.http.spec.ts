@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 import request from 'supertest';
-import { MediaVideoRuntimeSchema, MediaVideoRuntimeV2Schema } from 'shared';
+import { MediaVideoRuntimeV3Schema } from 'shared';
 import fixture from '../../shared/fixtures/media-video-v1.json';
 import { HttpExceptionFilter } from '../../common/filters/http-exception.filter';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -131,7 +131,7 @@ describe('V1 video configuration → runtime → gateway real HTTP (in-memory Pr
         { provide: EnterpriseContextService, useValue: state.context },
         { provide: ConfigService, useValue: { get: (key: string) => state.environment[key] } },
         { provide: MediaGatewayService, useFactory: (config: ConfigService) => new MediaGatewayService(config, state.prisma as never, null as never, null as never), inject: [ConfigService] },
-        { provide: MediaConfigService, useValue: { getRuntimeMedia: jest.fn().mockResolvedValue({ protocolVersion: 1, executionAvailable: false, profiles: [], tools: [], defaultProfileId: null }) } },
+        { provide: MediaConfigService, useValue: { getRuntimeMediaV3: jest.fn().mockResolvedValue({ protocolVersion: 3, status: 'empty', executionMode: 'disabled', executionAvailable: false, profiles: [], tools: [], defaultProfileId: null }) } },
         { provide: SkillVersionService, useValue: { resolveEffectiveVersion: jest.fn() } },
         { provide: ClientSkillArtifactService, useValue: { describe: jest.fn() } },
         ...[JwtService, SettingService, SessionService, MemberAllowanceQueryService, PersonalWalletService, SubscriptionRequestService]
@@ -169,7 +169,7 @@ describe('V1 video configuration → runtime → gateway real HTTP (in-memory Pr
     return enabled.body;
   }
   async function prepared(clientRequestId = 'v1-http-request') {
-    const runtime = await get(`${runtimePath}?videoProtocolVersion=1`).expect(200);
+    const runtime = await get(`${runtimePath}?videoProtocolVersion=3`).expect(200);
     const profile = runtime.body.runtime.video.profiles[0];
     const reference = await post(`${gatewayRoot}/references`).attach('file', videoFile().buffer, { filename: 'fixture.png', contentType: 'image/png' }).expect(201);
     const input = { ...videoInput(reference.body.referenceId), profileId: profile.profileId, configVersion: profile.configVersion };
@@ -179,26 +179,24 @@ describe('V1 video configuration → runtime → gateway real HTTP (in-memory Pr
 
   it('creates, verifies, enables, grants, independently negotiates, quotes/submits/polls/downloads, then revokes all reads', async () => {
     const old = await get(runtimePath).expect(200);
-    expect(old.body.runtime).not.toHaveProperty('video');
-    expect((await get(`${runtimePath}?videoProtocolVersion=1`).expect(200)).body.runtime.video.executionAvailable).toBe(false);
+    expect(old.body.runtime.video).toMatchObject({ protocolVersion: 3, status: 'empty', profiles: [] });
+    expect((await get(`${runtimePath}?videoProtocolVersion=3`).expect(200)).body.runtime.video.executionAvailable).toBe(false);
     await get(`${gatewayRoot}/profiles`).expect(403);
     const enabled = await configure();
     expect(enabled.profileId).not.toBe(fixture.profile.profileId);
     expect(enabled.configVersion).not.toBe(fixture.profile.configVersion);
-    const all = await get(`${runtimePath}?mediaProtocolVersion=1&skillArtifactProtocolVersion=1&videoProtocolVersion=1`).expect(200);
-    expect(runtimeSpy).toHaveBeenLastCalledWith('user-1', 'sub-1', 1, 1, 1);
+    const all = await get(`${runtimePath}?mediaProtocolVersion=3&skillArtifactProtocolVersion=1&videoProtocolVersion=3`).expect(200);
+    expect(runtimeSpy).toHaveBeenLastCalledWith('user-1', 'sub-1', 3, 1, 3);
     expect(all.body).toMatchObject({ manifestVersion: 1, subscriptionId: 'sub-1', templateVersion: '1',
       employee: { id: 'employee-1', name: 'fixture', version: '1', maxSteps: 10 },
       runtime: { systemPrompt: 'fixture', modelId: 'chat-fixture', allowedModels: ['chat-fixture'], skills: [], skillArtifactProtocolVersion: 1 } });
-    expect(MediaVideoRuntimeSchema.safeParse(all.body.runtime.video).success).toBe(true);
+    expect(MediaVideoRuntimeV3Schema.safeParse(all.body.runtime.video).success).toBe(true);
     expect(all.body.runtime.video.profiles[0]).toMatchObject({ profileId, configVersion: enabled.configVersion });
-    expect(all.body.runtime.video.profiles[0]).not.toHaveProperty('modelId');
-    const v2 = await get(`${runtimePath}?videoProtocolVersion=2`).expect(200);
-    expect(v2.body).not.toEqual(old.body);
-    expect(MediaVideoRuntimeV2Schema.safeParse(v2.body.runtime.video).success).toBe(true);
-    expect(v2.body.runtime.video).toMatchObject({ protocolVersion: 2, defaultProfileId: profileId });
-    expect(v2.body.runtime.video.profiles[0]).not.toHaveProperty('modelId');
-    expect((await get(`${gatewayRoot}/profiles`).expect(200)).body.profiles).toEqual(all.body.runtime.video.profiles);
+    expect(all.body.runtime.video.profiles[0]).toHaveProperty('modelId', 'mock-video-v1');
+    await get(`${runtimePath}?videoProtocolVersion=2`).expect(400);
+    expect((await get(`${gatewayRoot}/profiles`).expect(200)).body.profiles).toEqual([
+      expect.objectContaining({ profileId, configVersion: enabled.configVersion }),
+    ]);
     const { input, dto } = await prepared();
     const submitted = await post(`${gatewayRoot}/requests`).send(dto).expect(202);
     expect(submitted.body).toMatchObject({ profileId, configVersion: enabled.configVersion, status: 'QUEUED' });
@@ -287,7 +285,8 @@ describe('V1 video configuration → runtime → gateway real HTTP (in-memory Pr
     const version = changed.body.configVersion;
     await post(`${profileRoot}/${profileId}/verify`).set('x-test-role', 'ADMIN').send({ expectedConfigVersion: version }).expect(400);
     await patch({ expectedConfigVersion: version, enabled: true }).expect(400);
-    expect((await get(`${runtimePath}?videoProtocolVersion=1`).expect(200)).body.runtime.video).toMatchObject({ executionAvailable: false, profiles: [], tools: [] });
+    expect((await get(`${runtimePath}?videoProtocolVersion=3`).expect(200)).body.runtime.video).toMatchObject({ executionAvailable: false,
+      profiles: [expect.objectContaining({ profileId, unavailableReason: 'PROFILE_DISABLED' })], tools: [] });
     await post(`${gatewayRoot}/requests`).send(dto).expect(403);
     await get(`${gatewayRoot}/requests/${first.body.receiptId}`).expect(403);
     expect(state.prisma.mediaGatewayRequest.create).toHaveBeenCalledTimes(1);

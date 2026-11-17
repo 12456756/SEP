@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { MediaVideoPolicySchema } from './media-video-config.dto';
 import { MediaImageSpecV3Schema } from './media-spec.dto';
 import { MediaReferenceCountSchema } from './media-reference.dto';
+import { IMAGE_ADAPTER_MAX_OUTPUTS } from './media-runtime-parameters';
 
 export const MediaKindSchema = z.enum(['image', 'video']);
 export type MediaKind = z.infer<typeof MediaKindSchema>;
@@ -17,6 +18,7 @@ export const MediaCapabilitiesSchema = z.object({
   maxReferenceCount: MediaReferenceCountSchema.default(4),
   maxOutputs: z.number().int().min(1).max(8).default(1),
   sizes: z.array(z.string().regex(/^[1-9]\d{0,4}x[1-9]\d{0,4}$/)).min(1).max(32),
+  qualities: z.array(z.string().trim().min(1).max(128)).max(128).optional(),
 }).strict();
 
 export const MediaProfileSchema = z.object({
@@ -94,6 +96,9 @@ export const CreateMediaProfileDtoSchema = z.object({
   capabilities: MediaCapabilitiesSchema,
   enabled: z.boolean().default(false),
 }).strict().superRefine((value, ctx) => {
+  if (value.capabilities.maxOutputs > IMAGE_ADAPTER_MAX_OUTPUTS) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['capabilities', 'maxOutputs'], message: '最大输出数量不能超过 4' });
+  }
   if (value.operations.includes('edit') && value.capabilities.supportsReferenceImage !== true) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['capabilities', 'supportsReferenceImage'], message: '编辑能力必须支持参考图' });
   }
@@ -111,7 +116,9 @@ export const UpdateMediaProfileDtoSchema = z.object({
   capabilities: MediaCapabilitiesSchema.partial().optional(),
   enabled: z.boolean().optional(),
   expectedConfigVersion: MediaProfileSchema.shape.configVersion,
-}).strict().refine((value) => Object.keys(value).some((key) => key !== 'expectedConfigVersion'), '至少提供一个修改字段');
+}).strict().refine((value) => Object.keys(value).some((key) => key !== 'expectedConfigVersion'), '至少提供一个修改字段')
+  .refine(value => value.capabilities?.maxOutputs === undefined || value.capabilities.maxOutputs <= IMAGE_ADAPTER_MAX_OUTPUTS,
+    { path: ['capabilities', 'maxOutputs'], message: '最大输出数量不能超过 4' });
 export type UpdateMediaProfileDto = z.infer<typeof UpdateMediaProfileDtoSchema>;
 
 export const DiscoverMediaModelsDtoSchema = z.object({}).strict();
@@ -216,9 +223,10 @@ export const MediaRuntimeV2Schema = z.object({
 });
 export type MediaRuntimeV2 = z.infer<typeof MediaRuntimeV2Schema>;
 
+const RuntimeVersionSchema = z.literal('3', { errorMap: () => ({ message: '当前仅支持协议版本 3' }) }).transform(() => 3 as const).default('3');
 export const MediaRuntimeQuerySchema = z.object({
-  mediaProtocolVersion: z.coerce.number().int().min(1).optional(),
-  videoProtocolVersion: z.coerce.number().int().min(1).optional(),
+  mediaProtocolVersion: RuntimeVersionSchema,
+  videoProtocolVersion: RuntimeVersionSchema,
   skillArtifactProtocolVersion: z.coerce.number().int().min(1).optional(),
 }).strict();
 export type MediaRuntimeQuery = z.infer<typeof MediaRuntimeQuerySchema>;

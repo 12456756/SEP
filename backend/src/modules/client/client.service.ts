@@ -28,6 +28,7 @@ import { SkillVersionService } from '../skill-version/skill-version.service';
 import { GatewayModelPolicyService } from '../gateway/gateway-model-policy.service';
 import { MediaConfigService } from '../media-config/media-config.service';
 import { MediaVideoConfigService } from '../media-config/media-video-config.service';
+import { imageRuntimePolicy, videoRuntimePolicy } from '../media-config/media-runtime-capabilities';
 import { ClientSkillArtifactService } from './client-skill-artifact.service';
 import { clientSubscriptionAccessWhere } from './client-subscription-access';
 import { createHash } from 'node:crypto';
@@ -746,7 +747,7 @@ export class ClientService {
     }));
   }
 
-  async getRuntime(userId: string, subscriptionId: string, mediaProtocolVersion?: number, skillArtifactProtocolVersion?: number, videoProtocolVersion?: number) {
+  async getRuntime(userId: string, subscriptionId: string, _mediaProtocolVersion?: number, skillArtifactProtocolVersion?: number, _videoProtocolVersion?: number) {
     const ctx = await this.enterpriseContext.resolve(userId);
     const subscription = await this.prisma.subscription.findFirst({
       where: clientSubscriptionAccessWhere(ctx, subscriptionId),
@@ -778,7 +779,7 @@ export class ClientService {
       where: { enabled: true }, select: { modelId: true }, orderBy: [{ sortOrder: 'asc' }, { label: 'asc' }],
     });
     const modelConfig = await this.prisma.enterpriseModelConfig.findUnique({
-      where: { enterpriseId: ctx.enterpriseId }, select: { allowedChatModels: true },
+      where: { enterpriseId: ctx.enterpriseId }, select: { allowedChatModels: true, mediaPolicy: true },
     });
     const models = enabledModels.map((m) => m.modelId);
     const allowedModels = modelConfig?.allowedChatModels?.length
@@ -795,22 +796,18 @@ export class ClientService {
       };
     }));
     const skills = resolvedSkills.filter((skill): skill is NonNullable<typeof skill> => skill !== null);
-    const media = (mediaProtocolVersion === 1 || mediaProtocolVersion === 2 || mediaProtocolVersion === 3) && this.mediaConfig
-      ? await (mediaProtocolVersion === 3 ? this.mediaConfig.getRuntimeMediaV3(ctx.enterpriseId)
-        : mediaProtocolVersion === 2 ? this.mediaConfig.getRuntimeMediaV2(ctx.enterpriseId) : this.mediaConfig.getRuntimeMedia(ctx.enterpriseId))
-      : undefined;
-    const video = (videoProtocolVersion === 1 || videoProtocolVersion === 2 || videoProtocolVersion === 3) && this.videoConfig
-      ? await (videoProtocolVersion === 3 ? this.videoConfig.getRuntimeVideoV3(ctx.enterpriseId)
-        : videoProtocolVersion === 2 ? this.videoConfig.getRuntimeVideoV2(ctx.enterpriseId) : this.videoConfig.getRuntimeVideo(ctx.enterpriseId))
-      : undefined;
+    if (!this.mediaConfig || !this.videoConfig) throw new ServiceUnavailableException('图片或视频运行配置服务未注册');
+    const media = await this.mediaConfig.getRuntimeMediaV3(ctx.enterpriseId, imageRuntimePolicy(modelConfig?.mediaPolicy));
+    const video = await this.videoConfig.getRuntimeVideoV3(ctx.enterpriseId, videoRuntimePolicy(modelConfig?.mediaPolicy));
     return {
       manifestVersion: 1,
+      fetchedAt: new Date().toISOString(),
       subscriptionId: subscription.id,
       templateVersion: subscription.templateVersion,
       employee: withEmployeeAvatar({ id: subscription.employee.id, name: subscription.employee.name, description: subscription.employee.description, avatar: subscription.employee.avatar, avatarStyle: subscription.employee.avatarStyle, avatarBindings: subscription.employee.avatarBindings, version: subscription.employee.version, maxSteps: subscription.employee.maxSteps }),
       runtime: { systemPrompt: subscription.employee.systemPrompt, modelId: subscription.employee.modelId, allowedModels, config: subscription.config ?? null, skills,
         ...(skillArtifactProtocolVersion === 1 && this.skillArtifacts ? { skillArtifactProtocolVersion: 1 } : {}),
-        ...(media ? { media } : {}), ...(video ? { video } : {}) },
+        media, video },
     };
   }
 

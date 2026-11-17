@@ -34,6 +34,14 @@ function isSkillImportRoute(originalUrl: string): boolean {
   }
 }
 
+function isClientRuntimeRoute(originalUrl: string): boolean {
+  try {
+    return /^\/api\/client\/subscriptions\/[^/]+\/runtime\/?$/i.test(decodeURI(originalUrl.split('?')[0]));
+  } catch {
+    return false;
+  }
+}
+
 function safeRateLimit(value: unknown): Record<string, string | number> | undefined {
   if (!isRecord(value)) return undefined;
   const result: Record<string, string | number> = {};
@@ -131,6 +139,17 @@ export class HttpExceptionFilter implements ExceptionFilter {
       timestamp: new Date().toISOString(),
       path: request.originalUrl,
     };
+
+    if (isClientRuntimeRoute(request.originalUrl)) {
+      // Preserve the source response; correlation metadata only fills absent fields.
+      const cause = exception instanceof Error && 'cause' in exception ? exception.cause : undefined;
+      const details = exception instanceof HttpException ? rawBody ?? { message: raw }
+        : exception instanceof Error ? { ...exception, name: exception.name, message: exception.message,
+          ...(cause !== undefined ? { cause: cause instanceof Error ? { ...cause, name: cause.name, message: cause.message } : cause } : {}) }
+          : isRecord(exception) ? exception : { message: exception };
+      response.status(status).json({ ...body, ...details });
+      return;
+    }
 
     if (status === HttpStatus.CONFLICT && isSkillArtifactRoute(request.originalUrl) &&
       rawBody?.code === 'SKILL_ARTIFACT_BLOCKED' && SkillArtifactBlockedReasonSchema.safeParse(rawBody.reason).success) {

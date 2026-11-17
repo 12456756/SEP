@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException, Optional, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, InternalServerErrorException, Logger, NotFoundException, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { MediaModelProfile, Prisma } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
@@ -14,6 +14,7 @@ import {
   UpdateMediaVideoProfileDto, UpdateMediaVideoProfileDtoSchema, VerifyMediaVideoProfileDto,
   VerifyMediaVideoProfileDtoSchema,
   UpdateMediaConnectionDto,
+  isVideoDurationInRange,
 } from 'shared';
 import fixture from '../../shared/fixtures/media-video-v1.json';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -25,11 +26,14 @@ import { SettingService } from '../setting/setting.service';
 import { MediaModelSyncService, mediaConnectionFingerprint } from './media-model-sync.service';
 import { MediaVideoRuntimeV3Schema } from 'shared';
 import type { MediaVideoRuntimeV3 } from 'shared';
+import { mediaRuntimeStatus, MEDIA_UNAVAILABLE_MESSAGES, videoRuntimeCapabilities, videoRuntimePolicy } from './media-runtime-capabilities';
 
 const MOCK_PROFILE = MediaVideoProfileSchema.parse(fixture.profile);
 
 @Injectable()
 export class MediaVideoConfigService {
+  private readonly logger = new Logger(MediaVideoConfigService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly enterpriseContext: EnterpriseContextService,
@@ -79,7 +83,7 @@ export class MediaVideoConfigService {
       configVersion: row.configVersion, operations: row.operations, executionMode: row.executionMode,
       capabilities: row.capabilities, enabled: row.enabled, verified: row.verified,
     });
-    if (!parsed.success) throw new ServiceUnavailableException('视频 Profile 配置无效，请联系平台管理员');
+    if (!parsed.success) throw new ServiceUnavailableException({ message: '视频 Profile 配置无效，请联系平台管理员', errors: parsed.error.issues });
     return parsed.data;
   }
 
@@ -164,8 +168,8 @@ export class MediaVideoConfigService {
 
   async updateProfile(profileId: string, input: UpdateMediaVideoProfileDto): Promise<MediaVideoProfile> {
     const dto = this.parse<UpdateMediaVideoProfileDto>(UpdateMediaVideoProfileDtoSchema, input);
-    if (profileId.startsWith('auto-') && ['modelId', 'executionMode'].some(key => key in dto)) {
-      throw new BadRequestException('自动模型的模型标识和执行协议不可修改');
+    if (profileId.startsWith('auto-') && ['modelId', 'operations', 'executionMode'].some(key => key in dto)) {
+      throw new BadRequestException('自动发现的模型标识、操作和执行方式由适配器维护');
     }
     const current = await this.findProfile(profileId);
     if (dto.expectedConfigVersion !== current.configVersion) throw new ConflictException('视频配置已更新，请重新加载后保存');
@@ -199,13 +203,16 @@ export class MediaVideoConfigService {
     const profile = await this.findProfile(profileId);
     if (dto.expectedConfigVersion !== profile.configVersion) throw new ConflictException('视频配置已更新，请重新加载后校验');
     this.assertExecutable(profile);
+    if (!isVideoDurationInRange(dto.verificationSpec?.durationSeconds ?? profile.capabilities.durationRange?.minimum ?? profile.capabilities.durationsSeconds[0], profile.capabilities.durationRange)) {
+      throw new BadRequestException('校验时长超出当前 Profile 配置范围');
+    }
     if (profile.modelId !== 'mock-video-v1') {
       if (!this.videoAdapter || !this.videoFiles) throw new ServiceUnavailableException('真实视频组件不可用');
       await this.videoFiles.assertAvailable();
       const connection = await this.videoAdapter.connection();
       const models = await this.videoAdapter.discover(connection);
       if (!models.some(item => item.modelId === profile.modelId)) throw new BadRequestException('当前视频连接未授权此模型');
-      const requestedSpec = dto.verificationSpec ?? { durationSeconds: profile.capabilities.durationsSeconds[0],
+      const requestedSpec = dto.verificationSpec ?? { durationSeconds: profile.capabilities.durationRange?.minimum ?? profile.capabilities.durationsSeconds[0],
         aspectRatio: profile.capabilities.aspectRatios[0], resolution: profile.capabilities.resolutions[0],
         frameRate: profile.capabilities.frameRates[0], audio: profile.capabilities.supportsAudio,
         outputFormat: profile.capabilities.outputFormats[0] };
@@ -415,12 +422,16 @@ export class MediaVideoConfigService {
 
   async getRuntimeVideoV3(enterpriseId: string, policyOverride?: MediaVideoPolicy, profilesOverride?: MediaVideoProfile[]): Promise<MediaVideoRuntimeV3> {
     const config = policyOverride ? null : await this.prisma.enterpriseModelConfig.findUnique({ where: { enterpriseId } });
-    const policy = policyOverride ?? this.parsePolicy(config?.mediaPolicy);
+    const policy = policyOverride ?? videoRuntimePolicy(config?.mediaPolicy);
     const configuredProfiles = profilesOverride ?? await this.listProfiles();
+    const knownIds = new Set(configuredProfiles.map(profile => profile.profileId));
+    const missingIds = policy.enabledProfileIds.filter(id => !knownIds.has(id));
+    if (missingIds.length) this.logger.warn({ message: '视频授权引用了不存在的配置', enterpriseId, profileIds: missingIds });
     let connectionUsable = false;
     if (this.realEnabled() && this.settings) {
+      const connection = await this.settings.getMediaConnection('video');
       try {
-        mediaConnectionFingerprint(await this.settings.getMediaConnection('video'));
+        mediaConnectionFingerprint(connection);
         connectionUsable = true;
       } catch {
         connectionUsable = false;
@@ -434,30 +445,19 @@ export class MediaVideoConfigService {
             : !connectionUsable ? 'CONNECTION_UNAVAILABLE'
               : profile.executionMode !== 'async-query' ? 'ADAPTER_PROTOCOL_UNSUPPORTED'
                 : operations.length === 0 ? 'ADAPTER_OPERATION_UNSUPPORTED' : undefined;
-      const capabilityHints = [
-        { field: 'durationSeconds', values: profile.capabilities.durationsSeconds, source: 'profile-config', observedAt: null, confidence: 'declared' as const },
-        { field: 'aspectRatio', values: profile.capabilities.aspectRatios, source: 'profile-config', observedAt: null, confidence: 'declared' as const },
-        { field: 'resolution', values: profile.capabilities.resolutions, source: 'profile-config', observedAt: null, confidence: 'declared' as const },
-        ...(profile.capabilities.supportsAudio
-          ? [{ field: 'audio', values: [true], source: 'profile-config', observedAt: null, confidence: 'declared' as const }]
-          : []),
-        { field: 'outputFormat', values: profile.capabilities.outputFormats, source: 'profile-config', observedAt: null, confidence: 'declared' as const },
-      ].filter(hint => hint.values.length > 0);
+      const capabilities = videoRuntimeCapabilities(profile, operations);
       return {
         profileId: profile.profileId, configVersion: profile.configVersion, kind: 'video' as const,
+        modelId: profile.modelId, modelDisplayName: profile.modelId,
         displayName: profile.displayName, operations, executionMode: 'async-query' as const, authorized: true,
         adapter: {
           id: 'sub2api-video', version: '3', available: reason === undefined, ...(reason ? { reason } : {}), operations,
-          referenceSupport: {
-            maxCount: operations.includes('image-to-video') ? profile.capabilities.maxReferenceCount : 0,
-            maxInputBytes: profile.capabilities.maxInputBytes,
-            mimeTypes: operations.includes('image-to-video') ? ['image/png'] : [],
-          },
+          referenceSupport: capabilities.referenceSupport,
           supportsTaskQuery: true,
           supportsCancel: false,
         },
-        capabilityHints,
-        ...(reason ? { unavailableReason: reason } : {}),
+        parameters: capabilities.parameters, constraints: capabilities.constraints, referenceRules: capabilities.referenceRules,
+        unavailableReason: reason ?? null, unavailableMessage: reason ? MEDIA_UNAVAILABLE_MESSAGES[reason] : null,
       };
     });
     const executable = profiles.filter(profile => profile.adapter.available);
@@ -467,14 +467,17 @@ export class MediaVideoConfigService {
       ...(executable.some(profile => profile.adapter.supportsTaskQuery) ? ['video_get_job'] : []),
       ...(executable.some(profile => profile.adapter.supportsCancel) ? ['video_cancel_job'] : []),
     ];
-    return MediaVideoRuntimeV3Schema.parse({
+    const result = MediaVideoRuntimeV3Schema.safeParse({
       protocolVersion: 3,
+      status: mediaRuntimeStatus(profiles.length, this.realEnabled(), executable.length > 0),
       executionMode: this.realEnabled() && connectionUsable ? 'real' : this.mockEnabled() ? 'mock' : 'disabled',
       executionAvailable: executable.length > 0,
-      defaultProfileId: policy.defaultProfileId && profiles.some(profile => profile.profileId === policy.defaultProfileId)
+      defaultProfileId: policy.defaultProfileId && executable.some(profile => profile.profileId === policy.defaultProfileId)
         ? policy.defaultProfileId : null,
       tools: executable.length > 0 ? tools : [],
       profiles,
     });
+    if (!result.success) throw new InternalServerErrorException({ message: '视频运行配置无效', errors: result.error.issues });
+    return result.data;
   }
 }

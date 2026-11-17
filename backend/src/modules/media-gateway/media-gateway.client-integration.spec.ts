@@ -118,8 +118,10 @@ class EmployeeFixture {
       { resolvePolicy: async () => ({ allowedModels: ['mock-no-model'] }) } as unknown as ConstructorParameters<typeof ClientService>[14],
       // The production media configuration remains unavailable for execution. The desktop
       // test separately injects /media/mock/profiles capabilities into MediaService.
-      { getRuntimeMedia: async () => ({ protocolVersion: 1, executionAvailable: false, defaultProfileId: null,
-        tools: [], profiles: [] }) } as unknown as ConstructorParameters<typeof ClientService>[15], this.artifacts);
+      { getRuntimeMediaV3: async () => ({ protocolVersion: 3, status: 'empty', executionMode: 'disabled', executionAvailable: false, defaultProfileId: null,
+        tools: [], profiles: [] }) } as unknown as ConstructorParameters<typeof ClientService>[15], this.artifacts,
+      { getRuntimeVideoV3: async () => ({ protocolVersion: 3, status: 'empty', executionMode: 'disabled', executionAvailable: false, defaultProfileId: null,
+        tools: [], profiles: [] }) } as unknown as ConstructorParameters<typeof ClientService>[17]);
   }
 }
 
@@ -180,7 +182,7 @@ describe('real employee runtime and approved artifact fixture HTTP boundary (no 
   });
   afterAll(async () => { await app?.close(); });
   it('negotiates inside runtime and downloads production artifact bytes/hash, rejecting employment credentials', async () => {
-    const runtimePath = `/api/client/subscriptions/${fixture.subscriptionId}/runtime?skillArtifactProtocolVersion=1&mediaProtocolVersion=1`;
+    const runtimePath = `/api/client/subscriptions/${fixture.subscriptionId}/runtime?skillArtifactProtocolVersion=1&mediaProtocolVersion=3`;
     for (const token of ['', 'synthetic-employment-token']) {
       await request(app.getHttpServer()).get(runtimePath).set('Authorization', `Bearer ${token}`).expect(401);
     }

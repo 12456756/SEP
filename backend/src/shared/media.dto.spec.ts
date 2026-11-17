@@ -17,6 +17,16 @@ const profile = {
 };
 
 describe('media configuration schemas', () => {
+  it('accepts image quality suggestions and bounded reference counts, rejecting invalid settings', () => {
+    const capabilities = { sizes: ['1024x1024'], maxOutputs: 2, supportsReferenceImage: true,
+      qualities: ['auto', 'high'], maxReferenceCount: 2 };
+    expect(CreateMediaProfileDtoSchema.parse({ ...profile, capabilities }).capabilities).toEqual(capabilities);
+    for (const extra of [{ qualities: [''] }, { qualities: ['x'.repeat(129)] },
+      { maxReferenceCount: -1 }, { maxReferenceCount: 33 }, { maxReferenceCount: 1.5 }, { maxOutputs: 5 }]) {
+      expect(CreateMediaProfileDtoSchema.safeParse({ ...profile, capabilities: { ...capabilities, ...extra } }).success).toBe(false);
+      expect(UpdateMediaProfileDtoSchema.safeParse({ expectedConfigVersion: 'cfg_1', capabilities: extra }).success).toBe(false);
+    }
+  });
   it('keeps client fixtures synchronized with the runtime schema', () => {
     const fixtures = JSON.parse(readFileSync(join(__dirname, 'fixtures/media-runtime-v1.json'), 'utf8'));
     for (const fixture of fixtures) {
@@ -77,22 +87,18 @@ describe('media configuration schemas', () => {
   });
 
   it('parses optional protocol negotiation without accepting malformed query values', () => {
-    expect(MediaRuntimeQuerySchema.parse({})).toEqual({});
-    expect(MediaRuntimeQuerySchema.parse({ mediaProtocolVersion: '1' })).toEqual({ mediaProtocolVersion: 1 });
+    expect(MediaRuntimeQuerySchema.parse({})).toEqual({ mediaProtocolVersion: 3, videoProtocolVersion: 3 });
+    expect(MediaRuntimeQuerySchema.parse({ mediaProtocolVersion: '3' })).toEqual({ mediaProtocolVersion: 3, videoProtocolVersion: 3 });
     for (const mediaProtocolVersion of ['bad', '', '0', '1.5', ['1', '2']]) {
       expect(MediaRuntimeQuerySchema.safeParse({ mediaProtocolVersion }).success).toBe(false);
     }
   });
 
   it('negotiates artifact and media protocol versions independently', () => {
-    expect(MediaRuntimeQuerySchema.parse({ skillArtifactProtocolVersion: '1' })).toEqual({ skillArtifactProtocolVersion: 1 });
-    expect(MediaRuntimeQuerySchema.parse({ mediaProtocolVersion: '1', skillArtifactProtocolVersion: '1' }))
-      .toEqual({ mediaProtocolVersion: 1, skillArtifactProtocolVersion: 1 });
-    expect(MediaRuntimeQuerySchema.parse({ mediaProtocolVersion: '2', skillArtifactProtocolVersion: '1' }))
-      .toEqual({ mediaProtocolVersion: 2, skillArtifactProtocolVersion: 1 });
-    expect(MediaRuntimeQuerySchema.parse({ mediaProtocolVersion: '1', skillArtifactProtocolVersion: '2' }))
-      .toEqual({ mediaProtocolVersion: 1, skillArtifactProtocolVersion: 2 });
-    expect(MediaRuntimeQuerySchema.parse({ skillArtifactProtocolVersion: '99' })).toEqual({ skillArtifactProtocolVersion: 99 });
+    expect(MediaRuntimeQuerySchema.parse({ skillArtifactProtocolVersion: '1' })).toEqual({ mediaProtocolVersion: 3, videoProtocolVersion: 3, skillArtifactProtocolVersion: 1 });
+    expect(MediaRuntimeQuerySchema.parse({ mediaProtocolVersion: '3', skillArtifactProtocolVersion: '2' }))
+      .toEqual({ mediaProtocolVersion: 3, videoProtocolVersion: 3, skillArtifactProtocolVersion: 2 });
+    expect(MediaRuntimeQuerySchema.parse({ skillArtifactProtocolVersion: '99' })).toEqual({ mediaProtocolVersion: 3, videoProtocolVersion: 3, skillArtifactProtocolVersion: 99 });
   });
 
   it.each(['mediaProtocolVersion', 'skillArtifactProtocolVersion'])('rejects malformed %s even alongside valid other negotiation', (field) => {
@@ -105,7 +111,7 @@ describe('media configuration schemas', () => {
 
   it('rejects unknown runtime query fields instead of silently accepting client secrets', () => {
     for (const extra of [{ apiKey: 'mock-secret' }, { protocolVersion: '1' }, { skillArtifactVersion: '1' }]) {
-      expect(MediaRuntimeQuerySchema.safeParse({ mediaProtocolVersion: '1', skillArtifactProtocolVersion: '1', ...extra }).success).toBe(false);
+      expect(MediaRuntimeQuerySchema.safeParse({ mediaProtocolVersion: '3', skillArtifactProtocolVersion: '1', ...extra }).success).toBe(false);
     }
   });
 

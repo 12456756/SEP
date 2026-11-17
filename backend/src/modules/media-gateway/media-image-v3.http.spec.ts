@@ -42,7 +42,7 @@ describe('V3 image HTTP with production adapter, store and cache and fake upstre
       enterpriseMember: { findFirst: async () => ({ departmentId: null }) },
       subscription: { findFirst: async () => ({ id: videoClaims.subscriptionId }) },
       mediaModelProfile: { findUnique: async () => ({ profileId, configVersion, modelId, kind: 'image', enabled: true, verified: true,
-        capabilities: { supportsReferenceImage: true, maxReferenceCount: 8, maxOutputs: 4, sizes: ['1024x1024'] } }) },
+        capabilities: { supportsReferenceImage: true, maxReferenceCount: 8, maxOutputs: 4, sizes: ['1x1'], qualities: ['medium'] } }) },
       mediaRealReference: {
         create: async ({ data }) => {
           const row = { ...copy(data), id: 'reference-' + ++sequence }; references.set(row.id, row); return copy(row);
@@ -72,7 +72,7 @@ describe('V3 image HTTP with production adapter, store and cache and fake upstre
     const settings = { getMediaConnection: async () => ({ baseUrl: 'https://image-upstream.invalid/v1', apiKey: 'synthetic-key' }),
       getEffectiveValue: async () => '7' };
     const runtimeProfile = { profileId, configVersion, kind: 'image', executionMode: 'sync-response', operations: ['generate', 'edit'],
-      authorized: true, adapter: { available: true, operations: ['generate', 'edit'] }, capabilityHints: [] };
+      authorized: true, adapter: { available: true, operations: ['generate', 'edit'] }, parameters: {}, constraints: [], referenceRules: [] };
     const mediaConfig = { getConnection: async () => ({ configured: true }),
       getRuntimeMediaV3: async () => ({ protocolVersion: 3, executionAvailable: true, executionMode: 'real', profiles: [runtimeProfile] }) };
     const cache = new MediaByteCacheService({ redis: {

@@ -10,7 +10,7 @@ import { SettingService } from '../setting/setting.service';
 import { MediaConfigService } from '../media-config/media-config.service';
 import { clientSubscriptionAccessWhere } from '../client/client-subscription-access';
 import type { ClientEmploymentClaims } from '../client/client-employment.guard';
-import { MediaAuthorizationSchema, MediaCapabilitiesSchema, MAX_MEDIA_REFERENCE_TOTAL_BYTES, parseUsdToCnyRate, SETTING_KEYS } from 'shared';
+import { MAX_MEDIA_REFERENCE_TOTAL_BYTES, effectiveImageLimits, IMAGE_REFERENCE_MAX_BYTES, MediaAuthorizationSchema, MediaCapabilitiesSchema, parseUsdToCnyRate, SETTING_KEYS } from 'shared';
 import type { MediaImageSpecV3, MediaRealAnyQuoteRequest, MediaRealAnyRequest, MediaRealQuoteRequestV3, MediaRealReceipt, MediaRealErrorCode } from 'shared';
 import { MediaRealAnyQuoteRequestSchema, MediaRealAnyRequestSchema, MediaRealAnyReceiptSchema } from 'shared';
 import { inspectMediaPng } from './media-png';
@@ -64,7 +64,7 @@ export class MediaRealService {
     if (fields && Object.keys(fields as object).length) error(400, 'INVALID_REFERENCE', '参考上传不接受额外字段');
     if (!file || !Buffer.isBuffer(file.buffer) || file.size !== file.buffer.length || file.mimetype !== 'image/png') error(400, 'INVALID_REFERENCE', '需要 PNG 文件');
     let dimensions: { width: number; height: number };
-    try { dimensions = inspectMediaPng(file.buffer, 5 * 1024 * 1024); } catch { error(400, 'INVALID_REFERENCE', 'PNG 参考图无效或超出限制'); }
+    try { dimensions = inspectMediaPng(file.buffer, IMAGE_REFERENCE_MAX_BYTES); } catch { error(400, 'INVALID_REFERENCE', 'PNG 参考图无效或超出限制'); }
     const expiresAt = new Date(Date.now() + REFERENCE_TTL).toISOString();
     const reference = await this.store.saveReference(this.scope(claims), {
       mock: false, expiresAt, mimeType: 'image/png', byteLength: file.buffer.length, sha256: sha(file.buffer), ...dimensions,
@@ -320,11 +320,21 @@ export class MediaRealService {
     }
     const row = await this.prisma.mediaModelProfile.findUnique({ where: { profileId: dto.profileId } });
     if (!row || row.configVersion !== dto.configVersion || (!v3 && !isSupportedImageModel(row.modelId)) || !row.enabled || !row.verified) error(409, 'CONFIG_CHANGED', '当前 Profile 未通过真实图片配置校验', { field: 'profileId', stage, recovery: 'refresh_capabilities' });
-    const capabilities = MediaCapabilitiesSchema.parse(row.capabilities);
-    const referenceLimit = capabilities.supportsReferenceImage ? capabilities.maxReferenceCount : 0;
-    if (dto.referenceIds.length > referenceLimit) error(422, 'INVALID_REFERENCE', `参考图数量超过当前 Profile 上限 ${referenceLimit}`, {
-      field: 'referenceIds', stage, recovery: 'revise_request',
-    });
+    const capabilities = MediaCapabilitiesSchema.safeParse(row.capabilities);
+    if (!capabilities.success) error(503, 'ADAPTER_UNAVAILABLE', '图片能力配置无效，请联系管理员', { field: 'profileId', stage });
+    const limits = effectiveImageLimits(capabilities.data);
+    const count = 'parameters' in dto ? dto.parameters.count : (dto as MediaRealQuoteRequestV3).requestedSpec.count;
+    if (count !== undefined && count > limits.maxOutputs) {
+      error(400, 'UNSUPPORTED_MEDIA_PARAMETERS', `生成数量不能超过当前配置上限 ${limits.maxOutputs} 张`, {
+        field: v3 ? 'requestedSpec.count' : 'parameters.count', stage, recovery: 'revise_request',
+        submissionState: 'not_submitted', billingState: 'not_reserved',
+      });
+    }
+    if (dto.operation === 'edit' && (dto.referenceIds.length < 1 || dto.referenceIds.length > limits.maxReferenceCount)) {
+      error(422, 'INVALID_REFERENCE', `当前配置需要 1 至 ${limits.maxReferenceCount} 张参考图`, {
+        field: 'referenceIds', stage, recovery: 'revise_request', submissionState: 'not_submitted', billingState: 'not_reserved',
+      });
+    }
     return { ...profile, modelId: row.modelId };
   }
 

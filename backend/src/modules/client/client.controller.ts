@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Header,
   Body,
   HttpCode,
   HttpStatus,
@@ -272,28 +273,27 @@ export class ClientController {
   }
 
   @Get('subscriptions/:subscriptionId/runtime')
+  @Header('Cache-Control', 'no-store')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  @ApiOperation({ summary: '获取订阅锁定版本的客户端运行时清单' })
-  @ApiQuery({ name: 'mediaProtocolVersion', required: false, type: Number, description: '传 1 协商媒体 v1；传 2 协商严格媒体 v2；传 3 协商模型驱动规格 v3；省略或其他版本不返回媒体 runtime' })
+  @ApiOperation({ summary: '获取员工运行清单与企业已授权多媒体配置' })
+  @ApiQuery({ name: 'mediaProtocolVersion', required: false, enum: [3], description: '省略默认 3；仅返回包含模型、参数和参考图规则的 V3 图片配置' })
   @ApiQuery({ name: 'skillArtifactProtocolVersion', required: false, type: Number, description: '传 1 协商批准 Skill 安装产物；与媒体协议独立' })
-  @ApiQuery({ name: 'videoProtocolVersion', required: false, type: Number, description: '传 1 独立协商视频 v1；传 2 协商严格视频 v2；传 3 协商模型驱动视频规格 v3；省略或其他版本不返回视频 runtime' })
+  @ApiQuery({ name: 'videoProtocolVersion', required: false, enum: [3], description: '省略默认 3；仅返回包含模型、参数和参考图规则的 V3 视频配置' })
   @ApiResponse({ status: 200, description: '员工配置与已审核技能正文；employee.avatarAsset 与订阅清单同源，图片版本独立于 templateVersion' })
   @ApiResponse({ status: 400, description: '媒体协议协商参数无效' })
-  @ApiResponse({ status: 403, description: '无有效订阅或员工授权' })
+  @ApiResponse({ status: 401, description: '认证失败或企业被冻结，保留来源错误详情' })
+  @ApiResponse({ status: 403, description: '当前用户无有效企业身份' })
   @ApiResponse({ status: 404, description: '订阅不存在或当前不可用' })
+  @ApiResponse({ status: 429, description: '请求被限流，保留来源等待信息与 Retry-After' })
+  @ApiResponse({ status: 500, description: '运行配置或服务异常，保留来源诊断信息' })
+  @ApiResponse({ status: 503, description: '运行配置暂不可读取，保留来源错误详情' })
   async getRuntime(
     @Request() req: ExpressRequest & { user: { id: string } },
     @Param('subscriptionId') subscriptionId: string,
     @Query(new ZodValidationPipe(MediaRuntimeQuerySchema)) query: MediaRuntimeQuery,
   ) {
-    if (query.videoProtocolVersion !== undefined) {
-      return this.clientService.getRuntime(req.user.id, subscriptionId, query.mediaProtocolVersion, query.skillArtifactProtocolVersion, query.videoProtocolVersion);
-    }
-    if (query.skillArtifactProtocolVersion !== undefined) {
-      return this.clientService.getRuntime(req.user.id, subscriptionId, query.mediaProtocolVersion, query.skillArtifactProtocolVersion);
-    }
-    return this.clientService.getRuntime(req.user.id, subscriptionId, query.mediaProtocolVersion);
+    return this.clientService.getRuntime(req.user.id, subscriptionId, query.mediaProtocolVersion, query.skillArtifactProtocolVersion, query.videoProtocolVersion);
   }
 
   @Post('tasks')

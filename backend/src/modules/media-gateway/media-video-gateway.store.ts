@@ -34,7 +34,13 @@ export type VideoRequestClaim = Omit<VideoRequestRecord, 'revision' | 'receipt'>
   receipt: Omit<MediaVideoGatewayReceipt, 'receiptId'>;
 };
 
-export type VideoErrorDetails = { field?: string; stage?: 'video-authorization' | 'video-quote' | 'video-submit' | 'video-query' | 'video-content'; recovery?: string };
+export type VideoErrorDetails = {
+  field?: string;
+  stage?: 'video-authorization' | 'video-quote' | 'video-submit' | 'video-query' | 'video-content';
+  recovery?: string;
+  submissionState?: 'not_submitted';
+  billingState?: 'not_reserved';
+};
 export function videoGatewayError(status: number, code: string, message: string, details: VideoErrorDetails = {}): never {
   throw new HttpException({ message, error: {
     code, message, type: status >= 500 ? 'server_error' : 'invalid_request_error', source: 'platform', param: null, ...details,

@@ -19,11 +19,24 @@ export function isVideoResolutionWithinLimit(value: string, maxResolution: strin
 
 export const MediaVideoExecutionModeSchema = z.literal('async-query');
 
+export const MediaVideoDurationRangeSchema = z.object({
+  minimum: z.number().int().positive().safe(),
+  maximum: z.number().int().positive().safe(),
+}).strict().refine(value => value.minimum <= value.maximum,
+  { path: ['maximum'], message: '最长时长不能小于最短时长' });
+
+export function isVideoDurationInRange(duration: number | undefined,
+  range?: { minimum?: number; maximum?: number }): boolean {
+  return duration === undefined || !range ||
+    (range.minimum !== undefined && range.maximum !== undefined && duration >= range.minimum && duration <= range.maximum);
+}
+
 const MediaVideoCapabilitiesBaseSchema = z.object({
   supportsTextToVideo: z.boolean().default(false),
   supportsImageToVideo: z.boolean().default(false),
   supportsAudio: z.boolean().default(false),
   durationsSeconds: z.array(z.number().int().positive().safe()).min(1).max(32),
+  durationRange: MediaVideoDurationRangeSchema.optional(),
   aspectRatios: z.array(z.string().regex(/^\d+:\d+$/)).min(1).max(16),
   resolutions: z.array(z.string().trim().min(1).max(128).regex(/^[^\s\p{Cc}\p{Cf}]+$/u)).min(1).max(8),
   frameRates: z.array(z.number().finite().positive().max(Number.MAX_SAFE_INTEGER)).min(1).max(8),

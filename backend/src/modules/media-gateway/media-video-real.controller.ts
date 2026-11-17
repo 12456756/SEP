@@ -6,7 +6,7 @@ import { memoryStorage } from 'multer';
 import type { Response } from 'express';
 import { z } from 'zod';
 import { pipeline } from 'node:stream/promises';
-import { MediaGatewayIdSchema, MediaVideoRealQuoteRequestSchema, MediaVideoRealRequestSchema } from 'shared';
+import { MediaGatewayIdSchema, MediaVideoRealQuoteRequestSchema, MediaVideoRealRequestSchema, VIDEO_REFERENCE_MAX_BYTES } from 'shared';
 import type { MediaVideoRealQuoteRequest, MediaVideoRealRequest } from 'shared';
 import { ClientEmploymentGuard } from '../client/client-employment.guard';
 import type { ClientEmploymentClaims } from '../client/client-employment.guard';
@@ -50,7 +50,7 @@ export class MediaVideoRealController {
   @ApiOperation({ summary: 'Upload a validated PNG reference' })
   @ApiConsumes('multipart/form-data')
   @ApiBody({ schema: { type: 'object', required: ['file'], properties: { file: { type: 'string', format: 'binary' } } } })
-  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1, fields: 0, parts: 2 } }))
+  @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: VIDEO_REFERENCE_MAX_BYTES, files: 1, fields: 0, parts: 2 } }))
   reference(@ClientEmployment() claims: ClientEmploymentClaims, @UploadedFile() file: Express.Multer.File, @Body() fields: unknown) {
     return this.media.reference(claims, file, fields);
   }

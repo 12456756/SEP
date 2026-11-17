@@ -1,11 +1,12 @@
 import { z } from 'zod';
 import { MAX_MEDIA_REFERENCE_COUNT, MediaUpstreamErrorSchema } from './media-reference.dto';
+import { IMAGE_ADAPTER_MAX_OUTPUTS } from './media-runtime-parameters';
 import { MediaGatewayIdSchema, MediaGatewayOutputSchema, MediaGatewayErrorCodeSchema } from './media-gateway.dto';
 import { MediaConfigVersionV3Schema, MediaImageSpecV3Schema, MediaProfileIdV3Schema, MediaSpecAcceptanceSchema, MediaSpecMetadataV3Schema } from './media-spec.dto';
 
 export const MediaRealParametersSchema = z.object({
   size: z.enum(['1024x1024', '1536x1024', '1024x1536']).default('1024x1024'),
-  count: z.number().int().min(1).max(4).default(1),
+  count: z.number().int().min(1).max(IMAGE_ADAPTER_MAX_OUTPUTS).default(1),
   quality: z.enum(['low', 'medium', 'high']).default('medium'),
 }).strict();
 const request = z.object({
