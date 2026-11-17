@@ -64,7 +64,7 @@ export class MediaVideoConfigService {
   private v3Compatible(profile: MediaVideoProfile): boolean {
     const c = profile.capabilities;
     return profile.executionMode === 'async-query' && c.supportsTaskQuery && !c.supportsCancel
-      && c.maxInputBytes <= 10 * 1024 * 1024 && c.maxReferenceCount <= 1
+      && c.maxInputBytes <= 10 * 1024 * 1024
       && c.outputFormats.every(format => ['video/mp4', 'video/webm'].includes(format));
   }
 
@@ -120,7 +120,7 @@ export class MediaVideoConfigService {
 
   private assertExecutable(profile: MediaVideoProfile): void {
     if (profile.modelId !== 'mock-video-v1' && this.realEnabled()) {
-      if (!this.v3Compatible(profile)) throw new BadRequestException('视频配置超出通用适配器协议边界：异步查询、单 PNG 参考、MP4/WebM，不支持取消');
+      if (!this.v3Compatible(profile)) throw new BadRequestException('视频配置超出通用适配器协议边界：异步查询、PNG 参考、MP4/WebM，不支持取消');
       return;
     }
     if (!this.mockEnabled()) throw new ServiceUnavailableException('视频仅支持显式启用的 mock，尚未接入真实执行');
@@ -164,8 +164,8 @@ export class MediaVideoConfigService {
 
   async updateProfile(profileId: string, input: UpdateMediaVideoProfileDto): Promise<MediaVideoProfile> {
     const dto = this.parse<UpdateMediaVideoProfileDto>(UpdateMediaVideoProfileDtoSchema, input);
-    if (profileId.startsWith('auto-') && ['modelId', 'operations', 'executionMode', 'capabilities'].some(key => key in dto)) {
-      throw new BadRequestException('模型规格由适配器自动维护，请在客户端选择本次生成参数');
+    if (profileId.startsWith('auto-') && ['modelId', 'executionMode'].some(key => key in dto)) {
+      throw new BadRequestException('自动模型的模型标识和执行协议不可修改');
     }
     const current = await this.findProfile(profileId);
     if (dto.expectedConfigVersion !== current.configVersion) throw new ConflictException('视频配置已更新，请重新加载后保存');
@@ -449,8 +449,8 @@ export class MediaVideoConfigService {
         adapter: {
           id: 'sub2api-video', version: '3', available: reason === undefined, ...(reason ? { reason } : {}), operations,
           referenceSupport: {
-            maxCount: operations.includes('image-to-video') ? 1 : 0,
-            maxInputBytes: 10 * 1024 * 1024,
+            maxCount: operations.includes('image-to-video') ? profile.capabilities.maxReferenceCount : 0,
+            maxInputBytes: profile.capabilities.maxInputBytes,
             mimeTypes: operations.includes('image-to-video') ? ['image/png'] : [],
           },
           supportsTaskQuery: true,

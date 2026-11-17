@@ -69,6 +69,46 @@ function harness() {
 }
 
 describe('MediaRealService', () => {
+  it('rejects excessive total reference bytes before asking for a price', async () => {
+    const h = harness();
+    h.prisma.mediaModelProfile.findUnique.mockResolvedValue({ ...profile, modelId: 'gpt-image-2', enabled: true, verified: true,
+      capabilities: { ...profile.capabilities, maxReferenceCount: 32 } });
+    h.store.findReference.mockImplementation(async () => ({ scope,
+      value: { sha256: hash, byteLength: 5 * 1024 * 1024, expiresAt: new Date(Date.now() + 60000).toISOString() } }));
+    const edit = { ...quoteInputV3, operation: 'edit' as const, referenceIds: Array.from({ length: 21 }, (_, i) => `ref-${i}`) };
+    await expect(h.service.quote(claims, edit)).rejects.toMatchObject({ status: 413, response: { error: { code: 'INVALID_REFERENCE' } } });
+    expect(h.adapter.pricing).not.toHaveBeenCalled();
+    expect(h.billing.reserve).not.toHaveBeenCalled();
+  });
+
+  it('enforces a changed reference limit for both quote and submit before dispatch', async () => {
+    const h = harness();
+    const row = { ...profile, modelId: 'gpt-image-2', enabled: true, verified: true,
+      capabilities: { ...profile.capabilities, maxReferenceCount: 3 } };
+    h.prisma.mediaModelProfile.findUnique.mockResolvedValue(row);
+    const edit = { ...quoteInputV3, operation: 'edit' as const, referenceIds: ['a', 'b', 'c'] };
+    await h.service.quote(claims, edit);
+    expect(h.adapter.pricing).toHaveBeenCalledTimes(1);
+    row.capabilities.maxReferenceCount = 2;
+    await expect(h.service.quote(claims, edit)).rejects.toMatchObject({ status: 422, response: { error: { code: 'INVALID_REFERENCE' } } });
+    await expect(h.service.submit(claims, { ...edit, quoteId: 'quote', clientRequestId: 'three-images' }))
+      .rejects.toMatchObject({ status: 422 });
+    expect(h.billing.reserve).not.toHaveBeenCalled();
+    expect(h.adapter.execute).not.toHaveBeenCalled();
+  });
+
+  it('returns the original submission error and persists it without resubmitting', async () => {
+    const h = harness();
+    const original = { status: 403, body: { error: { code: 'permission_error', message: 'Image edit denied' } } };
+    h.adapter.execute.mockRejectedValue(new ImageDispatchError('upstream', false, 'UPSTREAM_FAILED', original));
+    await h.service.quote(claims, quoteInputV3);
+    const input = { ...quoteInputV3, quoteId: 'quote', clientRequestId: 'upstream-error' };
+    await expect(h.service.submit(claims, input)).rejects.toMatchObject({ status: 403, response: original.body });
+    expect(h.record().receipt).toMatchObject({ status: 'SUBMISSION_UNKNOWN', billingStatus: 'RECONCILING', upstreamError: original });
+    await h.service.submit(claims, input);
+    expect(h.adapter.execute).toHaveBeenCalledTimes(1);
+    expect(h.billing.release).not.toHaveBeenCalled();
+  });
   it.each(['subscription', 'policy', 'profile', 'model', 'switch'] as const)(
     'rechecks V3 execution authorization after reservation when %s changes', async change => {
       const h = harness();

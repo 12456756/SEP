@@ -48,6 +48,17 @@ function fixture(config?: any) {
 }
 
 describe('MediaConfigService', () => {
+  it('publishes the configured reference maximum and lets administrators edit auto profiles', async () => {
+    const { service, row, prisma } = fixture({ get: () => 'true' });
+    row.profileId = 'auto-image-reference';
+    Object.assign(row.capabilities, { maxReferenceCount: 7 });
+    prisma.enterpriseModelConfig.findUnique.mockResolvedValue({ mediaPolicy: { enabledProfileIds: [row.profileId] } });
+    expect(await service.getRuntimeMediaV3('ent-1')).toMatchObject({ profiles: [{ adapter: { referenceSupport: { maxCount: 7 } } }] });
+    await service.updateProfile(row.profileId, { expectedConfigVersion: row.configVersion, capabilities: { maxReferenceCount: 3 } });
+    expect(prisma.mediaModelProfile.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ capabilities: expect.objectContaining({ maxReferenceCount: 3 }), verified: false }),
+    }));
+  });
   it('verifies an explicitly configured new model through V3 pricing without a static model allow-list', async () => {
     const { service, row, imageAdapter } = fixture();
     row.modelId = 'new-image-protocol-model';
@@ -172,13 +183,13 @@ describe('MediaConfigService', () => {
     expect(imageAdapter.pricing).not.toHaveBeenCalled();
   });
 
-  it('does not synchronize a failed catalog or permit manual capability edits to managed models', async () => {
+  it('does not synchronize a failed catalog and keeps managed model identity immutable', async () => {
     const { service, imageAdapter, sync, row } = fixture();
     imageAdapter.discoverModels.mockRejectedValue(new ServiceUnavailableException());
     await expect(service.discoverModels()).rejects.toBeInstanceOf(ServiceUnavailableException);
     expect(sync.sync).not.toHaveBeenCalled();
     row.profileId = 'auto-image-123456789';
-    await expect(service.updateProfile(row.profileId, { expectedConfigVersion: row.configVersion, capabilities: { maxOutputs: 1 } }))
+    await expect(service.updateProfile(row.profileId, { expectedConfigVersion: row.configVersion, modelId: 'other-model' }))
       .rejects.toBeInstanceOf(BadRequestException);
   });
 

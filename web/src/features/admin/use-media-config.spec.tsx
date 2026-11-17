@@ -16,7 +16,7 @@ vi.mock('@/lib/api-client', () => ({ api: { get: vi.fn(), post: vi.fn(), patch: 
 const createDto: CreateImageProfileDto = {
   profileId: 'image-basic', kind: 'image', displayName: 'Basic Image', modelId: 'image-model',
   operations: ['generate'], executionMode: 'sync-response',
-  capabilities: { supportsReferenceImage: false, maxOutputs: 1, sizes: ['1024x1024'] },
+  capabilities: { supportsReferenceImage: false, maxOutputs: 1, sizes: ['1024x1024'], maxReferenceCount: 0 },
   enabled: false,
 };
 

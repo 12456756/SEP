@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MediaUpstreamErrorSchema } from './media-reference.dto';
 import { MediaFundingSchema, MediaMoneySchema } from './media-real.dto';
 import {
   MediaVideoGatewayQuoteRequestSchema, MediaVideoGatewayQuoteRequestV3Schema,
@@ -45,6 +46,7 @@ export type MediaVideoRealQuote = z.infer<typeof MediaVideoRealQuoteSchema>;
 export const MediaVideoRealBillingStatusSchema = z.enum(['NOT_RESERVED', 'RESERVED', 'SETTLED', 'RELEASED', 'RECONCILING']);
 export const MediaVideoRealReceiptBaseSchema = MediaVideoGatewayReceiptSchema.innerType().extend({
   mock: z.literal(false),
+  upstreamError: MediaUpstreamErrorSchema.optional(),
   billingStatus: MediaVideoRealBillingStatusSchema,
   amountCny: MediaMoneySchema.optional(),
   actualCostCny: MediaMoneySchema.optional(),
@@ -69,6 +71,7 @@ const MediaVideoV3OutputSchema = z.object({
   expiresAt: z.string().datetime({ offset: true }).nullable(),
 }).strict();
 export const MediaVideoRealReceiptV3Schema = MediaVideoGatewayReceiptSchema.innerType().omit({ outputs: true }).extend({
+  upstreamError: MediaUpstreamErrorSchema.optional(),
   profileId: MediaProfileIdV3Schema, configVersion: MediaConfigVersionV3Schema,
   mock: z.literal(false), billingStatus: MediaVideoRealBillingStatusSchema,
   amountCny: MediaMoneySchema.optional(), actualCostCny: MediaMoneySchema.optional(), amountUsd: MediaVideoUsdSchema.optional(),

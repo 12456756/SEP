@@ -2,6 +2,7 @@ import { ArgumentsHost, Catch, ExceptionFilter, HttpException, HttpStatus, Paylo
 import type { Request, Response } from 'express';
 import { SkillArtifactBlockedReasonSchema, SkillImportErrorCodeSchema } from 'shared';
 import { captureHttpException } from '../middleware/http-logging.middleware';
+import { MediaUpstreamException } from '../errors/media-upstream.exception';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -79,6 +80,13 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const response = host.switchToHttp().getResponse<Response>();
     const request = host.switchToHttp().getRequest<Request & { requestId?: string }>();
     captureHttpException(response, exception);
+    if (exception instanceof MediaUpstreamException) {
+      response.setHeader('X-SEP-Error-Source', 'upstream');
+      const { status, body } = exception.upstreamError;
+      if (typeof body === 'string') response.status(status).type('text/plain').send(body);
+      else response.status(status).json(body);
+      return;
+    }
     // Express parser errors are not Nest HttpExceptions. Only normalize its known size error.
     if (isRecord(exception) && exception.type === 'entity.too.large' && exception.status === 413) {
       exception = new PayloadTooLargeException({

@@ -5,6 +5,8 @@ import type { MediaImageSpecV3, MediaRealAnyQuoteRequest, MediaRealQuoteRequestV
 import { SettingService } from '../setting/setting.service';
 import { isSupportedImageModel } from './image-model-contract';
 import { inspectMediaPng } from './media-png';
+import { MediaUpstreamException, mediaFailure, readMediaUpstreamError, protectMediaCredential } from '../../common/errors/media-upstream.exception';
+import type { MediaUpstreamError } from 'shared';
 
 const ModelIdSchema = z.string().min(1).max(160).regex(/^[^\s\p{Cc}\p{Cf}]+$/u);
 const ModelsSchema = z.object({
@@ -35,9 +37,10 @@ export interface Sub2apiImageConnection { base: string; key: string }
 export const SUB2API_IMAGE_ADAPTER_VERSION = 'sub2api-image-v3';
 export class ImageDispatchError extends HttpException {
   constructor(readonly requestId: string | null, readonly definitelyRejected: boolean,
-    readonly safeCode: 'UPSTREAM_FAILED' | 'UPSTREAM_SPEC_UNSUPPORTED' = 'UPSTREAM_FAILED') {
-    super({ error: { code: safeCode === 'UPSTREAM_SPEC_UNSUPPORTED' ? safeCode : definitelyRejected ? safeCode : 'SUBMISSION_UNKNOWN',
-      message: '图片上游执行未完成，请查询原请求' } }, 502);
+    readonly safeCode: 'UPSTREAM_FAILED' | 'UPSTREAM_SPEC_UNSUPPORTED' = 'UPSTREAM_FAILED',
+    readonly upstreamError?: MediaUpstreamError) {
+    super((upstreamError?.body ?? { error: { code: safeCode === 'UPSTREAM_SPEC_UNSUPPORTED' ? safeCode : definitelyRejected ? safeCode : 'SUBMISSION_UNKNOWN',
+      message: '图片上游执行未完成，请查询原请求' } }) as string | Record<string, unknown>, upstreamError?.status ?? 502);
   }
 }
 function unavailable(code = 'PRICE_UNAVAILABLE'): never {
@@ -190,23 +193,6 @@ export class Sub2apiImageAdapter {
     } catch { unavailable(); }
   }
 
-  private async unsupportedSpec(response: Response): Promise<boolean> {
-    if (!response.headers.get('content-type')?.includes('application/json') || !response.body) {
-      await response.body?.cancel().catch(() => {}); return false;
-    }
-    const reader = response.body.getReader(); const chunks: Buffer[] = []; let length = 0;
-    try {
-      while (true) {
-        const part = await reader.read(); if (part.done) break;
-        length += part.value.length; if (length > 64 * 1024) return false;
-        chunks.push(Buffer.from(part.value));
-      }
-      const value = z.object({ error: z.object({ code: z.string() }) }).safeParse(JSON.parse(Buffer.concat(chunks).toString('utf8')));
-      return value.success && ['unsupported_spec', 'unsupported_parameter', 'unsupported_size', 'unsupported_quality'].includes(value.data.error.code);
-    } catch { return false; }
-    finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
-  }
-
   private async call(path: string, options: RequestInit, timeout: number, maxBytes: number, dispatch = false, onRequestId?: (requestId: string) => Promise<void>, snapshot?: Sub2apiImageConnection, classifySpec = false): Promise<{ value: unknown; requestId: string | null }> {
     const connection = snapshot ? this.normalizeConnection(snapshot) : await this.connection();
     let requestId: string | null = null;
@@ -227,27 +213,29 @@ export class Sub2apiImageAdapter {
         }
       }
       if (!response.ok) {
-        const unsupported = dispatch && classifySpec && [400, 422].includes(response.status)
-          ? await this.unsupportedSpec(response) : false;
-        if (!response.body?.locked) await response.body?.cancel().catch(() => {});
+        const upstreamError = protectMediaCredential(await readMediaUpstreamError(response), connection.key);
+        const rejected = z.object({ error: z.object({ code: z.string() }) }).safeParse(upstreamError.body);
+        const unsupported = dispatch && classifySpec && [400, 422].includes(response.status) && rejected.success &&
+          ['unsupported_spec', 'unsupported_parameter', 'unsupported_size', 'unsupported_quality'].includes(rejected.data.error.code);
         // V3 supplier errors do not prove that no upstream execution or billing occurred.
         // Keep the historical rejection contract isolated to legacy requests.
-        if (dispatch) throw new ImageDispatchError(requestId, !classifySpec && [400, 401, 403, 404, 413, 422, 429].includes(response.status), unsupported ? 'UPSTREAM_SPEC_UNSUPPORTED' : 'UPSTREAM_FAILED');
-        unavailable(path.startsWith('/sub2api/usage') ? 'BILLING_PENDING' : 'PRICE_UNAVAILABLE');
+        if (dispatch) throw new ImageDispatchError(requestId, !classifySpec && [400, 401, 403, 404, 413, 422, 429].includes(response.status), unsupported ? 'UPSTREAM_SPEC_UNSUPPORTED' : 'UPSTREAM_FAILED', upstreamError);
+        throw new MediaUpstreamException(upstreamError);
       }
-      if (!response.headers.get('content-type')?.includes('application/json') || !response.body) throw new Error();
+      if (!response.headers.get('content-type')?.includes('application/json') || !response.body) throw new Error('Upstream response must contain a JSON body');
       const reader = response.body.getReader(); const chunks: Buffer[] = []; let length = 0;
       try {
         while (true) {
           const part = await reader.read(); if (part.done) break;
-          length += part.value.length; if (length > maxBytes) throw new Error(); chunks.push(Buffer.from(part.value));
+          length += part.value.length; if (length > maxBytes) throw new Error(`Upstream response exceeds ${maxBytes} bytes`); chunks.push(Buffer.from(part.value));
         }
       } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
       return { value: JSON.parse(Buffer.concat(chunks).toString('utf8')), requestId };
     } catch (error) {
       if (error instanceof HttpException) throw error;
-      if (dispatch) throw new ImageDispatchError(requestId, false);
-      unavailable(path.startsWith('/sub2api/usage') ? 'BILLING_PENDING' : 'PRICE_UNAVAILABLE');
+      const failure = protectMediaCredential(mediaFailure(error), connection.key);
+      if (dispatch) throw new ImageDispatchError(requestId, false, 'UPSTREAM_FAILED', failure);
+      throw new MediaUpstreamException(failure);
     }
   }
 }

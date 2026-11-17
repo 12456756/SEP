@@ -60,6 +60,17 @@ function createInput(overrides: Record<string, unknown> = {}) {
 }
 
 describe('MediaVideoConfigService real configuration', () => {
+  it('saves and publishes an administrator-defined video reference maximum', async () => {
+    const { service, row } = setup(true);
+    row.modelId = 'seedance-2.0';
+    row.operations = ['image-to-video'];
+    row.capabilities.maxReferenceCount = 5;
+    expect(await service.getRuntimeVideoV3('ent-1')).toMatchObject({ profiles: [{ adapter: { referenceSupport: { maxCount: 5 } } }] });
+    await service.updateProfile(row.profileId, { expectedConfigVersion: row.configVersion, capabilities: { maxReferenceCount: 3 } });
+    expect(row.capabilities.maxReferenceCount).toBe(3);
+    expect(row.verified).toBe(false);
+    expect(row.enabled).toBe(false);
+  });
   it('ignores retired video limits in V1/V2 runtime and preview while still requiring model authorization', async () => {
     const f = setup(true);
     f.row.modelId = 'minimax-h3';
@@ -162,9 +173,9 @@ describe('MediaVideoConfigService real configuration', () => {
     expect(f.prisma.mediaModelProfile.findMany).not.toHaveBeenCalled();
   });
 
-  it('rejects manual capabilities for automatic video models', async () => {
+  it('keeps automatic video model identity immutable', async () => {
     const f = realSetup();
-    await expect(f.service.updateProfile('auto-video-model', { expectedConfigVersion: 'cfg_video', capabilities: { supportsAudio: false } }))
+    await expect(f.service.updateProfile('auto-video-model', { expectedConfigVersion: 'cfg_video', modelId: 'other-model' }))
       .rejects.toBeInstanceOf(BadRequestException);
   });
 

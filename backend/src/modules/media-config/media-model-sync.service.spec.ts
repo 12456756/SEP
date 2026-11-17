@@ -81,6 +81,13 @@ describe('mediaConnectionFingerprint', () => {
 });
 
 describe('MediaModelSyncService', () => {
+  it.each(['image', 'video'] as const)('preserves the administrator reference count across %s catalog synchronization', async kind => {
+    const initial = profile({ kind, profileId: `auto-${kind}-model`, capabilities: { maxReferenceCount: 8 } });
+    const m = memory([initial]);
+    await m.service.sync(kind, [{ ...candidate(), capabilities: { maxReferenceCount: 1 } }], fingerprint(), () => true);
+    expect(m.rows()).toEqual([initial]);
+  });
+
   it('creates inert candidates in a bounded Serializable transaction', async () => {
     const m = memory();
     await m.service.sync('image', [candidate()], fingerprint(), row => row.modelId === 'model-a');

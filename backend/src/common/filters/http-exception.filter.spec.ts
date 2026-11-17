@@ -1,8 +1,25 @@
 import { ArgumentsHost, BadRequestException, HttpException } from '@nestjs/common';
 import { HttpExceptionFilter } from './http-exception.filter';
+import { MediaUpstreamException } from '../errors/media-upstream.exception';
 
 describe('HttpExceptionFilter', () => {
   const gatewayPath = '/api/gateway/v1/chat/completions';
+
+  it.each(['/api/admin/media/profiles/test/verify', '/api/gateway/v1/media/video-real/requests'])(
+    'returns upstream JSON and status without rewriting its fields on %s', path => {
+      const original = { error: { code: 'permission_error', message: 'Model not allowed', detail: { group: 'video' } } };
+      const { response, body } = catchException(new MediaUpstreamException({ status: 403, body: original }), path);
+      expect(response.status).toHaveBeenCalledWith(403);
+      expect(response.setHeader).toHaveBeenCalledWith('X-SEP-Error-Source', 'upstream');
+      expect(body).toEqual(original);
+    });
+
+  it('returns a plain text upstream failure without wrapping it in JSON', () => {
+    const { response, body } = catchException(new MediaUpstreamException({ status: 502, body: 'upstream socket closed' }));
+    expect(response.type).toHaveBeenCalledWith('text/plain');
+    expect(response.status).toHaveBeenCalledWith(502);
+    expect(body).toBe('upstream socket closed');
+  });
 
   it.each(['/api/client/subscriptions/sub-1/runtime', '/api/skills', gatewayPath])('does not extend unrelated error envelopes with artifact fields: %s', (path) => {
     const { body } = catchException(new HttpException({ message: 'Not installable', code: 'SKILL_ARTIFACT_BLOCKED', reason: 'INVALID_ENTRY' }, 409), path);
@@ -60,6 +77,8 @@ describe('HttpExceptionFilter', () => {
     const response = {
       status: jest.fn().mockReturnThis(),
       json: jest.fn(),
+      type: jest.fn().mockReturnThis(),
+      send: jest.fn(),
       getHeader: jest.fn((name: string) => headers[name.toLowerCase()]),
       getHeaders: jest.fn(() => ({ ...headers })),
       setHeader: jest.fn((name: string, value: string) => {
@@ -75,7 +94,7 @@ describe('HttpExceptionFilter', () => {
     } as unknown as ArgumentsHost;
 
     new HttpExceptionFilter().catch(exception, host);
-    return { response, body: response.json.mock.calls[0][0] };
+    return { response, body: response.json.mock.calls[0]?.[0] ?? response.send.mock.calls[0]?.[0] };
   }
 
   it.each(['real', 'video-real'])('preserves safe negotiated media errors for %s', route => {

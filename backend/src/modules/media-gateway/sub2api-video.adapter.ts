@@ -1,7 +1,9 @@
 import { HttpException, Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { MediaVideoUsdSchema } from 'shared';
+import { MediaUpstreamException, mediaFailure, readMediaUpstreamError, protectMediaCredential } from '../../common/errors/media-upstream.exception';
+import type { MediaUpstreamError } from 'shared';
+import { MediaJsonValueSchema, MediaVideoUsdSchema } from 'shared';
 import { MediaVideoGatewayQuoteRequestSchema, MediaVideoGatewayQuoteRequestV3Schema,
   type MediaVideoGatewayQuoteRequest, type MediaVideoGatewayQuoteRequestV3 } from 'shared';
 import { SettingService } from '../setting/setting.service';
@@ -15,6 +17,7 @@ const VideoStatusSchema = z.enum(['queued', 'in_progress', 'completed', 'failed'
 const TaskSchema = z.object({
   object: z.literal('video'), id: TaskIdSchema, task_id: TaskIdSchema.optional(),
   model: ModelIdSchema, status: VideoStatusSchema, progress: z.number().finite().min(0).max(100).optional(),
+  error: MediaJsonValueSchema.optional(),
 });
 const PricingSchema = z.object({
   object: z.literal('sub2api.video_pricing'), schema_version: z.literal(1), currency: z.literal('USD'),
@@ -39,13 +42,13 @@ export type Sub2apiVideoInput = MediaVideoGatewayQuoteRequest | MediaVideoGatewa
 
 export class VideoDispatchError extends HttpException {
   constructor(readonly requestId: string | null, readonly definitelyRejected: boolean,
-    readonly specUnsupported = false) {
-    super({ error: {
+    readonly specUnsupported = false, readonly upstreamError?: MediaUpstreamError) {
+    super((upstreamError?.body ?? { error: {
       code: specUnsupported ? 'UPSTREAM_SPEC_UNSUPPORTED' : definitelyRejected ? 'UPSTREAM_FAILED' : 'SUBMISSION_UNKNOWN',
       message: specUnsupported ? '上游拒绝了请求规格，请查询原请求以确认账务状态' : '视频提交未完成，请查询原请求',
       ...(specUnsupported ? { source: 'upstream', stage: 'submit', reason: '上游明确报告规格参数不支持',
         retryable: false, submissionState: 'unknown', billingState: 'reconciling' } : {}),
-    } }, 502);
+    } }) as string | Record<string, unknown>, upstreamError?.status ?? 502);
   }
 }
 function unavailable(code = 'PRICE_UNAVAILABLE'): never {
@@ -127,7 +130,7 @@ export class Sub2apiVideoAdapter {
   }
 
   async submit(connection: Sub2apiVideoConnection, input: Sub2apiVideoInput, modelId: string,
-    references: Buffer[], clientRequestId: string, pricingVersion: string): Promise<{ taskId: string; requestId: string; status: Sub2apiVideoTask['status'] }> {
+    references: Buffer[], clientRequestId: string, pricingVersion: string): Promise<{ taskId: string; requestId: string; status: Sub2apiVideoTask['status']; error?: Sub2apiVideoTask['error'] }> {
     this.assertInput(input, modelId);
     if (!/^[a-zA-Z0-9_-]{1,128}$/.test(clientRequestId)) unavailable('INVALID_REQUEST');
     if (references.length !== input.referenceIds.length) unavailable('INVALID_REFERENCE');
@@ -140,10 +143,12 @@ export class Sub2apiVideoAdapter {
       headers['Content-Type'] = 'application/json';
       body = JSON.stringify(fields);
     } else {
-      try { inspectMediaPng(references[0], 10 * 1024 * 1024); }
-      catch { unavailable('INVALID_REFERENCE'); }
       const form = new FormData();
-      form.append('input_reference', new Blob([new Uint8Array(references[0])], { type: 'image/png' }), 'reference.png');
+      for (const [index, bytes] of references.entries()) {
+        try { inspectMediaPng(bytes, 10 * 1024 * 1024); }
+        catch { unavailable('INVALID_REFERENCE'); }
+        form.append('input_reference', new Blob([new Uint8Array(bytes)], { type: 'image/png' }), `reference-${index}.png`);
+      }
       for (const [name, value] of Object.entries(fields)) form.append(name, typeof value === 'object' ? JSON.stringify(value) : String(value));
       body = form;
     }
@@ -153,7 +158,8 @@ export class Sub2apiVideoAdapter {
     const task = TaskSchema.safeParse(result.value);
     if (!task.success || !result.requestId || task.data.model !== modelId ||
       task.data.task_id !== undefined && task.data.task_id !== task.data.id) throw new VideoDispatchError(result.requestId, false);
-    return { taskId: task.data.id, requestId: result.requestId, status: task.data.status };
+    return { taskId: task.data.id, requestId: result.requestId, status: task.data.status,
+      ...(task.data.error !== undefined ? { error: protectMediaCredential({ status: 200, body: task.data.error }, connection.key).body } : {}) };
   }
 
   async query(connection: Sub2apiVideoConnection, taskId: string, modelId: string): Promise<Sub2apiVideoTask> {
@@ -162,7 +168,8 @@ export class Sub2apiVideoAdapter {
     const task = TaskSchema.safeParse(result.value);
     if (!task.success || task.data.id !== taskId || task.data.model !== modelId ||
       task.data.task_id !== undefined && task.data.task_id !== taskId) unavailable('UPSTREAM_FAILED');
-    return task.data;
+    return task.data.error === undefined ? task.data : { ...task.data,
+      error: protectMediaCredential({ status: 200, body: task.data.error }, connection.key).body };
   }
 
   /** Caller owns cancellation and file validation. Enforce the byte cap even without Content-Length. */
@@ -173,14 +180,16 @@ export class Sub2apiVideoAdapter {
     try {
       response = await this.fetch(connection, `/videos/${encodeURIComponent(taskId)}/content`, { method: 'GET',
         headers: { Accept: `${outputFormat}, application/octet-stream` } }, 180_000);
+      if (!response.ok) throw new MediaUpstreamException(protectMediaCredential(await readMediaUpstreamError(response), connection.key));
       const mime = response.headers.get('content-type')?.split(';')[0].trim().toLowerCase();
       const rawLength = response.headers.get('content-length');
       if (response.status !== 200 || !response.body || ![outputFormat, 'application/octet-stream'].includes(mime) ||
         rawLength !== null && (!/^\d+$/.test(rawLength) || !Number.isSafeInteger(Number(rawLength)) ||
-          Number(rawLength) < 1 || Number(rawLength) > MAX_CONTENT_BYTES)) throw new Error();
-    } catch {
+          Number(rawLength) < 1 || Number(rawLength) > MAX_CONTENT_BYTES)) throw new Error('Invalid upstream video content type or length');
+    } catch (error) {
       await response?.body?.cancel().catch(() => {});
-      unavailable('OUTPUT_FAILED');
+      if (error instanceof MediaUpstreamException) throw error;
+      throw new MediaUpstreamException(protectMediaCredential(mediaFailure(error), connection.key));
     }
     const reader = response.body.getReader();
     const expectedLength = response.headers.get('content-length');
@@ -190,20 +199,20 @@ export class Sub2apiVideoAdapter {
         try {
           const part = await reader.read();
           if (part.done) {
-            if (!bytes || expectedLength !== null && bytes !== Number(expectedLength)) throw new Error();
+            if (!bytes || expectedLength !== null && bytes !== Number(expectedLength)) throw new Error('Upstream video content length mismatch');
             reader.releaseLock(); controller.close(); return;
           }
           bytes += part.value.byteLength;
-          if (bytes > MAX_CONTENT_BYTES || expectedLength !== null && bytes > Number(expectedLength)) throw new Error();
+          if (bytes > MAX_CONTENT_BYTES || expectedLength !== null && bytes > Number(expectedLength)) throw new Error('Upstream video content exceeds byte limit');
           controller.enqueue(part.value);
-        } catch {
+        } catch (error) {
           await reader.cancel().catch(() => {}); reader.releaseLock();
-          controller.error(new HttpException({ error: { code: 'OUTPUT_FAILED', message: '视频下载未完成' } }, 502));
+          controller.error(new MediaUpstreamException(protectMediaCredential(mediaFailure(error), connection.key)));
         }
       },
       async cancel() {
         try { await reader.cancel(); }
-        catch { throw new HttpException({ error: { code: 'OUTPUT_FAILED', message: '视频下载未完成' } }, 502); }
+        catch (error) { throw new MediaUpstreamException(protectMediaCredential(mediaFailure(error), connection.key)); }
         finally { reader.releaseLock(); }
       },
     });
@@ -266,7 +275,7 @@ export class Sub2apiVideoAdapter {
     const url = new URL(connection.base);
     if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash ||
       !url.pathname.endsWith('/v1') || !connection.key || /[^\x21-\x7e]/.test(connection.key) ||
-      connection.fingerprint !== fingerprint(connection.base, connection.key)) throw new Error();
+      connection.fingerprint !== fingerprint(connection.base, connection.key)) throw new Error('Invalid frozen media connection');
     const headers = new Headers(options.headers);
     headers.set('Authorization', `Bearer ${connection.key}`);
     if (!headers.has('Accept')) headers.set('Accept', 'application/json');
@@ -284,41 +293,38 @@ export class Sub2apiVideoAdapter {
       if (clientId && RequestIdSchema.safeParse(`client:${clientId}`).success) requestId = `client:${clientId}`;
       const rejectedBeforeDispatch = dispatch && response.status === 409 && response.headers.get('x-video-dispatch') === 'rejected';
       const specificationRejection = dispatch && v3Dispatch && [400, 422].includes(response.status);
-      if (!response.ok && !rejectedBeforeDispatch && !specificationRejection) {
+      if (!response.ok) {
+        const upstreamError = protectMediaCredential(await readMediaUpstreamError(response), connection.key);
+        const rejected = z.object({ error: z.object({ code: z.string() }) }).safeParse(upstreamError.body);
+        const originalCode = rejected.success ? rejected.data.error.code : undefined;
         // sub2api passes supplier HTTP errors through, so status alone cannot prove
         // that a POST was rejected before provider execution. Keep billing reserved
         // for reconciliation until the gateway exposes a provenance marker.
-        if (dispatch) throw new VideoDispatchError(requestId, false);
-        unavailable(code);
+        if (dispatch) throw new VideoDispatchError(requestId,
+          rejectedBeforeDispatch && originalCode === 'video_pricing_changed',
+          specificationRejection && ['unsupported_spec', 'unsupported_parameter', 'unsupported_resolution', 'unsupported_duration'].includes(originalCode ?? ''), upstreamError);
+        throw new MediaUpstreamException(upstreamError);
       }
-      if (response.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json' || !response.body) throw new Error();
+      if (response.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'application/json' || !response.body) throw new Error('Upstream response must contain a JSON body');
       const length = response.headers.get('content-length');
-      if (length !== null && (!/^\d+$/.test(length) || Number(length) > maxBytes)) throw new Error();
+      if (length !== null && (!/^\d+$/.test(length) || Number(length) > maxBytes)) throw new Error(`Invalid upstream response length (limit ${maxBytes} bytes)`);
       const reader = response.body.getReader();
       const chunks: Buffer[] = []; let bytes = 0;
       try {
         while (true) {
           const part = await reader.read(); if (part.done) break;
-          bytes += part.value.byteLength; if (bytes > maxBytes) throw new Error();
+          bytes += part.value.byteLength; if (bytes > maxBytes) throw new Error(`Upstream response exceeds ${maxBytes} bytes`);
           chunks.push(Buffer.from(part.value));
         }
       } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
       const value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)));
-      if (specificationRejection) {
-        const rejected = z.object({ error: z.object({ code: z.enum([
-          'unsupported_spec', 'unsupported_parameter', 'unsupported_resolution', 'unsupported_duration',
-        ]) }) }).safeParse(value);
-        throw new VideoDispatchError(requestId, false, rejected.success);
-      }
-      if (rejectedBeforeDispatch) {
-        const rejected = z.object({ error: z.object({ code: z.literal('video_pricing_changed') }) }).safeParse(value);
-        throw new VideoDispatchError(requestId, rejected.success);
-      }
       return { value, requestId };
     } catch (error) {
       await response?.body?.cancel().catch(() => {});
-      if (dispatch) throw error instanceof VideoDispatchError ? error : new VideoDispatchError(requestId, false);
-      unavailable(code);
+      const failure = protectMediaCredential(mediaFailure(error), connection.key);
+      if (dispatch) throw error instanceof VideoDispatchError ? error : new VideoDispatchError(requestId, false, false, failure);
+      if (error instanceof HttpException) throw error;
+      throw new MediaUpstreamException(failure);
     }
   }
 }

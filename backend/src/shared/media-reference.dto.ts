@@ -1,0 +1,14 @@
+import { z } from 'zod';
+
+export const MAX_MEDIA_REFERENCE_COUNT = 32;
+export const MAX_MEDIA_REFERENCE_TOTAL_BYTES = 100 * 1024 * 1024;
+export const MediaReferenceCountSchema = z.number().int().min(0).max(MAX_MEDIA_REFERENCE_COUNT);
+export type MediaJsonValue = string | number | boolean | null | MediaJsonValue[] | { [key: string]: MediaJsonValue };
+export const MediaJsonValueSchema: z.ZodType<MediaJsonValue> = z.lazy(() => z.union([
+  z.string(), z.number().finite(), z.boolean(), z.null(), z.array(MediaJsonValueSchema), z.record(MediaJsonValueSchema),
+]));
+export const MediaUpstreamErrorSchema = z.object({
+  status: z.number().int().min(200).max(599),
+  body: MediaJsonValueSchema,
+}).strict();
+export type MediaUpstreamError = z.infer<typeof MediaUpstreamErrorSchema>;

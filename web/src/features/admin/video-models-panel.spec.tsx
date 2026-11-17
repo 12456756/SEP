@@ -22,7 +22,8 @@ describe('video unified model panel', () => {
     expect(await screen.findByText('New vendor model')).toBeInTheDocument();
     expect(screen.getByText('目录候选，尚未验证')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '配置通用 Profile' })).toBeEnabled();
-    expect(screen.queryByRole('button', { name: /导入|编辑/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '编辑能力配置' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: '导入' })).not.toBeInTheDocument();
     expect(api.post).toHaveBeenCalledWith('/admin/media/video/models/discover', {});
     expect(api.put).not.toHaveBeenCalled();
   });

@@ -2,6 +2,8 @@ import { HttpException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Decimal } from '@prisma/client/runtime/library';
 import { createHash } from 'node:crypto';
+import { MAX_MEDIA_REFERENCE_TOTAL_BYTES } from 'shared';
+import { MediaUpstreamException } from '../../common/errors/media-upstream.exception';
 import { z } from 'zod';
 import { parseUsdToCnyRate, SETTING_KEYS } from 'shared';
 import type { MediaVideoGatewayQuoteRequest, MediaVideoGatewayQuoteRequestV3,
@@ -114,7 +116,8 @@ export class MediaVideoRealService {
       configuration: 'protocolVersion' in input
         ? { adapter: VIDEO_REAL_ADAPTER, protocolVersion: 3 as const, semanticHashVersion: 3 as const,
           specRevision: input.specRevision, profileId: input.profileId, configVersion: input.configVersion,
-          modelId: profile.modelId, operation: input.operation, requestedSpec: input.requestedSpec, effectiveSpec: input.requestedSpec,
+          modelId: profile.modelId, operation: input.operation, maxReferenceCount: profile.capabilities.maxReferenceCount,
+          requestedSpec: input.requestedSpec, effectiveSpec: input.requestedSpec,
           parameterSources: input.parameterSources,
           connectionFingerprint: connection.fingerprint, amountCny, amountUsd: price.amount_usd,
           pricingVersion: price.pricing_version, usdToCnyRate: rate }
@@ -135,7 +138,7 @@ export class MediaVideoRealService {
     const scope = this.scope(claims);
     const prior = await this.store.findByClientId(claims.enterpriseId, input.clientRequestId, scope, true);
     if (prior) {
-      await this.requireProfile(claims, prior.configuration, false, 'video-submit');
+      await this.requireProfile(claims, prior.configuration, false, 'video-submit', prior.configuration.modelId);
       this.assertReplay(input, prior);
       return this.snapshot(await this.recover(claims, prior));
     }
@@ -214,21 +217,27 @@ export class MediaVideoRealService {
       record.configuration.dispatchState = 'ACCEPTED';
       record.receipt.status = result.status === 'queued' ? 'QUEUED' : result.status === 'cancelled' ? 'CANCELLED' : result.status === 'failed' ? 'FAILED' : 'RUNNING';
       record.receipt.errorCode = ['FAILED', 'CANCELLED'].includes(record.receipt.status) ? 'UPSTREAM_FAILED' : null;
+      if (record.receipt.errorCode && result.error !== undefined) record.receipt.upstreamError = { status: 200, body: { error: result.error } };
       record = await this.saveDispatch(record);
     } catch (error) {
       if (error instanceof VideoDispatchError && error.definitelyRejected) {
+        if (error.upstreamError) record.receipt.upstreamError = error.upstreamError;
         record.configuration.dispatchState = 'REJECTED';
         record.configuration.upstreamRequestId = error.requestId;
         record.receipt.status = 'FAILED'; record.receipt.errorCode = 'UPSTREAM_FAILED';
         record = await this.saveDispatch(record);
         await this.releaseUnsubmitted(record);
+        if (error.upstreamError) throw new MediaUpstreamException(error.upstreamError);
         return this.snapshot((await this.store.findRequest(scope, record.receipt.receiptId)) ?? record);
       }
       record.configuration.upstreamRequestId = error instanceof VideoDispatchError ? error.requestId : record.configuration.upstreamRequestId;
       record.receipt.status = 'SUBMISSION_UNKNOWN';
       record.receipt.errorCode = error instanceof VideoDispatchError && error.specUnsupported ? 'UPSTREAM_SPEC_UNSUPPORTED' : 'SUBMISSION_UNKNOWN';
       record.receipt.billingStatus = 'RECONCILING';
-      return this.snapshot(await this.saveDispatch(record));
+      if (error instanceof VideoDispatchError && error.upstreamError) record.receipt.upstreamError = error.upstreamError;
+      record = await this.saveDispatch(record);
+      if (error instanceof VideoDispatchError && error.upstreamError) throw new MediaUpstreamException(error.upstreamError);
+      return this.snapshot(record);
     }
     return this.snapshot(record);
   }
@@ -238,7 +247,7 @@ export class MediaVideoRealService {
     this.parse(ResourceIdSchema, clientRequestId);
     const record = await this.store.findByClientId(claims.enterpriseId, clientRequestId, this.scope(claims));
     if (!record) fail(404, 'MEDIA_NOT_FOUND', '未找到视频回执，不代表上游未接单');
-    await this.requireProfile(claims, record.configuration, false, 'video-query');
+    await this.requireProfile(claims, record.configuration, false, 'video-query', record.configuration.modelId);
     return this.snapshot(await this.recover(claims, record));
   }
 
@@ -264,7 +273,7 @@ export class MediaVideoRealService {
         metadata.frameRate !== output.frameRate || metadata.mimeType !== output.mimeType ||
         !audioMatches) fail(502, 'OUTPUT_FAILED', '视频输出校验失败');
       await this.authorize(claims, false);
-      await this.requireProfile(claims, record.configuration, false, 'video-content');
+      await this.requireProfile(claims, record.configuration, false, 'video-content', record.configuration.modelId);
       return { output, stream };
     } catch (error) { stream.destroy(); throw error; }
   }
@@ -304,6 +313,7 @@ export class MediaVideoRealService {
       try {
         const task = await this.adapter.query(connection, record.configuration.upstreamTaskId, record.configuration.modelId);
         if (task.id !== record.configuration.upstreamTaskId || task.model !== record.configuration.modelId) fail(502, 'UPSTREAM_FAILED', '原视频任务身份不匹配');
+        delete record.receipt.upstreamError;
         if (task.status === 'completed') {
           if (!record.configuration.outputExpiresAt) {
             record.configuration.outputExpiresAt = new Date(Date.now() + OUTPUT_TTL).toISOString();
@@ -315,7 +325,7 @@ export class MediaVideoRealService {
             record.receipt.status = 'RESULT_EXPIRED'; record.receipt.errorCode = 'RESULT_EXPIRED';
           } else if (!['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(record.receipt.status)) {
             await this.authorize(claims, false);
-            await this.requireProfile(claims, record.configuration, false, 'video-query');
+            await this.requireProfile(claims, record.configuration, false, 'video-query', record.configuration.modelId);
             const outputId = `${record.receipt.receiptId}-output-1`;
             downloading = true;
             const { hasAudio, ...metadata } = await this.cache.saveOutput(record.scope, outputId,
@@ -333,18 +343,21 @@ export class MediaVideoRealService {
           }
         } else if (task.status === 'failed' || task.status === 'cancelled') {
           record.receipt.status = task.status === 'cancelled' ? 'CANCELLED' : 'FAILED'; record.receipt.errorCode = 'UPSTREAM_FAILED';
+          if (task.error !== undefined) record.receipt.upstreamError = { status: 200, body: { error: task.error } };
         } else {
           record.receipt.status = task.status === 'queued' ? 'QUEUED' : 'RUNNING'; record.receipt.errorCode = null;
         }
         record = (await this.store.save(this.normalize(record))).record;
       } catch (error) {
         // Query/download failure keeps the original task and frozen funds. Never POST again.
-        if (error instanceof HttpException && [401, 403].includes(error.getStatus())) throw error;
+        if (error instanceof HttpException && !(error instanceof MediaUpstreamException) && [401, 403].includes(error.getStatus())) throw error;
         const current = await this.store.findRequest(record.scope, record.receipt.receiptId);
         if (current && ['QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN'].includes(current.receipt.status)) {
           current.receipt.errorCode = downloading ? 'OUTPUT_FAILED' : 'UPSTREAM_FAILED';
+          if (error instanceof MediaUpstreamException) current.receipt.upstreamError = error.upstreamError;
           record = (await this.store.save(this.normalize(current))).record;
         } else if (current) record = current;
+        if (error instanceof MediaUpstreamException) throw error;
       }
     }
     return this.reconcile(record, connection);
@@ -378,10 +391,11 @@ export class MediaVideoRealService {
         record.receipt.billingStatus = 'RECONCILING';
       }
       record = (await this.store.save(this.normalize(record))).record;
-    } catch {
+    } catch (error) {
       // Missing or contradictory billing evidence is not authorization to release money.
       record.receipt.billingStatus = 'RECONCILING';
       record = (await this.store.save(this.normalize(record))).record;
+      if (error instanceof MediaUpstreamException) throw error;
     }
     return record;
   }
@@ -439,7 +453,7 @@ export class MediaVideoRealService {
     this.parse(ResourceIdSchema, receiptId);
     const record = await this.store.findRequest(this.scope(claims), receiptId);
     if (!record) fail(404, 'MEDIA_NOT_FOUND', '视频回执不存在');
-    await this.requireProfile(claims, record.configuration, false, 'video-query');
+    await this.requireProfile(claims, record.configuration, false, 'video-query', record.configuration.modelId);
     return record;
   }
 
@@ -456,13 +470,18 @@ export class MediaVideoRealService {
   }
 
   private async requireProfile(claims: ClientEmploymentClaims,
-    input: Pick<MediaVideoGatewayQuoteRequest, 'profileId' | 'configVersion' | 'operation' | 'parameters'> |
-      Pick<MediaVideoGatewayQuoteRequestV3, 'protocolVersion' | 'profileId' | 'configVersion' | 'operation' | 'requestedSpec'>, execution: boolean,
-    stage: 'video-quote' | 'video-submit' | 'video-query' | 'video-content') {
+    input: (Pick<MediaVideoGatewayQuoteRequest, 'profileId' | 'configVersion' | 'operation' | 'parameters'> |
+      Pick<MediaVideoGatewayQuoteRequestV3, 'protocolVersion' | 'profileId' | 'configVersion' | 'operation' | 'requestedSpec'>) & { referenceIds?: string[] }, execution: boolean,
+    stage: 'video-quote' | 'video-submit' | 'video-query' | 'video-content', frozenModelId?: string) {
     const row = await this.prisma.mediaModelProfile.findUnique({ where: { profileId: input.profileId } });
     const v3 = 'protocolVersion' in input;
-    if (!row || row.kind !== 'video' || (!v3 && row.modelId !== 'minimax-h3') || row.configVersion !== input.configVersion ||
-      !row.enabled || !row.verified || row.executionMode !== 'async-query' || !row.operations.includes(input.operation)) fail(409, 'CONFIG_CHANGED', '原视频 Profile 已变更或撤销', { field: 'profileId', stage, recovery: 'refresh_capabilities' });
+    // Existing V3 tasks retain their frozen spec after capability edits. Grants and model identity still apply.
+    const recovering = v3 && !execution && frozenModelId !== undefined;
+    if (!row || row.kind !== 'video' || (!v3 && row.modelId !== 'minimax-h3') ||
+      (recovering ? row.modelId !== frozenModelId : row.configVersion !== input.configVersion ||
+        !row.enabled || !row.verified || row.executionMode !== 'async-query' || !row.operations.includes(input.operation))) {
+      fail(409, 'CONFIG_CHANGED', '原视频 Profile 已变更或撤销', { field: 'profileId', stage, recovery: 'refresh_capabilities' });
+    }
     const config = await this.prisma.enterpriseModelConfig.findUnique({ where: { enterpriseId: claims.enterpriseId } });
     const raw = config?.mediaPolicy as Record<string, unknown> | null;
     const parsed = MediaVideoAuthorizationSchema.safeParse(raw?.video ?? {});
@@ -474,6 +493,12 @@ export class MediaVideoRealService {
       durationsSeconds: z.array(z.number()), resolutions: z.array(z.string()), aspectRatios: z.array(z.string()),
       frameRates: z.array(z.number()), outputFormats: z.array(z.string()), maxInputBytes: z.number().positive(), maxReferenceCount: z.number().int().nonnegative(),
     }), row.capabilities);
+    if (execution && input.operation === 'image-to-video' && input.referenceIds &&
+      (!capabilities.supportsImageToVideo || input.referenceIds.length > capabilities.maxReferenceCount)) {
+      fail(422, 'INVALID_REFERENCE', `参考图数量超过当前 Profile 上限 ${capabilities.maxReferenceCount}`, {
+        field: 'referenceIds', stage, recovery: 'revise_request',
+      });
+    }
     const parameters = v3 ? null : (input as Pick<MediaVideoGatewayQuoteRequest, 'parameters'>).parameters;
     if (!v3 && (parameters.durationSeconds !== 4 || parameters.resolution !== '720p' || parameters.aspectRatio !== '16:9' || parameters.frameRate !== 24 || !parameters.audio || parameters.outputFormat !== 'video/mp4' ||
       !capabilities.durationsSeconds.includes(4) || !capabilities.resolutions.includes('720p') || !capabilities.aspectRatios.includes('16:9') ||
@@ -494,13 +519,17 @@ export class MediaVideoRealService {
   }
 
   private async references(claims: ClientEmploymentClaims, ids: string[], maxBytes: number) {
-    return Promise.all(ids.map(async id => {
+    const references = await Promise.all(ids.map(async id => {
       const reference = await this.store.findReference(this.scope(claims), id);
       if (!reference) fail(404, 'MEDIA_NOT_FOUND', '视频参考图不存在');
       if (Date.parse(reference.expiresAt) <= Date.now()) fail(410, 'REFERENCE_EXPIRED', '视频参考图已过期');
       if (reference.byteLength > maxBytes) fail(400, 'INVALID_REFERENCE', '参考图超过 Profile 限制');
       return reference;
     }));
+    if (references.reduce((total, reference) => total + reference.byteLength, 0) > MAX_MEDIA_REFERENCE_TOTAL_BYTES) {
+      fail(413, 'INVALID_REFERENCE', '参考图总大小超过 100 MiB');
+    }
+    return references;
   }
 
   private async frozenConnection(expected: string) {

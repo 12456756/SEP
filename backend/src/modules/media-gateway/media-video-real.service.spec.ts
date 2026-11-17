@@ -58,6 +58,70 @@ describe('MediaVideoRealService', () => {
     return { request, receipt: await service.submit(videoClaims, request) };
   }
 
+  it('freezes, restores and dispatches multiple references while enforcing the configured maximum', async () => {
+    db.state.model.capabilities.maxReferenceCount = 3;
+    Object.assign(runtime, { getRuntimeVideoV3: jest.fn(async () => ({ protocolVersion: 3,
+      executionAvailable: true, executionMode: 'real', profiles: [{ profileId: input.profileId,
+        configVersion: input.configVersion, operations: ['image-to-video'], authorized: true,
+        adapter: { available: true, operations: ['image-to-video'] } }] })) });
+    const value = MediaVideoGatewayQuoteRequestV3Schema.parse({ protocolVersion: 3,
+      profileId: input.profileId, configVersion: input.configVersion, operation: 'image-to-video',
+      referenceIds: ['front', 'side', 'scene'], creativeBrief: 'Three product views', specRevision: 1,
+      requestedSpec: { durationSeconds: 4, resolution: '720p' } });
+    for (const id of value.referenceIds) {
+      const reference = await store.saveReference(scope, { mock: false, expiresAt: new Date(Date.now() + 60000).toISOString(),
+        mimeType: 'image/png', byteLength: MEDIA_MOCK_PNG.length,
+        sha256: createHash('sha256').update(MEDIA_MOCK_PNG).digest('hex'), width: 1, height: 1 });
+      const row = db.state.references.get(reference.referenceId);
+      db.state.references.set(id, { ...row, id });
+    }
+    adapter.pricing.mockImplementation(async () => ({ model: 'minimax-h3', operation: 'image-to-video', resolution: '720p',
+      duration_seconds: 4, pricing_status: 'quoted', amount_usd: '0.2', pricing_version: 'pricing-1',
+      expires_at: new Date(Date.now() + 60000).toISOString() }));
+    const quote = await service.quote(videoClaims, value);
+    const request = { ...value, quoteId: quote.quoteId, clientRequestId: 'multi-video' };
+    const receipt = await service.submit(videoClaims, request);
+    expect(receipt.status).toBe('QUEUED');
+    expect(adapter.submit.mock.calls[0][3]).toHaveLength(3);
+    adapter.query.mockResolvedValueOnce({ id: 'task-original', model: 'minimax-h3', status: 'queued' });
+    await service.submit(videoClaims, request);
+    expect(adapter.submit).toHaveBeenCalledTimes(1);
+    db.state.model.capabilities.maxReferenceCount = 2;
+    await expect(service.quote(videoClaims, value)).rejects.toMatchObject({ status: 422 });
+    db.state.model.configVersion = 'cfg_new_limit';
+    db.state.model.verified = false;
+    db.state.model.enabled = false;
+    adapter.query.mockResolvedValueOnce({ id: 'task-original', model: 'minimax-h3', status: 'in_progress' });
+    await expect(service.receipt(videoClaims, receipt.receiptId)).resolves.toMatchObject({ status: 'RUNNING' });
+    expect(adapter.submit).toHaveBeenCalledTimes(1);
+    db.state.enterprise.mediaPolicy.video.enabledProfileIds = [];
+    await expect(service.receipt(videoClaims, receipt.receiptId)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it('propagates and persists the original video submission failure without retrying', async () => {
+    const original = { status: 422, body: { error: { code: 'bad_reference', message: 'Reference image rejected' } } };
+    adapter.submit.mockRejectedValue(new VideoDispatchError('client:original', false, false, original));
+    const quote = await service.quote(videoClaims, input);
+    const request = { ...input, quoteId: quote.quoteId, clientRequestId: 'failed-video' };
+    await expect(service.submit(videoClaims, request)).rejects.toMatchObject({ status: 422, response: original.body });
+    const record = await store.findByClientId(videoClaims.enterpriseId, request.clientRequestId, scope);
+    expect(record.receipt.upstreamError).toEqual(original);
+    await service.submit(videoClaims, request);
+    expect(adapter.submit).toHaveBeenCalledTimes(1);
+    expect(billing.release).not.toHaveBeenCalled();
+  });
+
+  it('persists the original error when an accepted asynchronous video task fails', async () => {
+    const { receipt } = await quotedSubmit('failed-provider-task');
+    const original = { code: 'reference_rejected', message: 'Reference image 2 was rejected', reference_index: 1 };
+    adapter.query.mockResolvedValueOnce({ id: 'task-original', model: 'minimax-h3', status: 'failed', error: original });
+    await expect(service.receipt(videoClaims, receipt.receiptId)).resolves.toMatchObject({
+      status: 'FAILED', upstreamError: { status: 200, body: { error: original } },
+    });
+    expect(adapter.submit).toHaveBeenCalledTimes(1);
+    expect(billing.release).not.toHaveBeenCalled();
+  });
+
   it.each([
     { label: 'equivalent ratio and one-frame container rounding', spec: { aspectRatio: '2:2' },
       measured: { durationSeconds: 8 + 1 / 30 }, deliveryStatus: 'matched' },

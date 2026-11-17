@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MAX_MEDIA_REFERENCE_COUNT, MediaReferenceCountSchema } from './media-reference.dto';
 import { MediaConfigVersionV3Schema, MediaProfileIdV3Schema, MediaSpecMetadataV3Schema, MediaVideoSpecV3Schema } from './media-spec.dto';
 
 const MediaVideoIdSchema = z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/);
@@ -27,7 +28,7 @@ const MediaVideoCapabilitiesBaseSchema = z.object({
   resolutions: z.array(z.string().trim().min(1).max(128).regex(/^[^\s\p{Cc}\p{Cf}]+$/u)).min(1).max(8),
   frameRates: z.array(z.number().finite().positive().max(Number.MAX_SAFE_INTEGER)).min(1).max(8),
   maxInputBytes: z.number().int().positive().max(100 * 1024 * 1024),
-  maxReferenceCount: z.number().int().min(0).max(4),
+  maxReferenceCount: MediaReferenceCountSchema,
   outputFormats: z.array(z.enum(['video/mp4', 'video/webm'])).min(1).max(4),
   supportsTaskQuery: z.literal(true),
   supportsCancel: z.boolean(),
@@ -184,7 +185,7 @@ const MediaVideoRequestV3BaseSchema = z.object({
   profileId: MediaProfileIdV3Schema,
   configVersion: MediaConfigVersionV3Schema,
   operation: MediaVideoOperationSchema,
-  referenceIds: z.array(MediaVideoIdSchema).max(4),
+  referenceIds: z.array(MediaVideoIdSchema).max(MAX_MEDIA_REFERENCE_COUNT),
   creativeBrief: z.string().trim().min(1).max(4000),
   specRevision: MediaSpecMetadataV3Schema.shape.specRevision,
   requestedSpec: MediaVideoSpecV3Schema,
@@ -192,8 +193,8 @@ const MediaVideoRequestV3BaseSchema = z.object({
 }).strict();
 
 function refineVideoRequestV3(value: z.infer<typeof MediaVideoRequestV3BaseSchema>, ctx: z.RefinementCtx): void {
-  if (value.operation === 'image-to-video' && value.referenceIds.length !== 1) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['referenceIds'], message: 'Image-to-video requires exactly one reference.' });
+  if (value.operation === 'image-to-video' && value.referenceIds.length === 0) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['referenceIds'], message: 'Image-to-video requires at least one reference.' });
   }
   if (value.operation === 'text-to-video' && value.referenceIds.length !== 0) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['referenceIds'], message: 'Text-to-video does not accept references.' });

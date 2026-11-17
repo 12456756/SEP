@@ -115,8 +115,8 @@ export class MediaConfigService {
   }
 
   async updateProfile(profileId: string, dto: UpdateMediaProfileDto): Promise<MediaProfile> {
-    if (profileId.startsWith('auto-') && ['modelId', 'operations', 'executionMode', 'capabilities'].some(key => key in dto)) {
-      throw new BadRequestException('模型规格由适配器自动维护，请在客户端选择本次生成参数');
+    if (profileId.startsWith('auto-') && ['modelId', 'executionMode'].some(key => key in dto)) {
+      throw new BadRequestException('自动模型的模型标识和执行协议不可修改');
     }
     const row = await this.prisma.mediaModelProfile.findUnique({ where: { profileId } });
     if (!row) throw new NotFoundException('媒体 Profile 不存在');
@@ -133,7 +133,7 @@ export class MediaConfigService {
     if (!parsed.success) throw new BadRequestException('媒体 Profile 配置无效');
     const next = parsed.data;
     if (next.enabled && !current.verified) throw new BadRequestException('媒体 Profile 必须先通过配置校验后才能启用');
-    if (next.operations.includes('edit') && !next.capabilities.supportsReferenceImage) {
+    if (next.operations.includes('edit') && (!next.capabilities.supportsReferenceImage || next.capabilities.maxReferenceCount < 1)) {
       throw new BadRequestException('编辑能力必须支持参考图');
     }
     const contractChanged = !isDeepStrictEqual(
@@ -415,7 +415,7 @@ export class MediaConfigService {
           configVersion: profile.configVersion, executionMode: profile.executionMode,
           operations: profile.operations.filter((operation) => !realEnabled || operation === 'generate' || profile.capabilities.supportsReferenceImage),
           capabilities: {
-            ...profile.capabilities,
+            supportsReferenceImage: profile.capabilities.supportsReferenceImage,
             maxOutputs: Math.min(profile.capabilities.maxOutputs, realEnabled ? 4 : 8),
             maxWidth: Math.max(0, ...dimensions.map(([width]) => width)),
             maxHeight: Math.max(0, ...dimensions.map(([, height]) => height)),
@@ -479,7 +479,7 @@ export class MediaConfigService {
         adapter: {
           id: 'sub2api-image', version: '3', available: reason === undefined, ...(reason ? { reason } : {}), operations,
           referenceSupport: {
-            maxCount: profile.capabilities.supportsReferenceImage ? 4 : 0,
+            maxCount: profile.capabilities.supportsReferenceImage ? profile.capabilities.maxReferenceCount : 0,
             maxInputBytes: profile.capabilities.supportsReferenceImage ? 5 * 1024 * 1024 : 1,
             mimeTypes: profile.capabilities.supportsReferenceImage ? ['image/png'] : [],
           },

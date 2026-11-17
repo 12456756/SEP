@@ -40,6 +40,7 @@ function ProfileCapabilities({ profile }: { profile: ProfileStatus }) {
       <div><dt className="inline text-fg-muted">质量：</dt><dd className="inline">未提供</dd></div>
       <div><dt className="inline text-fg-muted">声明输出数量提示：</dt><dd className="inline">{capabilities.maxOutputs}</dd></div>
       <div><dt className="inline text-fg-muted">参考图：</dt><dd className="inline">{yesNo(capabilities.supportsReferenceImage)}</dd></div>
+      <div><dt className="inline text-fg-muted">参考图数量上限：</dt><dd className="inline">{capabilities.supportsReferenceImage ? capabilities.maxReferenceCount : 0}</dd></div>
       <div><dt className="inline text-fg-muted">输出尺寸 / 字节上限：</dt><dd className="inline">未提供</dd></div>
     </dl></>;
   }

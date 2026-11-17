@@ -10,7 +10,7 @@ import { MediaVideoProfileSchema } from 'shared/media-video.dto';
 vi.mock('@/lib/api-client', () => ({ api: { post: vi.fn(), patch: vi.fn() } }));
 const profile: MediaProfile = { profileId: 'explicit-image', displayName: 'New model', kind: 'image', modelId: 'new-model',
   configVersion: 'cfg_1', operations: ['generate'], executionMode: 'sync-response', enabled: false, verified: false,
-  capabilities: { sizes: ['2048x2048'], maxOutputs: 1, supportsReferenceImage: false } };
+  capabilities: { sizes: ['2048x2048'], maxOutputs: 1, supportsReferenceImage: false, maxReferenceCount: 0 } };
 const mount = (value?: MediaProfile) => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { mutations: { retry: false } } })}>
   <MediaProfileWorkflow kind="image" model={{ modelId: 'new-model', displayName: 'New model' }} profile={value} />
 </QueryClientProvider>);
@@ -34,7 +34,7 @@ describe('explicit media profile management', () => {
     fireEvent.change(screen.getByLabelText('最大输出数量'), { target: { value: '1' } });
     fireEvent.click(screen.getByRole('button', { name: '创建停用 Profile' }));
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/media/profiles', expect.objectContaining({
-      modelId: 'new-model', enabled: false, operations: ['generate'], capabilities: { sizes: ['2048x2048'], maxOutputs: 1, supportsReferenceImage: false },
+      modelId: 'new-model', enabled: false, operations: ['generate'], capabilities: { sizes: ['2048x2048'], maxOutputs: 1, supportsReferenceImage: false, maxReferenceCount: 0 },
     })));
     expect(api.patch).not.toHaveBeenCalled();
   });
@@ -50,7 +50,7 @@ describe('explicit media profile management', () => {
     fireEvent.change(screen.getByLabelText('最大输出数量'), { target: { value: '2' } });
     fireEvent.click(screen.getByRole('button', { name: '创建停用 Profile' }));
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/media/profiles', expect.objectContaining({
-      operations: ['generate'], capabilities: { sizes: ['1024x1024', '1536x1024'], maxOutputs: 2, supportsReferenceImage: false },
+      operations: ['generate'], capabilities: { sizes: ['1024x1024', '1536x1024'], maxOutputs: 2, supportsReferenceImage: false, maxReferenceCount: 0 },
     })));
   });
 
@@ -61,7 +61,7 @@ describe('explicit media profile management', () => {
     fireEvent.change(screen.getByLabelText('支持尺寸'), { target: { value: '1024x1024,1536x1024,1024x1536' } });
     fireEvent.click(screen.getByRole('button', { name: '保存能力配置' }));
     await waitFor(() => expect(api.patch).toHaveBeenCalledWith('/admin/media/profiles/explicit-image', expect.objectContaining({
-      expectedConfigVersion: 'cfg_1', capabilities: { sizes: ['1024x1024', '1536x1024', '1024x1536'], maxOutputs: 1, supportsReferenceImage: false },
+      expectedConfigVersion: 'cfg_1', capabilities: { sizes: ['1024x1024', '1536x1024', '1024x1536'], maxOutputs: 1, supportsReferenceImage: false, maxReferenceCount: 0 },
     })));
 
     vi.mocked(api.patch).mockClear();
@@ -81,6 +81,7 @@ describe('explicit media profile management', () => {
     fireEvent.change(screen.getByLabelText('显示名称'), { target: { value: 'Custom video' } });
     fireEvent.click(screen.getByLabelText('文生视频'));
     fireEvent.click(screen.getByLabelText('图生视频'));
+    fireEvent.change(screen.getByLabelText('最多参考图数量'), { target: { value: '8' } });
     fireEvent.change(screen.getByLabelText('支持时长（秒）'), { target: { value: '5, 10' } });
     fireEvent.change(screen.getByLabelText('支持画幅比例'), { target: { value: '16:9，9:16' } });
     fireEvent.change(screen.getByLabelText('支持分辨率'), { target: { value: '720p,1080p' } });
@@ -91,7 +92,27 @@ describe('explicit media profile management', () => {
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/media/video/profiles', expect.objectContaining({
       operations: ['text-to-video', 'image-to-video'],
       capabilities: expect.objectContaining({ durationsSeconds: [5, 10], aspectRatios: ['16:9', '9:16'], resolutions: ['720p', '1080p'],
-        frameRates: [24, 30], outputFormats: ['video/mp4', 'video/webm'], supportsAudio: true, maxReferenceCount: 1 }),
+        frameRates: [24, 30], outputFormats: ['video/mp4', 'video/webm'], supportsAudio: true, maxReferenceCount: 8 }),
+    })));
+  });
+
+  it('edits the reference limit of a synchronized image profile and rejects counts above the system cap', async () => {
+    const automatic = { ...profile, profileId: 'auto-image-model', operations: ['edit'] as ('edit')[],
+      capabilities: { ...profile.capabilities, supportsReferenceImage: true, maxReferenceCount: 4 } };
+    vi.mocked(api.patch).mockResolvedValue(automatic);
+    mount(automatic);
+    fireEvent.click(screen.getByRole('button', { name: '编辑能力配置' }));
+    const count = screen.getByLabelText('最多参考图数量');
+    expect(count).toHaveValue(4);
+    expect(count).toHaveAttribute('max', '32');
+    fireEvent.change(count, { target: { value: '33' } });
+    fireEvent.submit(screen.getByRole('form', { name: '编辑能力配置' }));
+    await screen.findByRole('alert');
+    expect(api.patch).not.toHaveBeenCalled();
+    fireEvent.change(count, { target: { value: '8' } });
+    fireEvent.submit(screen.getByRole('form', { name: '编辑能力配置' }));
+    await waitFor(() => expect(api.patch).toHaveBeenCalledWith('/admin/media/profiles/auto-image-model', expect.objectContaining({
+      expectedConfigVersion: 'cfg_1', capabilities: expect.objectContaining({ maxReferenceCount: 8 }),
     })));
   });
 

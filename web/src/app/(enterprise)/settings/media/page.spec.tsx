@@ -19,7 +19,7 @@ const policy: MediaPolicy = {
 const profile: MediaAvailableProfile = {
   profileId: 'image-basic', kind: 'image', displayName: 'Basic Image',
   configVersion: 'version-7', operations: ['generate'], executionMode: 'sync-response',
-  capabilities: { supportsReferenceImage: false, maxOutputs: 2, sizes: ['1024x1024'] }, enabled: true, verified: true,
+  capabilities: { supportsReferenceImage: false, maxOutputs: 2, sizes: ['1024x1024'], maxReferenceCount: 0 }, enabled: true, verified: true,
 };
 const emptyPreview = {
   protocolVersion: 2, executionMode: 'real', configured: true, executionAvailable: false,

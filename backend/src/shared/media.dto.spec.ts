@@ -42,7 +42,7 @@ describe('media configuration schemas', () => {
   });
   it('requires at least one explicit size and defaults only known capabilities', () => {
     expect(CreateMediaProfileDtoSchema.parse(profile).capabilities).toEqual({
-      sizes: ['1024x1024'], supportsReferenceImage: false, maxOutputs: 1,
+      sizes: ['1024x1024'], supportsReferenceImage: false, maxOutputs: 1, maxReferenceCount: 4,
     });
     for (const capabilities of [{}, { sizes: [] }, { sizes: ['auto'] }, { sizes: ['0x1024'] }]) {
       expect(CreateMediaProfileDtoSchema.safeParse({ ...profile, capabilities }).success).toBe(false);

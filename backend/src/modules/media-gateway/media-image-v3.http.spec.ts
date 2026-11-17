@@ -27,19 +27,28 @@ describe('V3 image HTTP with production adapter, store and cache and fake upstre
   const dispatches: Record<string, unknown>[] = [];
   const usageCounts = new Map<string, number>();
   const reservations = new Map<string, string>();
+  const editedReferences: string[][] = [];
   const json = (value: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(value),
     { headers: { 'Content-Type': 'application/json', ...headers } });
 
   beforeAll(async () => {
     const quotes = new Map<string, any>();
     const requests = new Map<string, any>();
+    const references = new Map<string, any>();
     const bytes = new Map<string, Buffer>();
     let sequence = 0;
     const copy = <T>(value: T): T => structuredClone(value);
     const prisma = {
       enterpriseMember: { findFirst: async () => ({ departmentId: null }) },
       subscription: { findFirst: async () => ({ id: videoClaims.subscriptionId }) },
-      mediaModelProfile: { findUnique: async () => ({ profileId, configVersion, modelId, kind: 'image', enabled: true, verified: true }) },
+      mediaModelProfile: { findUnique: async () => ({ profileId, configVersion, modelId, kind: 'image', enabled: true, verified: true,
+        capabilities: { supportsReferenceImage: true, maxReferenceCount: 8, maxOutputs: 4, sizes: ['1024x1024'] } }) },
+      mediaRealReference: {
+        create: async ({ data }) => {
+          const row = { ...copy(data), id: 'reference-' + ++sequence }; references.set(row.id, row); return copy(row);
+        },
+        findUnique: async ({ where }) => copy(references.get(where.id) ?? null),
+      },
       mediaRealQuote: {
         create: async ({ data }) => {
           const row = { ...copy(data), id: 'quote-' + ++sequence }; quotes.set(row.id, row); return copy(row);
@@ -92,6 +101,15 @@ describe('V3 image HTTP with production adapter, store and cache and fake upstre
         return json({ model: modelId, data: Array.from({ length: fields.n }, () => ({ b64_json: MEDIA_MOCK_PNG.toString('base64') })) },
           { 'x-client-request-id': requestId });
       }
+      if (url.pathname === '/v1/images/edits') {
+        const form = options!.body as FormData;
+        const files = form.getAll('image[]') as File[];
+        editedReferences.push(files.map(file => file.name));
+        for (const file of files) expect(Buffer.from(await file.arrayBuffer())).toEqual(MEDIA_MOCK_PNG);
+        usageCounts.set('client:image-multi-edit', Number(form.get('n')));
+        return json({ model: modelId, data: [{ b64_json: MEDIA_MOCK_PNG.toString('base64') }] },
+          { 'x-client-request-id': 'image-multi-edit' });
+      }
       if (url.pathname === '/v1/sub2api/usage') return json({ object: 'sub2api.request_usage', schema_version: 1, currency: 'USD',
         request_id: url.searchParams.get('request_id'), status: 'settled', model: modelId, actual_cost_usd: '0.1',
         image_count: usageCounts.get(url.searchParams.get('request_id')!) });
@@ -114,6 +132,31 @@ describe('V3 image HTTP with production adapter, store and cache and fake upstre
   afterAll(async () => { fetchSpy?.mockRestore(); await app?.close(); });
   const post = (path: string, value: object) => request(app.getHttpServer()).post(prefix + path).set('x-test-auth', 'yes').send(value);
   const get = (path: string) => request(app.getHttpServer()).get(prefix + path).set('x-test-auth', 'yes');
+
+  it('returns the original upstream pricing status and body through the HTTP filter', async () => {
+    const original = { error: { code: 'permission_error', message: 'Image group is disabled', detail: { model: modelId } } };
+    fetchSpy.mockResolvedValueOnce(new Response(JSON.stringify(original), { status: 403, headers: { 'Content-Type': 'application/json' } }));
+    const failed = await post('/quotes', input).expect(403);
+    expect(failed.body).toEqual(original);
+    expect(failed.headers['x-sep-error-source']).toBe('upstream');
+  });
+
+  it('uploads eight references and preserves their order through quote, store and one upstream edit', async () => {
+    const referenceIds: string[] = [];
+    for (let i = 0; i < 8; i++) {
+      const uploaded = await request(app.getHttpServer()).post(prefix + '/references').set('x-test-auth', 'yes')
+        .attach('file', MEDIA_MOCK_PNG, { filename: `view-${i}.png`, contentType: 'image/png' }).expect(201);
+      referenceIds.push(uploaded.body.referenceId);
+    }
+    const edit = { ...input, operation: 'edit', referenceIds, requestedSpec: { ...input.requestedSpec, count: 1 } };
+    const quote = await post('/quotes', edit).expect(201);
+    const submission = { ...edit, quoteId: quote.body.quoteId, clientRequestId: 'multi-reference-http' };
+    await post('/requests', submission).expect(200).expect(result => {
+      expect(result.body).toMatchObject({ status: 'SUCCEEDED', billingStatus: 'SETTLED' });
+    });
+    await post('/requests', submission).expect(200);
+    expect(editedReferences).toEqual([Array.from({ length: 8 }, (_, i) => `reference-${i}.png`)]);
+  });
 
   it('preserves a new model, dot profile ID, custom quality and count through settlement and download', async () => {
     const quote = await post('/quotes', input).expect(response => expect(response.body.error).toBeUndefined()).expect(201);

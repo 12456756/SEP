@@ -48,7 +48,7 @@ async function rawRequest<T>(path: string, opts: RequestOptions = {}): Promise<T
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
 
-  if (res.status === 401 && !skipAuthRetry) {
+  if (res.status === 401 && !skipAuthRetry && res.headers?.get('X-SEP-Error-Source') !== 'upstream') {
     if (typeof res.clone === 'function') {
       const responseText = await res.clone().text().catch(() => '');
       const suspended = enterpriseSuspendedError(401, responseText ? safeJson(responseText) : undefined);
@@ -69,12 +69,7 @@ async function rawRequest<T>(path: string, opts: RequestOptions = {}): Promise<T
   const data = text ? safeJson(text) : undefined;
 
   if (!res.ok) {
-    const message =
-      (data && typeof data === 'object' && 'message' in data
-        ? Array.isArray((data as any).message)
-          ? (data as any).message.join('; ')
-          : String((data as any).message)
-        : res.statusText) || '请求失败';
+    const message = errorMessage(data, res.statusText || '请求失败');
     throw new ApiError(res.status, message, data, readRetryAfter(res.headers?.get('Retry-After') ?? null));
   }
 
@@ -87,6 +82,17 @@ function safeJson(text: string): unknown {
   } catch {
     return text;
   }
+}
+
+function errorMessage(data: unknown, fallback: string): string {
+  if (typeof data === 'string') return data || fallback;
+  if (Array.isArray(data)) return data.map(value => errorMessage(value, fallback)).join('; ') || fallback;
+  if (data && typeof data === 'object') {
+    if ('message' in data) return errorMessage(data.message, fallback);
+    if ('error' in data) return errorMessage(data.error, fallback);
+    return JSON.stringify(data);
+  }
+  return fallback;
 }
 
 function readRetryAfter(value: string | null): number | undefined {
@@ -153,11 +159,9 @@ export async function downloadBlob(
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     const data = text ? safeJson(text) : undefined;
-    const message =
-      data && typeof data === 'object' && 'message' in data
-        ? String((data as { message: unknown }).message)
-        : '下载失败';
-    const suspended = enterpriseSuspendedError(res.status, data);
+    const message = errorMessage(data, '下载失败');
+    const suspended = res.headers?.get('X-SEP-Error-Source') !== 'upstream'
+      ? enterpriseSuspendedError(res.status, data) : null;
     if (suspended) throw suspended;
     throw new ApiError(res.status, message, data, readRetryAfter(res.headers?.get('Retry-After') ?? null));
   }
@@ -227,7 +231,7 @@ export async function uploadForm<T>(
     body: form,
   });
 
-  if (res.status === 401 && !skipAuthRetry) {
+  if (res.status === 401 && !skipAuthRetry && res.headers?.get('X-SEP-Error-Source') !== 'upstream') {
     if (typeof res.clone === 'function') {
       const responseText = await res.clone().text().catch(() => '');
       const suspended = enterpriseSuspendedError(401, responseText ? safeJson(responseText) : undefined);
@@ -241,13 +245,9 @@ export async function uploadForm<T>(
   const text = await res.text();
   const data = text ? safeJson(text) : undefined;
   if (!res.ok) {
-    const message =
-      data && typeof data === 'object' && 'message' in data
-        ? Array.isArray((data as { message: unknown }).message)
-          ? (data as { message: string[] }).message.join('; ')
-          : String((data as { message: unknown }).message)
-        : '上传失败';
-    const suspended = enterpriseSuspendedError(res.status, data);
+    const message = errorMessage(data, '上传失败');
+    const suspended = res.headers?.get('X-SEP-Error-Source') !== 'upstream'
+      ? enterpriseSuspendedError(res.status, data) : null;
     if (suspended) throw suspended;
     throw new ApiError(res.status, message, data, readRetryAfter(res.headers?.get('Retry-After') ?? null));
   }

@@ -10,7 +10,7 @@ import { SettingService } from '../setting/setting.service';
 import { MediaConfigService } from '../media-config/media-config.service';
 import { clientSubscriptionAccessWhere } from '../client/client-subscription-access';
 import type { ClientEmploymentClaims } from '../client/client-employment.guard';
-import { MediaAuthorizationSchema, parseUsdToCnyRate, SETTING_KEYS } from 'shared';
+import { MediaAuthorizationSchema, MediaCapabilitiesSchema, MAX_MEDIA_REFERENCE_TOTAL_BYTES, parseUsdToCnyRate, SETTING_KEYS } from 'shared';
 import type { MediaImageSpecV3, MediaRealAnyQuoteRequest, MediaRealAnyRequest, MediaRealQuoteRequestV3, MediaRealReceipt, MediaRealErrorCode } from 'shared';
 import { MediaRealAnyQuoteRequestSchema, MediaRealAnyRequestSchema, MediaRealAnyReceiptSchema } from 'shared';
 import { inspectMediaPng } from './media-png';
@@ -20,6 +20,7 @@ import { MediaRealStore, RealRequestRecord, realMediaStorageUnavailable } from '
 import { ImageDispatchError, resolveSub2apiImageSpec, SUB2API_IMAGE_ADAPTER_VERSION, Sub2apiImageAdapter } from './sub2api-image.adapter';
 import { isSupportedImageModel } from './image-model-contract';
 import { mediaRealSemanticHash } from './media-real-semantics';
+import { MediaUpstreamException } from '../../common/errors/media-upstream.exception';
 
 const REFERENCE_TTL = 15 * 60_000;
 const QUOTE_TTL = 60_000;
@@ -219,6 +220,7 @@ export class MediaRealService {
       record.receipt.recovery = { canQuery: true, canCancel: false, canDownload: record.receipt.outputs.length > 0 };
       record = await this.saveExecution(record);
     } catch (failure) {
+      if (failure instanceof ImageDispatchError && failure.upstreamError) record.receipt.upstreamError = failure.upstreamError;
       if (!dispatchStarted || failure instanceof ImageDispatchError && failure.definitelyRejected) {
         record.receipt.status = 'FAILED'; record.receipt.errorCode = !dispatchStarted ? 'CONFIG_CHANGED' : (failure as ImageDispatchError).safeCode;
         try {
@@ -236,6 +238,7 @@ export class MediaRealService {
         if (failure instanceof ImageDispatchError) record.upstreamRequestId = failure.requestId;
       }
       record = await this.saveExecution(record);
+      if (failure instanceof ImageDispatchError && failure.upstreamError) throw new MediaUpstreamException(failure.upstreamError);
       return this.snapshot(record);
     }
 
@@ -317,6 +320,11 @@ export class MediaRealService {
     }
     const row = await this.prisma.mediaModelProfile.findUnique({ where: { profileId: dto.profileId } });
     if (!row || row.configVersion !== dto.configVersion || (!v3 && !isSupportedImageModel(row.modelId)) || !row.enabled || !row.verified) error(409, 'CONFIG_CHANGED', '当前 Profile 未通过真实图片配置校验', { field: 'profileId', stage, recovery: 'refresh_capabilities' });
+    const capabilities = MediaCapabilitiesSchema.parse(row.capabilities);
+    const referenceLimit = capabilities.supportsReferenceImage ? capabilities.maxReferenceCount : 0;
+    if (dto.referenceIds.length > referenceLimit) error(422, 'INVALID_REFERENCE', `参考图数量超过当前 Profile 上限 ${referenceLimit}`, {
+      field: 'referenceIds', stage, recovery: 'revise_request',
+    });
     return { ...profile, modelId: row.modelId };
   }
 
@@ -346,12 +354,16 @@ export class MediaRealService {
   }
 
   private async referenceHashes(claims: ClientEmploymentClaims, ids: string[]) {
-    return Promise.all(ids.map(async id => {
+    const references = await Promise.all(ids.map(async id => {
       const row = await this.store.findReference(id);
       if (!row || row.scope !== this.scope(claims)) error(404, 'MEDIA_NOT_FOUND', '参考图不可用');
       if (Date.parse(row.value.expiresAt) <= Date.now()) error(410, 'REFERENCE_EXPIRED', '参考图已过期');
-      return row.value.sha256;
+      return row.value;
     }));
+    if (references.reduce((total, reference) => total + reference.byteLength, 0) > MAX_MEDIA_REFERENCE_TOTAL_BYTES) {
+      error(413, 'INVALID_REFERENCE', '参考图总大小超过 100 MiB');
+    }
+    return references.map(reference => reference.sha256);
   }
 
   private async owned(claims: ClientEmploymentClaims, id: string) {
@@ -436,7 +448,8 @@ export class MediaRealService {
         ? await this.billing.settleNegotiated(record.receipt.receiptId, actualCny, actualUsd, usage.model, expectedModel)
         : await this.billing.settle(record.receipt.receiptId, actualCny, actualUsd, usage.model);
       return this.store.save(record);
-    } catch {
+    } catch (failure) {
+      if (failure instanceof MediaUpstreamException) throw failure;
       return record;
     }
   }

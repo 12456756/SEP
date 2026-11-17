@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { MediaVideoPolicySchema } from './media-video-config.dto';
 import { MediaImageSpecV3Schema } from './media-spec.dto';
+import { MediaReferenceCountSchema } from './media-reference.dto';
 
 export const MediaKindSchema = z.enum(['image', 'video']);
 export type MediaKind = z.infer<typeof MediaKindSchema>;
@@ -13,6 +14,7 @@ export type MediaExecutionMode = z.infer<typeof MediaExecutionModeSchema>;
 
 export const MediaCapabilitiesSchema = z.object({
   supportsReferenceImage: z.boolean().default(false),
+  maxReferenceCount: MediaReferenceCountSchema.default(4),
   maxOutputs: z.number().int().min(1).max(8).default(1),
   sizes: z.array(z.string().regex(/^[1-9]\d{0,4}x[1-9]\d{0,4}$/)).min(1).max(32),
 }).strict();
@@ -95,6 +97,9 @@ export const CreateMediaProfileDtoSchema = z.object({
   if (value.operations.includes('edit') && value.capabilities.supportsReferenceImage !== true) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['capabilities', 'supportsReferenceImage'], message: '编辑能力必须支持参考图' });
   }
+  if (value.operations.includes('edit') && value.capabilities.maxReferenceCount < 1) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['capabilities', 'maxReferenceCount'], message: '编辑能力至少需要一张参考图' });
+  }
 });
 export type CreateMediaProfileDto = z.infer<typeof CreateMediaProfileDtoSchema>;
 
@@ -162,7 +167,7 @@ export const UpdateMediaPolicyDtoSchema = z.object({
 export type UpdateMediaPolicyDto = z.infer<typeof UpdateMediaPolicyDtoSchema>;
 
 export const MediaRuntimeProfileSchema = MediaProfileSchema.omit({ modelId: true, enabled: true, verified: true }).extend({
-  capabilities: MediaCapabilitiesSchema.extend({
+  capabilities: MediaCapabilitiesSchema.omit({ maxReferenceCount: true }).extend({
     maxWidth: z.number().int().positive(),
     maxHeight: z.number().int().positive(),
   }),

@@ -1,6 +1,7 @@
 import { HttpException, Injectable } from '@nestjs/common';
 import { Prisma, type MediaGatewayRequest } from '@prisma/client';
 import { z } from 'zod';
+import { MAX_MEDIA_REFERENCE_COUNT, MediaReferenceCountSchema } from 'shared';
 import { MediaVideoParametersSchema, MediaConfigVersionV3Schema, MediaProfileIdV3Schema, MediaVideoSpecV3Schema, MediaVideoAuthorizationSchema,
   MediaVideoRealQuoteBaseSchema, MediaVideoRealQuoteV3Schema, MediaVideoRealQuoteSchema, MediaVideoRealReceiptSchema, MediaVideoRealReferenceSchema } from 'shared';
 import type { MediaVideoRealQuote, MediaVideoRealReceipt, MediaVideoRealReference } from 'shared';
@@ -20,6 +21,7 @@ const LegacyFrozenSchema = z.object({
   amountCny: money, amountUsd: z.string().regex(/^\d+(?:\.\d{1,12})?$/), usdToCnyRate: z.number().finite().positive(),
 }).strict();
 const V3FrozenSchema = z.object({
+  maxReferenceCount: MediaReferenceCountSchema.optional(),
   adapter: z.literal(VIDEO_REAL_ADAPTER), protocolVersion: z.literal(3), semanticHashVersion: z.literal(3),
   specRevision: z.number().int().positive(), profileId: MediaProfileIdV3Schema, configVersion: MediaConfigVersionV3Schema,
   modelId: z.string().trim().min(1).max(160), operation: z.enum(['text-to-video', 'image-to-video']),
@@ -36,7 +38,7 @@ const QuoteSchema = z.object({
   adapter: z.literal(VIDEO_REAL_ADAPTER), value: z.union([
     MediaVideoRealQuoteBaseSchema.omit({ quoteId: true }), MediaVideoRealQuoteV3Schema.omit({ quoteId: true }),
   ]),
-  configuration: FrozenSchema, referenceIds: z.array(id).max(1), referenceHashes: z.array(hash).max(1),
+  configuration: FrozenSchema, referenceIds: z.array(id).max(MAX_MEDIA_REFERENCE_COUNT), referenceHashes: z.array(hash).max(MAX_MEDIA_REFERENCE_COUNT),
   consumedByClientRequestId: id.nullable(),
 }).strict();
 const ReferenceSchema = z.object({
@@ -246,9 +248,15 @@ export class MediaVideoRealStore {
     }
   }
 
+  private validReferenceCount(configuration: VideoRealFrozenConfiguration, count: number): boolean {
+    if (configuration.operation !== 'image-to-video') return count === 0;
+    const maximum = 'protocolVersion' in configuration ? configuration.maxReferenceCount ?? 1 : 1;
+    return count >= 1 && count <= maximum;
+  }
+
   private quoteMetadata(value: unknown): VideoRealQuoteMetadata {
     const meta = QuoteSchema.parse(value);
-    if (meta.referenceIds.length !== meta.referenceHashes.length || meta.referenceIds.length !== (meta.configuration.operation === 'image-to-video' ? 1 : 0) ||
+    if (meta.referenceIds.length !== meta.referenceHashes.length || !this.validReferenceCount(meta.configuration, meta.referenceIds.length) ||
       meta.value.amountCny !== meta.configuration.amountCny || meta.value.amountUsd !== meta.configuration.amountUsd ||
       meta.value.pricingVersion !== meta.configuration.pricingVersion || meta.value.usdToCnyRate !== meta.configuration.usdToCnyRate) videoStorageUnavailable();
     return meta;
@@ -257,11 +265,10 @@ export class MediaVideoRealStore {
   private decode(row: MediaGatewayRequest): VideoRealRecord {
     const configuration = ConfigurationSchema.parse(row.configuration);
     const receipt = MediaVideoRealReceiptSchema.parse({ ...(row.receipt as Prisma.JsonObject), receiptId: row.id });
-    const referenceCount = configuration.operation === 'image-to-video' ? 1 : 0;
     if (receipt.status !== row.status || receipt.clientRequestId !== row.clientRequestId || receipt.profileId !== configuration.profileId ||
       receipt.configVersion !== configuration.configVersion || receipt.operation !== configuration.operation ||
-      receipt.amountCny !== configuration.amountCny || row.count !== 1 || row.referenceIds.length !== referenceCount ||
-      row.referenceHashes.length !== referenceCount || row.revision < 0) videoStorageUnavailable();
+      receipt.amountCny !== configuration.amountCny || row.count !== 1 || !this.validReferenceCount(configuration, row.referenceIds.length) ||
+      row.referenceHashes.length !== row.referenceIds.length || row.revision < 0) videoStorageUnavailable();
     hash.parse(row.semanticSha256); z.array(id).parse(row.referenceIds); z.array(hash).parse(row.referenceHashes);
     return { enterpriseId: row.enterpriseId, clientRequestId: row.clientRequestId, scope: row.scope,
       semanticSha256: row.semanticSha256, referenceIds: row.referenceIds, referenceHashes: row.referenceHashes,

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MAX_MEDIA_REFERENCE_COUNT, MediaUpstreamErrorSchema } from './media-reference.dto';
 import { MediaGatewayIdSchema, MediaGatewayOutputSchema, MediaGatewayErrorCodeSchema } from './media-gateway.dto';
 import { MediaConfigVersionV3Schema, MediaImageSpecV3Schema, MediaProfileIdV3Schema, MediaSpecAcceptanceSchema, MediaSpecMetadataV3Schema } from './media-spec.dto';
 
@@ -21,7 +22,7 @@ export const MediaRealRequestSchema = request.extend({ clientRequestId: MediaGat
   .refine(referencesValid, '参考图与操作不匹配');
 const requestV3 = MediaSpecMetadataV3Schema.extend({
   profileId: MediaProfileIdV3Schema, configVersion: MediaConfigVersionV3Schema,
-  operation: z.enum(['generate', 'edit']), referenceIds: z.array(MediaGatewayIdSchema).max(4),
+  operation: z.enum(['generate', 'edit']), referenceIds: z.array(MediaGatewayIdSchema).max(MAX_MEDIA_REFERENCE_COUNT),
   creativeBrief: z.string().trim().min(1).max(4000), requestedSpec: MediaImageSpecV3Schema,
 }).strict();
 const referencesValidV3 = (value: z.infer<typeof requestV3>) => referencesValid({
@@ -74,6 +75,7 @@ export const MediaRealReceiptSchema = z.object({
   status: z.enum(['SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN', 'SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED']),
   pollAfterMs: z.number().int().nonnegative().nullable(), outputs: z.array(MediaGatewayOutputSchema).max(4),
   billingStatus: z.enum(['RESERVED', 'SETTLED', 'RELEASED', 'RECONCILING']), errorCode: MediaRealErrorCodeSchema.nullable(),
+  upstreamError: MediaUpstreamErrorSchema.optional(),
   outputErrors: z.array(z.object({ index: z.number().int().min(0).max(3), code: MediaRealErrorCodeSchema }).strict()).max(4),
   recovery: z.object({ canQuery: z.boolean(), canCancel: z.boolean(), canDownload: z.boolean() }).strict(),
 }).strict();

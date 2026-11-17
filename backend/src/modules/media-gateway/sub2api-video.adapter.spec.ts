@@ -60,10 +60,52 @@ describe('Sub2apiVideoAdapter (mock fetch only)', () => {
     if (originalBase === undefined) delete process.env.MEDIA_VIDEO_BASE_URL; else process.env.MEDIA_VIDEO_BASE_URL = originalBase;
     if (originalKey === undefined) delete process.env.MEDIA_VIDEO_API_KEY; else process.env.MEDIA_VIDEO_API_KEY = originalKey;
   });
+  it('uploads all V3 references as ordered same-name fields in a single POST', async () => {
+    const value = MediaVideoGatewayQuoteRequestV3Schema.parse({ ...inputV3(), operation: 'image-to-video',
+      referenceIds: ['front', 'side', 'scene'] });
+    fetchMock.mockResolvedValueOnce(response(task({ model: 'seedance-2.0' })));
+    await adapter.submit(CONNECTION, value, 'seedance-2.0', [PNG, PNG, PNG], 'multi-reference', 'price-1');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe(`${BASE}/videos`);
+    const form = fetchMock.mock.calls[0][1].body as FormData;
+    const files = form.getAll('input_reference') as File[];
+    expect(files.map(file => file.name)).toEqual(['reference-0.png', 'reference-1.png', 'reference-2.png']);
+    for (const file of files) expect(Buffer.from(await file.arrayBuffer())).toEqual(PNG);
+  });
+
+  it('preserves an upstream pricing error status, code, message and additional fields', async () => {
+    const original = { error: { code: 'permission_error', message: 'Model not allowed', detail: { model: 'seedance-2.0' } } };
+    fetchMock.mockResolvedValueOnce(response(original, 403));
+    await expect(adapter.pricing(CONNECTION, inputV3(), 'seedance-2.0')).rejects.toMatchObject({
+      status: 403, response: original,
+    });
+  });
+
+  it('does not submit any files when a later reference is invalid', async () => {
+    const value = MediaVideoGatewayQuoteRequestV3Schema.parse({ ...inputV3(), operation: 'image-to-video', referenceIds: ['a', 'b'] });
+    await expect(adapter.submit(CONNECTION, value, 'seedance-2.0', [PNG, Buffer.from('broken')], 'invalid-image', 'price-1'))
+      .rejects.toMatchObject({ response: { error: { code: 'INVALID_REFERENCE' } } });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves the supplier error inside a failed asynchronous task', async () => {
+    const error = { code: 'reference_rejected', message: 'Image 2 was rejected', index: 1 };
+    fetchMock.mockResolvedValueOnce(response(task({ status: 'failed', error })));
+    await expect(adapter.query(CONNECTION, TASK_ID, 'minimax-h3')).resolves.toMatchObject({ status: 'failed', error });
+  });
   async function errorOf(promise: Promise<unknown>, code: string) {
     const error = await promise.then(() => { throw new Error('Expected rejection'); }, error => error);
     expect(error).toBeInstanceOf(HttpException);
     expect(error.getResponse()).toMatchObject({ error: { code } });
+    expect(JSON.stringify(error.getResponse()) + error.stack).not.toContain(KEY);
+    return error;
+  }
+
+  async function originalError(promise: Promise<unknown>, status: number, body: unknown) {
+    const error = await promise.then(() => { throw new Error('Expected rejection'); }, (error: unknown) => error) as HttpException;
+    expect(error).toBeInstanceOf(HttpException);
+    expect(error.getStatus()).toBe(status);
+    expect(error.getResponse()).toEqual(body);
     expect(JSON.stringify(error.getResponse()) + error.stack).not.toContain(KEY);
     return error;
   }
@@ -119,7 +161,8 @@ describe('Sub2apiVideoAdapter (mock fetch only)', () => {
   it('redacts setting failures and rejects modified frozen connections', async () => {
     settings.getMediaConnection.mockRejectedValue(new Error(KEY));
     await errorOf(adapter.connection(), 'PRICE_UNAVAILABLE');
-    await errorOf(adapter.discover({ ...CONNECTION, key: 'changed' }), 'PRICE_UNAVAILABLE');
+    await originalError(adapter.discover({ ...CONNECTION, key: 'changed' }), 502,
+      { error: { name: 'Error', message: 'Invalid frozen media connection' } });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -271,20 +314,19 @@ describe('Sub2apiVideoAdapter (mock fetch only)', () => {
 
   it.each([400, 401, 403, 404, 413, 422, 429])('keeps HTTP %i non-success ambiguous and does not retry', async status => {
     fetchMock.mockResolvedValueOnce(response({ error: KEY }, status));
-    const error = await errorOf(adapter.submit(CONNECTION, input(), 'minimax-h3', [], 'client-1', 'price-1'), 'SUBMISSION_UNKNOWN');
+    const error = await originalError(adapter.submit(CONNECTION, input(), 'minimax-h3', [], 'client-1', 'price-1'), status, { error: '[REDACTED]' });
     expect(error).toBeInstanceOf(VideoDispatchError);
     expect(error).toMatchObject({ requestId: BILLING_ID, definitelyRejected: false });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it.each([400, 422])('classifies an explicit V3 unsupported-spec HTTP %i without exposing supplier bodies', async status => {
+  it.each([400, 422])('preserves explicit V3 unsupported-spec HTTP %i with original details', async status => {
     fetchMock.mockResolvedValueOnce(response({ error: { code: 'unsupported_parameter', message: KEY,
       url: 'https://private.invalid/?secret=private-value', body: inputV3().creativeBrief } }, status));
-    const error = await errorOf(adapter.submit(CONNECTION, inputV3(), 'minimax-h3', [], 'client-v3', 'price-1'), 'UPSTREAM_SPEC_UNSUPPORTED');
+    const error = await originalError(adapter.submit(CONNECTION, inputV3(), 'minimax-h3', [], 'client-v3', 'price-1'), status,
+      { error: { code: 'unsupported_parameter', message: '[REDACTED]',
+        url: 'https://private.invalid/?secret=private-value', body: inputV3().creativeBrief } });
     expect(error).toMatchObject({ definitelyRejected: false, specUnsupported: true, requestId: BILLING_ID });
-    expect(error.getResponse()).toMatchObject({ error: { source: 'upstream', stage: 'submit', retryable: false,
-      submissionState: 'unknown', billingState: 'reconciling' } });
-    expect(JSON.stringify(error.getResponse())).not.toMatch(/private.invalid|private-value|ceramic/);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -293,22 +335,25 @@ describe('Sub2apiVideoAdapter (mock fetch only)', () => {
     { status: 429, code: 'unsupported_spec' },
   ])('does not infer V3 specification rejection from an unrecognized HTTP response: $status $code', async ({ status, code }) => {
     fetchMock.mockResolvedValueOnce(response({ error: { code } }, status));
-    const error = await errorOf(adapter.submit(CONNECTION, inputV3(), 'minimax-h3', [], 'client-v3', 'price-1'), 'SUBMISSION_UNKNOWN');
+    const error = await originalError(adapter.submit(CONNECTION, inputV3(), 'minimax-h3', [], 'client-v3', 'price-1'), status, { error: { code } });
     expect(error).toMatchObject({ definitelyRejected: false, specUnsupported: false });
   });
 
   it('releases only a relay-marked pre-dispatch price rejection, never an unmarked supplier conflict', async () => {
     fetchMock.mockResolvedValueOnce(response({ error: { code: 'video_pricing_changed' } }, 409,
       { 'X-Video-Dispatch': 'rejected' }));
-    const error = await errorOf(adapter.submit(CONNECTION, input(), 'minimax-h3', [], 'client-1', 'price-1'), 'UPSTREAM_FAILED');
+    const error = await originalError(adapter.submit(CONNECTION, input(), 'minimax-h3', [], 'client-1', 'price-1'), 409,
+      { error: { code: 'video_pricing_changed' } });
     expect(error).toMatchObject({ definitelyRejected: true, requestId: BILLING_ID });
     for (const headers of [{}, { 'X-Video-Dispatch': 'accepted' }]) {
       fetchMock.mockResolvedValueOnce(response({ error: { code: 'video_pricing_changed' } }, 409, headers));
-      expect(await errorOf(adapter.submit(CONNECTION, input(), 'minimax-h3', [], 'client-1', 'price-1'), 'SUBMISSION_UNKNOWN'))
+      expect(await originalError(adapter.submit(CONNECTION, input(), 'minimax-h3', [], 'client-1', 'price-1'), 409,
+        { error: { code: 'video_pricing_changed' } }))
         .toMatchObject({ definitelyRejected: false });
     }
     fetchMock.mockResolvedValueOnce(response({ error: { code: 'supplier_error' } }, 409, { 'X-Video-Dispatch': 'rejected' }));
-    expect(await errorOf(adapter.submit(CONNECTION, input(), 'minimax-h3', [], 'client-1', 'price-1'), 'SUBMISSION_UNKNOWN'))
+    expect(await originalError(adapter.submit(CONNECTION, input(), 'minimax-h3', [], 'client-1', 'price-1'), 409,
+      { error: { code: 'supplier_error' } }))
       .toMatchObject({ definitelyRejected: false });
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
@@ -320,14 +365,15 @@ describe('Sub2apiVideoAdapter (mock fetch only)', () => {
 
   it.each([302, 408, 500, 502, 503])('treats HTTP %i as unknown without redispatch', async status => {
     fetchMock.mockResolvedValueOnce(response({ error: KEY }, status));
-    const error = await errorOf(adapter.submit(CONNECTION, input(), 'minimax-h3', [], 'client-1', 'price-1'), 'SUBMISSION_UNKNOWN');
+    const error = await originalError(adapter.submit(CONNECTION, input(), 'minimax-h3', [], 'client-1', 'price-1'), status, { error: '[REDACTED]' });
     expect(error).toMatchObject({ requestId: BILLING_ID, definitelyRejected: false });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('treats network failure as unknown and never retries the POST', async () => {
     fetchMock.mockRejectedValueOnce(new Error('socket failed ' + KEY));
-    const error = await errorOf(adapter.submit(CONNECTION, input(), 'minimax-h3', [], 'client-1', 'price-1'), 'SUBMISSION_UNKNOWN');
+    const error = await originalError(adapter.submit(CONNECTION, input(), 'minimax-h3', [], 'client-1', 'price-1'), 502,
+      { error: { name: 'Error', message: 'socket failed [REDACTED]' } });
     expect(error).toMatchObject({ requestId: null, definitelyRejected: false });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -349,11 +395,13 @@ describe('Sub2apiVideoAdapter (mock fetch only)', () => {
 
   it('retains billing correlation after malformed JSON or a broken response stream', async () => {
     fetchMock.mockResolvedValueOnce(new Response('{broken', { headers: { 'Content-Type': 'application/json', 'X-Client-Request-ID': 'server-request-1' } }));
-    expect(await errorOf(adapter.submit(CONNECTION, input(), 'minimax-h3', [], 'client-1', 'price-1'), 'SUBMISSION_UNKNOWN')).toMatchObject({ requestId: BILLING_ID });
+    expect(await originalError(adapter.submit(CONNECTION, input(), 'minimax-h3', [], 'client-1', 'price-1'), 502,
+      { error: { name: 'SyntaxError', message: expect.any(String) } })).toMatchObject({ requestId: BILLING_ID });
     fetchMock.mockResolvedValueOnce(new Response(new ReadableStream({ pull(c) { c.error(new Error(KEY)); } }), {
       headers: { 'Content-Type': 'application/json', 'X-Client-Request-ID': 'server-request-1' },
     }));
-    expect(await errorOf(adapter.submit(CONNECTION, input(), 'minimax-h3', [], 'client-1', 'price-1'), 'SUBMISSION_UNKNOWN')).toMatchObject({ requestId: BILLING_ID });
+    expect(await originalError(adapter.submit(CONNECTION, input(), 'minimax-h3', [], 'client-1', 'price-1'), 502,
+      { error: { name: 'Error', message: '[REDACTED]' } })).toMatchObject({ requestId: BILLING_ID });
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
@@ -392,7 +440,8 @@ describe('Sub2apiVideoAdapter (mock fetch only)', () => {
     const upstream = new Response('private video bytes', { headers: { 'Content-Type': 'video/mp4', ...headers } });
     const cancel = jest.spyOn(upstream.body!, 'cancel');
     fetchMock.mockResolvedValueOnce(upstream);
-    await errorOf(adapter.rawContent(CONNECTION, TASK_ID), 'OUTPUT_FAILED');
+    await originalError(adapter.rawContent(CONNECTION, TASK_ID), 502,
+      { error: { name: 'Error', message: 'Invalid upstream video content type or length' } });
     expect(cancel).toHaveBeenCalled();
   });
 
@@ -411,7 +460,7 @@ describe('Sub2apiVideoAdapter (mock fetch only)', () => {
     const reader = result.body!.getReader();
     let total = 0;
     const consume = async () => { while (true) { const part = await reader.read(); if (part.done) break; total += part.value.byteLength; } };
-    await errorOf(consume(), 'OUTPUT_FAILED');
+    await originalError(consume(), 502, { error: { name: 'Error', message: 'Upstream video content exceeds byte limit' } });
     expect(total).toBe(256 * 1024 * 1024); expect(cancel).toHaveBeenCalled();
     await source.cancel(); source.releaseLock(); reader.releaseLock();
   });
@@ -419,10 +468,10 @@ describe('Sub2apiVideoAdapter (mock fetch only)', () => {
   it('rejects truncated content and redacts failures that happen after headers', async () => {
     fetchMock.mockResolvedValueOnce(new Response('short', { headers: { 'Content-Type': 'video/mp4', 'Content-Length': '20' } }));
     const content = await adapter.rawContent(CONNECTION, TASK_ID);
-    await errorOf(content.arrayBuffer(), 'OUTPUT_FAILED');
+    await originalError(content.arrayBuffer(), 502, { error: { name: 'Error', message: 'Upstream video content length mismatch' } });
     fetchMock.mockResolvedValueOnce(new Response(new ReadableStream({ pull(c) { c.error(new Error(KEY)); } }), { headers: { 'Content-Type': 'video/mp4' } }));
     const broken = await adapter.rawContent(CONNECTION, TASK_ID);
-    await errorOf(broken.arrayBuffer(), 'OUTPUT_FAILED');
+    await originalError(broken.arrayBuffer(), 502, { error: { name: 'Error', message: '[REDACTED]' } });
   });
 
   it('propagates caller cancellation to the source', async () => {
@@ -437,17 +486,20 @@ describe('Sub2apiVideoAdapter (mock fetch only)', () => {
       headers: { 'Content-Type': 'video/mp4' },
     }));
     const content = await adapter.rawContent(CONNECTION, TASK_ID);
-    await errorOf(content.body!.cancel(), 'OUTPUT_FAILED');
+    await originalError(content.body!.cancel(), 502, { error: { name: 'Error', message: '[REDACTED]' } });
     fetchMock.mockResolvedValueOnce(new Response('partial', { status: 206, headers: { 'Content-Type': 'video/mp4' } }));
-    await errorOf(adapter.rawContent(CONNECTION, TASK_ID), 'OUTPUT_FAILED');
+    await originalError(adapter.rawContent(CONNECTION, TASK_ID), 502,
+      { error: { name: 'Error', message: 'Invalid upstream video content type or length' } });
   });
 
-  it('rejects redirects and oversized or non-JSON metadata without leaking response bodies', async () => {
+  it('preserves redirect errors and diagnoses oversized or non-JSON metadata', async () => {
     fetchMock.mockResolvedValueOnce(response({ private: KEY }, 302, { Location: 'https://private.example.test' }));
-    await errorOf(adapter.rawContent(CONNECTION, TASK_ID), 'OUTPUT_FAILED');
+    await originalError(adapter.rawContent(CONNECTION, TASK_ID), 302, { private: '[REDACTED]' });
     fetchMock.mockResolvedValueOnce(new Response('x'.repeat(64 * 1024 + 1), { headers: { 'Content-Type': 'application/json' } }));
-    await errorOf(adapter.pricing(CONNECTION, input(), 'minimax-h3'), 'PRICE_UNAVAILABLE');
+    await originalError(adapter.pricing(CONNECTION, input(), 'minimax-h3'), 502,
+      { error: { name: 'Error', message: 'Upstream response exceeds 65536 bytes' } });
     fetchMock.mockResolvedValueOnce(response({ private: KEY }, 200, { 'Content-Type': 'text/html' }));
-    await errorOf(adapter.usage(CONNECTION, BILLING_ID), 'BILLING_PENDING');
+    await originalError(adapter.usage(CONNECTION, BILLING_ID), 502,
+      { error: { name: 'Error', message: 'Upstream response must contain a JSON body' } });
   });
 });

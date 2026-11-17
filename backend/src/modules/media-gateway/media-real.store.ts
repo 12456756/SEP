@@ -3,6 +3,7 @@ import { Prisma } from '@prisma/client';
 import type { MediaRealQuote, MediaRealReceipt, MediaRealReference } from 'shared';
 import { MediaConfigVersionV3Schema, MediaProfileIdV3Schema, MediaRealAnyQuoteSchema, MediaRealAnyReceiptSchema, MediaRealReferenceSchema } from 'shared';
 import { z } from 'zod';
+import { MAX_MEDIA_REFERENCE_COUNT } from 'shared';
 import { PrismaService } from '../../prisma/prisma.service';
 
 const legacyConfigurationSchema = z.object({
@@ -131,7 +132,7 @@ export class MediaRealStore {
       if (input.receipt.clientRequestId !== input.clientRequestId || input.receipt.status !== 'SUBMITTING'
         || input.receipt.profileId !== (input.configuration as z.infer<typeof configurationSchema>).profileId
         || input.receipt.configVersion !== (input.configuration as z.infer<typeof configurationSchema>).configVersion
-        || input.referenceIds.length !== input.referenceHashes.length || input.referenceIds.length > 4
+        || input.referenceIds.length !== input.referenceHashes.length || input.referenceIds.length > MAX_MEDIA_REFERENCE_COUNT
         || input.referenceHashes.some(hash => !/^[a-f0-9]{64}$/.test(hash))) realMediaStorageUnavailable();
       try {
         const row = await this.prisma.mediaRealRequest.create({ data: {
@@ -172,7 +173,7 @@ export class MediaRealStore {
     const receipt = MediaRealAnyReceiptSchema.parse({ ...(row.receipt as Prisma.JsonObject), receiptId: row.id, status: row.status });
     if (receipt.clientRequestId !== row.clientRequestId || receipt.profileId !== configuration.profileId ||
       receipt.configVersion !== configuration.configVersion || row.referenceIds.length !== row.referenceHashes.length ||
-      ('parameters' in configuration ? configuration.parameters.count : (configuration as z.infer<typeof configurationV3Schema>).effectiveSpec.count) !== row.count || row.referenceIds.length > 4 ||
+      ('parameters' in configuration ? configuration.parameters.count : (configuration as z.infer<typeof configurationV3Schema>).effectiveSpec.count) !== row.count || row.referenceIds.length > MAX_MEDIA_REFERENCE_COUNT ||
       row.referenceHashes.some((hash: unknown) => typeof hash !== 'string' || !/^[a-f0-9]{64}$/.test(hash))) {
       realMediaStorageUnavailable();
     }

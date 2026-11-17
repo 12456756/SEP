@@ -125,7 +125,7 @@ describe('api.get', () => {
       text: async () => 'Plain text error',
     });
 
-    await expect(api.get('/error')).rejects.toThrow('Internal Server Error');
+    await expect(api.get('/error')).rejects.toThrow('Plain text error');
   });
 
   it.each(['12', new Date(Date.now() + 12000).toUTCString()])('preserves Retry-After %s for polling backoff', async (retryAfter) => {
@@ -273,6 +273,24 @@ describe('401 auto-refresh', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(authAccessor.getToken).mockReturnValue('old-token');
+  });
+
+  it.each(['json', 'form'] as const)('does not refresh or replay a %s POST for upstream 401', async kind => {
+    const original = { error: { code: 'invalid_api_key', message: 'Upstream key is disabled' } };
+    mockFetch.mockResolvedValueOnce(new Response(JSON.stringify(original), {
+      status: 401, headers: { 'Content-Type': 'application/json', 'X-SEP-Error-Source': 'upstream' },
+    }));
+    const request = kind === 'json' ? api.post('/media/requests', { clientRequestId: 'once' })
+      : uploadForm('/media/references', new FormData());
+    await expect(request).rejects.toMatchObject({ status: 401, body: original, message: original.error.message });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(authAccessor.clear).not.toHaveBeenCalled();
+    expect(authAccessor.setAuth).not.toHaveBeenCalled();
+  });
+
+  it('preserves structured error detail without converting it to object Object', async () => {
+    mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({ message: { code: 'bad_reference', index: 2 } }), { status: 422 }));
+    await expect(api.post('/media/requests', {})).rejects.toMatchObject({ message: '{"code":"bad_reference","index":2}' });
   });
 
   it('should refresh token and retry on 401', async () => {
