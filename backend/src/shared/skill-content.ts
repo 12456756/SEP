@@ -45,6 +45,13 @@ export function parseSkillMarkdown(content: string) {
 
 export function skillLocalResourceReferences(body: string): string[] {
   const references = new Set<string>();
+  // Shorthand is meaningful only when the document declares a script template.
+  const scriptDirectories = new Map<string, Set<string>>();
+  for (const match of body.matchAll(/\b(?:python(?:\d+(?:\.\d+)*)?|py|node|bash|sh|tsx|ts-node)\s+(?:<skill-dir>\/)?((?:[\p{L}\p{N}_.-]+\/)+)(?:<name>|\{name\}|\*)\.(py|sh|js|ts|mjs|cjs)\b/gu)) {
+    const directories = scriptDirectories.get(match[2]) ?? new Set<string>();
+    directories.add(match[1]);
+    scriptDirectories.set(match[2], directories);
+  }
   const add = (target: string) => {
     const path = target.replace(/^<|>$/g, '').replace(/[?#].*$/, '');
     if (!path || /^(?:[a-z][a-z0-9+.-]*:|#|\/\/)/i.test(target.replace(/^</, ''))) return;
@@ -54,14 +61,31 @@ export function skillLocalResourceReferences(body: string): string[] {
   for (const match of body.matchAll(/^ {0,3}\[[^\]\n]+\]:\s*(<[^>\n]+>|[^\s]+).*$/gm)) add(match[1]);
   for (const match of body.matchAll(/(?:src|href)\s*=\s*["']([^"']+)["']/gi)) add(match[1]);
   const prose = body.replace(/(?:\b[a-z][a-z0-9+.-]*:|\/\/)[^\s`"'<>]+/gi, '');
+  const contextProse = prose.replace(/`[^`\n]*`/g, (code) => ' '.repeat(code.length));
   for (const match of prose.matchAll(/`([^`\n]+)`|(?:^|[\s"'(])((?:\.\.?\/)?(?:references|scripts|assets)\/[^\s`"'<>()[\]]+)/g)) {
-    const value = match[1] ?? match[2];
+    let value = (match[1] ?? match[2]).trim();
+    let executableReference = false;
+    if (match[1]) {
+      const command = value.replace(/^(?:python(?:\d+(?:\.\d+)*)?|py|node|bash|sh|tsx|ts-node)\s+/, '');
+      const token = /^(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(command);
+      const executable = token?.[1] ?? token?.[2] ?? token?.[3];
+      if (executable && /\.(?:py|sh|js|ts|mjs|cjs)$/i.test(executable)) {
+        value = executable;
+        executableReference = true;
+      }
+      value = value.replace(/^<skill-dir>\//, '');
+      if (/<[^>]+>|\{[^}]+\}|\*/.test(value)) continue;
+      const extension = /^([\p{L}\p{N}_.-]+)\.(py|sh|js|ts|mjs|cjs)$/u.exec(value)?.[2];
+      const directories = extension && scriptDirectories.get(extension);
+      if (directories?.size === 1) value = [...directories][0] + value;
+    }
     if (value.endsWith('/') || /^(?:[a-z][a-z0-9+.-]*:|\/\/|#)/i.test(value)) continue;
-    if (!/^(?:\.\.?\/|(?:references|scripts|assets)\/)/.test(value) &&
-      !/^[\p{L}\p{N}_.-]+\.(?:md|py|sh|js|ts|json|ya?ml|png|jpe?g|webp|csv|pdf|txt)$/u.test(value)) continue;
-    const context = prose.slice(Math.max(0, (match.index ?? 0) - 100), match.index)
-      .replace(/`[^`]*`/g, '').split(/[\n.!?]/).at(-1) ?? '';
+    if (!executableReference && !/^(?:\.\.?\/|(?:references|scripts|assets)\/)/.test(value) &&
+      !/^[\p{L}\p{N}_.-]+\.(?:md|py|sh|js|ts|mjs|cjs|json|ya?ml|png|jpe?g|webp|csv|pdf|txt)$/u.test(value)) continue;
+    const context = contextProse.slice(Math.max(0, (match.index ?? 0) - 100), match.index)
+      .split(/[\n.!?]/).at(-1) ?? '';
     if (/(?:output|write|save|create|generate|export)\b[^\n]*$/i.test(context) || /(?:输出|写入|保存|生成|导出)[^\n]*$/.test(context)) continue;
+    if (/(?:\b(?:no|without|never use|do not (?:use|call)|does not include)|没有|不存在|不包含|不提供|不要(?:使用|调用))\s*(?:(?:[,，、]|\b(?:and|or)\b)\s*)*$/i.test(context)) continue;
     add(value.replace(/[.,;:]+$/, ''));
   }
   return [...references];

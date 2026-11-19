@@ -295,6 +295,39 @@ describe('SkillPackageService', () => {
       await expect(service.readInstallablePackage(stored.sha256)).resolves.toMatchObject({ fileCount: 2 });
     });
 
+    it('checks documented script shorthand and commands without warning about arguments or nonexistent tools', async () => {
+      const markdown = installableMarkdown().replace(SKILL_BODY, [
+        'Run `python3 <skill-dir>/scripts/<name>.py`.',
+        'Read `references/workflow.md`.',
+        'On failure run `scripts/_contract.py doctor`.',
+        'Probe (`probe.py`), then `render.py project.json`.',
+        'The tool list (no `doctor.py`, `trim.py`, `subtitle.py`).',
+      ].join('\n'));
+      const entries: Array<[string, string]> = [
+        ['weekly/SKILL.md', markdown],
+        ['weekly/references/workflow.md', 'workflow'],
+        ['weekly/scripts/_contract.py', '# contract'],
+        ['weekly/scripts/probe.py', '# probe'],
+        ['weekly/scripts/render.py', '# render'],
+      ];
+      const stored = await service.store(upload(zipWith(entries)));
+      expect(stored.warnings).toEqual([]);
+      await expect(service.read(stored.sha256)).resolves.toMatchObject({ warnings: [] });
+      await expect(service.readInstallablePackage(stored.sha256)).resolves.toMatchObject({ warnings: [] });
+
+      const missing = await service.store(upload(zipWith(entries.filter(([path]) => !path.endsWith('/probe.py')))));
+      expect(missing.warnings).toEqual([expect.objectContaining({ code: 'RESOURCE_REFERENCE', path: 'scripts/probe.py' })]);
+    });
+
+    it('keeps explicit incorrect paths visible even when a matching script exists elsewhere', async () => {
+      const markdown = installableMarkdown().replace(SKILL_BODY,
+        'Run `python3 <skill-dir>/scripts/<name>.py`; run `./probe.py`.');
+      const stored = await service.store(upload(zipWith([
+        ['SKILL.md', markdown], ['scripts/probe.py', '# probe'],
+      ])));
+      expect(stored.warnings).toEqual([expect.objectContaining({ code: 'RESOURCE_REFERENCE', path: './probe.py' })]);
+    });
+
     it('rejects normalized path collisions at upload', async () => {
       const buffer = zipWith([['SKILL.md', installableMarkdown()], ['Ａ.txt', 'a'], ['A.txt', 'b']]);
       await expect(service.store(upload(buffer))).rejects.toBeInstanceOf(BadRequestException);

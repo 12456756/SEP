@@ -1,6 +1,6 @@
 import { ContributionSkillConfigDtoSchema, ContributionVersionCreateDtoSchema, ContributionVersionUpdateDtoSchema } from './index';
 import { CreatePlatformSkillVersionDtoSchema, UpdateSkillVersionDtoSchema } from './skill-version.dto';
-import { parseSkillMarkdown, prepareSkillMarkdown, SkillContentSchema, SKILL_CONTENT_MAX_BYTES } from './skill-content';
+import { parseSkillMarkdown, prepareSkillMarkdown, skillLocalResourceReferences, SkillContentSchema, SKILL_CONTENT_MAX_BYTES } from './skill-content';
 
 const entry = (body = '做图', fields = '') => `---\nname: 中文-ＡＩ\ndescription: 2026-10-14\n${fields}---\n${body}`;
 
@@ -55,6 +55,54 @@ describe('shared Skill markdown compatibility', () => {
     expect(prepareSkillMarkdown(full, 'fallback').status).toBe('AVAILABLE');
     expect(prepareSkillMarkdown(full + 'x', 'fallback').status).toBe('BLOCKED');
     expect(prepareSkillMarkdown('x'.repeat(SKILL_CONTENT_MAX_BYTES), 'fallback').status).toBe('AVAILABLE');
+  });
+});
+
+describe('Skill local resource references', () => {
+  it('separates executable paths from command arguments', () => {
+    expect(skillLocalResourceReferences([
+      'Run `scripts/_contract.py doctor`.',
+      'Run `python3 scripts/probe.py input.mp4 --json`.',
+      'Run `node "scripts/my tool.js" --help`.',
+    ].join('\n'))).toEqual(['scripts/_contract.py', 'scripts/probe.py', 'scripts/my tool.js']);
+  });
+
+  it('uses an explicitly declared script directory for shorthand script names', () => {
+    const body = [
+      'Run `python3 <skill-dir>/scripts/<name>.py`.',
+      'Probe (`probe.py`), then `render.py project.json`.',
+      'Run `python3 <skill-dir>/scripts/check.py output.mp4`.',
+    ].join('\n');
+    expect(skillLocalResourceReferences(body)).toEqual(['scripts/probe.py', 'scripts/render.py', 'scripts/check.py']);
+  });
+
+  it('does not guess script directories or rewrite explicit paths', () => {
+    expect(skillLocalResourceReferences('Run `probe.py`.')).toEqual(['probe.py']);
+    expect(skillLocalResourceReferences('Run `python3 scripts/<name>.py`; read `./probe.py`.'))
+      .toEqual(['./probe.py']);
+    expect(skillLocalResourceReferences('Run `python3 scripts/<name>.py` or `python3 tools/<name>.py`; run `probe.py`.'))
+      .toEqual(['probe.py']);
+  });
+
+  it('checks executable paths in other declared directories and retains invalid paths for validation', () => {
+    expect(skillLocalResourceReferences('Run `python3 tools/<name>.py`; run `probe.py`.'))
+      .toEqual(['tools/probe.py']);
+    expect(skillLocalResourceReferences('Run `python3 helpers/run.py --help`, then `/missing.py`.'))
+      .toEqual(['helpers/run.py', '/missing.py']);
+  });
+
+  it('ignores names explicitly described as nonexistent or forbidden without hiding the next instruction', () => {
+    expect(skillLocalResourceReferences([
+      'The tool list (no `doctor.py`, `trim.py`, `subtitle.py`).',
+      '没有 `missing.py`、`old.py`，请运行 `scripts/run.py`。',
+      'Never use `legacy.py`; read `references/required.md`.',
+      'No `unused.py`, but run `required.py`.',
+    ].join('\n'))).toEqual(['scripts/run.py', 'references/required.md', 'required.py']);
+  });
+
+  it('preserves explicit links, nested paths, and filenames containing spaces', () => {
+    expect(skillLocalResourceReferences('[Input](references/nested/input.md#section)\nRead `references/my guide.md`.'))
+      .toEqual(['references/nested/input.md', 'references/my guide.md']);
   });
 });
 
