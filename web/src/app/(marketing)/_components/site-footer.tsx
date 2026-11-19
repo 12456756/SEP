@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Bot } from "lucide-react";
+import { ThemeLogo } from "@/components/ui/theme-logo";
 
 const COLUMNS = [
   {
@@ -49,12 +49,7 @@ export function SiteFooter() {
           {/* 品牌列 */}
           <div className="col-span-2 sm:col-span-3 lg:col-span-1">
             <Link href="/" className="inline-flex items-center gap-2">
-              <span
-                className="flex h-8 w-8 items-center justify-center rounded-glass-md bg-gbrand"
-                aria-hidden
-              >
-                <Bot className="h-4 w-4 text-white" />
-              </span>
+              <ThemeLogo width={32} height={32} />
               <span className="text-sm font-semibold text-gtext-primary">
                 元机AI
               </span>

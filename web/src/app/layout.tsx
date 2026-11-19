@@ -8,7 +8,10 @@ export const metadata: Metadata = {
   title: '元机AI',
   description: '订阅硅基员工，调度硅基能力 | 像招募团队一样订阅硅基员工，用一句话驱动 Agent、RPA、技能与 AI 应用',
   icons: {
-    icon: '/favicon.ico',
+    icon: [
+      { url: '/yuanji-A-icon.svg', type: 'image/svg+xml' },
+      { url: '/favicon.ico', sizes: '16x16 32x32 48x48', type: 'image/x-icon' },
+    ],
   },
 };
 

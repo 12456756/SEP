@@ -47,12 +47,6 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     } else {
       root.classList.remove('theme-glass');
     }
-
-    // 动态更新 favicon
-    const favicon = document.querySelector<HTMLLinkElement>("link[rel='icon']");
-    if (favicon) {
-      favicon.href = theme === 'dark' ? '/favicon-dark.ico' : '/favicon-light.png';
-    }
   }, [theme]);
 
   const toggleTheme = () => {

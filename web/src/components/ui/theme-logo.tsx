@@ -11,7 +11,7 @@ interface ThemeLogoProps {
 /**
  * 平台品牌 Logo。
  *
- * Logo 使用固定的紫白渐变品牌资产，不随页面明暗主题切换，保证首页、登录页
+ * Logo 使用元机AI 蓝绿品牌资产，不随页面明暗主题切换，保证首页、登录页
  * 以及各个工作台中的品牌识别保持一致。
  */
 export function ThemeLogo({
@@ -27,12 +27,13 @@ export function ThemeLogo({
       aria-hidden="true"
     >
       <Image
-        src="/logo-new.png"
+        src="/yuanji-A-icon.svg"
         alt=""
         width={width}
         height={height}
         className="absolute inset-0 h-full w-full object-contain"
         priority={priority}
+        unoptimized
       />
     </span>
   );
