@@ -17,5 +17,6 @@ FROM ${SEP_WEB_BASE_IMAGE} AS runner
 USER root
 RUN rm -rf /app/web/.next
 COPY --from=builder --chown=node:node /app/web/.next /app/web/.next
+COPY --from=builder --chown=node:node /app/web/public /app/web/public
 WORKDIR /app/web
 USER node

@@ -88,7 +88,6 @@ preflight() {
   done
   python3 - "$RELEASE_SOURCE" /www/sep/source <<'PY'
 import json
-import difflib
 import pathlib
 import sys
 
@@ -101,31 +100,9 @@ current['scripts'].pop('dev', None)
 baseline['scripts'].pop('dev', None)
 if current != baseline:
     sys.exit(1)
-current = read(release_root, 'backend/package.json')
-baseline = read(baseline_root, 'backend/package.json')
-if current['dependencies'].pop('tar-stream', None) != '^3.2.0' or current != baseline:
-    sys.exit(1)
 if (release_root / 'web/package.json').read_bytes() != (baseline_root / 'web/package.json').read_bytes():
     sys.exit(1)
-
-release_lines = (release_root / 'pnpm-lock.yaml').read_text().splitlines()
-baseline_lines = (baseline_root / 'pnpm-lock.yaml').read_text().splitlines()
-allowed = ['      tar-stream:', '        specifier: ^3.2.0', '        version: 3.2.0']
-matcher = difflib.SequenceMatcher(a=baseline_lines, b=release_lines, autojunk=False)
-additions = []
-for tag, a1, a2, b1, b2 in matcher.get_opcodes():
-    if tag == 'equal':
-        continue
-    if tag != 'insert':
-        sys.exit(1)
-    additions.extend(release_lines[b1:b2])
-if additions != allowed:
-    sys.exit(1)
 PY
-  docker exec sep-green-backend node -e '
-    const packageJson = require("/app/node_modules/.pnpm/tar-stream@3.2.0/node_modules/tar-stream/package.json");
-    if (packageJson.version !== "3.2.0") process.exit(1);
-  ' || { error 'Required locked runtime dependency tar-stream@3.2.0 is unavailable'; return 1; }
   grep -Fq 'sep.longdaoec.com' "$CADDYFILE"
   grep -Fq 'reverse_proxy sep-green-web:3000' "$CADDYFILE"
   # The AI site's runtime-managed block is outside SEP's release ownership.
@@ -158,9 +135,9 @@ build_images() {
       return 1
     fi
   done
-  docker build --pull=false --network=none --build-arg "SEP_BUILDER_BASE_IMAGE=$OLD_MIGRATOR" --build-arg "SEP_RUNNER_BASE_IMAGE=$OLD_BACKEND" --target migrator -f "$RELEASE_SOURCE/deploy/standalone/Dockerfile.backend-release" -t "$SEP_MIGRATOR_IMAGE" "$RELEASE_SOURCE"
-  docker build --pull=false --network=none --build-arg "SEP_BUILDER_BASE_IMAGE=$OLD_MIGRATOR" --build-arg "SEP_RUNNER_BASE_IMAGE=$OLD_BACKEND" --target runner -f "$RELEASE_SOURCE/deploy/standalone/Dockerfile.backend-release" -t "$SEP_BACKEND_IMAGE" "$RELEASE_SOURCE"
-  docker build --pull=false --network=none --build-arg "SEP_WEB_BASE_IMAGE=$OLD_WEB" --build-arg "SEP_BACKEND_MODULES_IMAGE=$OLD_MIGRATOR" -f "$RELEASE_SOURCE/deploy/standalone/Dockerfile.web-domain" -t "$SEP_WEB_IMAGE" "$RELEASE_SOURCE"
+  docker build --pull=false --build-arg "SEP_BUILDER_BASE_IMAGE=$OLD_MIGRATOR" --build-arg "SEP_RUNNER_BASE_IMAGE=$OLD_BACKEND" --target migrator -f "$RELEASE_SOURCE/deploy/standalone/Dockerfile.backend-release" -t "$SEP_MIGRATOR_IMAGE" "$RELEASE_SOURCE"
+  docker build --pull=false --build-arg "SEP_BUILDER_BASE_IMAGE=$OLD_MIGRATOR" --build-arg "SEP_RUNNER_BASE_IMAGE=$OLD_BACKEND" --target runner -f "$RELEASE_SOURCE/deploy/standalone/Dockerfile.backend-release" -t "$SEP_BACKEND_IMAGE" "$RELEASE_SOURCE"
+  docker build --pull=false --network=none --build-arg "SEP_WEB_BASE_IMAGE=$OLD_WEB" --build-arg "SEP_BACKEND_MODULES_IMAGE=$SEP_MIGRATOR_IMAGE" -f "$RELEASE_SOURCE/deploy/standalone/Dockerfile.web-domain" -t "$SEP_WEB_IMAGE" "$RELEASE_SOURCE"
 }
 
 rollback() {

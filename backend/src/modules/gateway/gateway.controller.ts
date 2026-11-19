@@ -175,7 +175,7 @@ export class GatewayController {
         let errorCode: string | undefined;
         let savedUsage: ChatCompletionUsage | null = null;
         let checkpointError: unknown;
-        const controller = this;
+        const streamLogger = this.logger;
         const checkpoint = async (usage: ChatCompletionUsage | null) => {
           if (!usage || (savedUsage?.prompt_tokens === usage.prompt_tokens && savedUsage?.completion_tokens === usage.completion_tokens)) return;
           try { await saveUsage(usage); }
@@ -214,7 +214,7 @@ export class GatewayController {
                 upstreamFailed = true;
                 const diagnostic = observer.snapshot().errorDiagnostic ?? streamErrorDetails(error, { requestId, executionId });
                 errorCode = String(streamErrorDetails(observer.snapshot().errorDiagnostic ?? error).code ?? 'UPSTREAM_STREAM_ERROR');
-                controller.logger.warn({ message: 'gateway stream interrupted', ...logContext, ...streamMetrics,
+                streamLogger.warn({ message: 'gateway stream interrupted', ...logContext, ...streamMetrics,
                   durationMs: Date.now() - startedAt, clientDisconnected: client.signal.aborted, code: errorCode, diagnostic });
                 if (!client.signal.aborted && !res.destroyed && !observer.snapshot().errorDiagnostic) {
                   yield Buffer.from(`\n\nevent: error\ndata: ${JSON.stringify({ error: diagnostic })}\n\n`);

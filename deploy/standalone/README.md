@@ -4,7 +4,7 @@
 
 2026-11-03 后续将正式访问入口调整为 `https://sep.longdaoec.com`。Web 基于同一生产提交和既有依赖重新构建，更新构建时写入的 WebSocket 地址，镜像为 `sep-green-web:42fc2644a38b-domain-20261103`；后端保持原镜像。域名切换过程见 [域名切换记录](../../docs/deployment/2026-11-03-SEP域名切换记录.md)。
 
-服务器配置目录为 `/www/sep/deploy`，业务数据位于 1TB 数据盘 `/www`。GitHub 自动和手动发布工作流将固定版本源码归档上传到新服务器，再调用本目录的独立发布脚本。旧共享主机发布入口已停用。
+服务器配置目录为 `/www/sep/deploy`，业务数据位于 1TB 数据盘 `/www`。GitHub 手动发布工作流将固定提交的源码归档上传到新服务器，再调用本目录的独立发布脚本。上传超过 180 秒或失败时，改由服务器从 `origin` 对应的公开 GitHub 仓库下载同一提交归档，核对 Actions 计算的 SHA256 后才解压和部署。旧共享主机发布入口已停用。
 
 ## 独立服务器发布
 
@@ -18,7 +18,7 @@ SEP_RELEASE_SHA=<完整40位提交> bash deploy/standalone/sep-deploy.sh deploy
 
 如发布包含待提交修复，必须归档基线提交与全部修复文件，记录归档 SHA256，并使用 `SEP_RELEASE_TAG=<提交前12位>-<归档SHA256前12位>` 区分该构建；`SEP_RELEASE_SHA` 仍记录真实基线提交。`check` 和 `deploy` 使用同一组变量。脚本拒绝覆盖已存在的镜像标签；实际构建标签记录在备份的 `release-tag` 和 `/www/sep/.deploy/active-artifact` 中。每次构建以当前运行的 backend/web 镜像作为运行时基础镜像；构建依赖使用初始迁移备份中的 `sep-migrator` 镜像，若本机标签缺失则从 `/www/sep/backups/bootstrap-20261103/images.tar.gz` 恢复。
 
-脚本固定使用新机 `/www/sep`、独立 Docker 网络和新域名；先检查健康、有效中转计费契约、队列及依赖基线，再构建。当前发布 Dockerfile 只适用于锁文件和全部 workspace package.json 与 `/www/sep/source` 原生产归档完全相同的版本；依赖变化会拒绝发布，届时应改用完整 Dockerfile 安装依赖。
+脚本固定使用新机 `/www/sep`、独立 Docker 网络和新域名；先检查健康、有效中转计费契约、队列及项目基线，再构建。构建阶段复用服务器现有 Node/pnpm 工具链、运行时基础镜像与 Web 基础镜像；后端根据发布归档中的锁文件执行 `pnpm install --frozen-lockfile --filter backend...`，再构建并生成自包含生产依赖包。因此服务器构建需要能访问 pnpm 配置的依赖源；依赖下载失败时发布会在进入维护状态前停止。Web 镜像从同一归档构建页面，并复制该版本的 `public/` 静态资源。
 
 后端构建后，`prisma-client-artifact.cjs` 按 Node 实际解析的路径，将最新生成的 Prisma Client 同步到生产包，避免 pnpm 虚拟依赖目录中残留旧模型。生产包和最终运行镜像都会校验 schema、完整 datamodel 和全部模型查询接口，校验失败将中止构建。修改该打包流程后运行 `node --test deploy/standalone/prisma-client-artifact.test.cjs`，并使用当前构建基础镜像验证最终镜像；回归测试不连接数据库。
 
