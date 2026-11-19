@@ -66,9 +66,11 @@ describe('client runtime HTTP contract and source errors', () => {
     expect(result.body).toMatchObject(error.getResponse() as object);
     expect(result.body.requestId).toBe(result.headers['x-request-id']);
   });
-  it('keeps non-HTTP error messages and diagnostics', async () => {
+  it('keeps unexpected runtime failures private and provides a correlation ID', async () => {
     service.getRuntime.mockRejectedValueOnce(Object.assign(new Error('Fixture configuration decoding failed'), { code: 'DECODE_FAILURE', issues: [{ field: 'durationSeconds', reason: 'invalid' }] }));
     const result = await request(app.getHttpServer()).get(path).set('Authorization', 'Bearer fixture').expect(500);
-    expect(result.body).toMatchObject({ message: 'Fixture configuration decoding failed', code: 'DECODE_FAILURE', issues: [{ field: 'durationSeconds', reason: 'invalid' }] });
+    expect(result.body).toMatchObject({ message: 'Internal server error', statusCode: 500 });
+    expect(result.body.requestId).toBe(result.headers['x-request-id']);
+    expect(result.text).not.toMatch(/Fixture configuration decoding failed|DECODE_FAILURE|durationSeconds|issues/);
   });
 });
