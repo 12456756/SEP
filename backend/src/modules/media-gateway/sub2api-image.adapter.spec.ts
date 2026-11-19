@@ -3,6 +3,7 @@ import { HttpException } from '@nestjs/common';
 import { SettingService } from '../setting/setting.service';
 import { MediaRealQuoteRequestSchema, MediaRealQuoteRequestV3Schema } from '../../shared/media-real.dto';
 import { ImageDispatchError, Sub2apiImageAdapter } from './sub2api-image.adapter';
+import { referenceFixture } from './media-reference.test-support';
 
 const BASE_URL = 'https://media.example.test/v1/';
 const API_KEY = 'private-test-api-key';
@@ -112,6 +113,20 @@ describe('Sub2apiImageAdapter', () => {
   });
 
   afterEach(() => jest.restoreAllMocks());
+
+  it('forwards mixed PNG, JPEG and WebP originals in one edit request', async () => {
+    const references = [Buffer.from(PNG_BASE64, 'base64'), await referenceFixture('jpeg'), await referenceFixture('webp')];
+    const value = MediaRealQuoteRequestV3Schema.parse({ protocolVersion: 3, specRevision: 1,
+      profileId: 'real-image', configVersion: 'cfg_mixed', operation: 'edit', referenceIds: ['png', 'jpeg', 'webp'],
+      creativeBrief: 'Combine product views', requestedSpec: { size: '1x1', count: 1, quality: 'medium' } });
+    fetchMock.mockResolvedValueOnce(response({ data: [{ b64_json: PNG_BASE64 }] }, { requestId: REQUEST_ID }));
+    await adapter.execute(value, references);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const files = (fetchMock.mock.calls[0][1].body as FormData).getAll('image[]') as File[];
+    expect(files.map(file => file.type)).toEqual(['image/png', 'image/jpeg', 'image/webp']);
+    expect(files.map(file => file.name)).toEqual(['reference-0.png', 'reference-1.jpg', 'reference-2.webp']);
+    for (const [index, file] of files.entries()) expect(Buffer.from(await file.arrayBuffer())).toEqual(references[index]);
+  });
 
   it('submits more than four ordered image references in one edit POST', async () => {
     const referenceIds = Array.from({ length: 8 }, (_, index) => `reference-${index}`);
@@ -544,9 +559,9 @@ describe('Sub2apiImageAdapter', () => {
     expect(body.locked).toBe(false);
   });
 
-  it('rejects edit references before dispatch and validates uploaded PNGs', async () => {
+  it('rejects invalid edit references before dispatch', async () => {
     await expectCode(adapter.execute(input('edit'), []), 503, 'INVALID_REFERENCE');
-    await expectCode(adapter.execute(input('edit'), [Buffer.from('not png')]), 502, 'OUTPUT_FAILED');
+    await expectCode(adapter.execute(input('edit'), [Buffer.from('not an image')]), 400, 'INVALID_REFERENCE');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

@@ -7,7 +7,7 @@ import { MediaJsonValueSchema, MediaVideoUsdSchema, VIDEO_OUTPUT_FORMAT, VIDEO_R
 import { MediaVideoGatewayQuoteRequestSchema, MediaVideoGatewayQuoteRequestV3Schema,
   type MediaVideoGatewayQuoteRequest, type MediaVideoGatewayQuoteRequestV3 } from 'shared';
 import { SettingService } from '../setting/setting.service';
-import { inspectMediaPng } from './media-png';
+import { inspectReferenceImage } from './media-reference-image';
 import { errorMessage, sanitizeError, hasBusinessError } from '../../common/errors/error-diagnostics';
 import { upstreamHeaders } from '../../common/errors/upstream-http.exception';
 
@@ -154,9 +154,8 @@ export class Sub2apiVideoAdapter {
     } else {
       const form = new FormData();
       for (const [index, bytes] of references.entries()) {
-        try { inspectMediaPng(bytes, VIDEO_REFERENCE_MAX_BYTES); }
-        catch { unavailable('INVALID_REFERENCE'); }
-        form.append('input_reference', new Blob([new Uint8Array(bytes)], { type: 'image/png' }), `reference-${index}.png`);
+        const { mimeType, extension } = await inspectReferenceImage(bytes, VIDEO_REFERENCE_MAX_BYTES);
+        form.append('input_reference', new Blob([new Uint8Array(bytes)], { type: mimeType }), `reference-${index}.${extension}`);
       }
       for (const [name, value] of Object.entries(fields)) form.append(name, typeof value === 'object' ? JSON.stringify(value) : String(value));
       body = form;

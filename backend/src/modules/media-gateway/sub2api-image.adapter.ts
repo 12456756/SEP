@@ -6,6 +6,7 @@ import { IMAGE_ADAPTER_MAX_OUTPUTS, IMAGE_REFERENCE_MAX_BYTES } from 'shared';
 import { SettingService } from '../setting/setting.service';
 import { isSupportedImageModel } from './image-model-contract';
 import { inspectMediaPng } from './media-png';
+import { inspectReferenceImage } from './media-reference-image';
 import { MediaUpstreamException, mediaFailure, mediaDispatchFailure, readMediaUpstreamError, protectMediaCredential } from '../../common/errors/media-upstream.exception';
 import type { MediaUpstreamError } from 'shared';
 import { errorMessage, hasBusinessError, sanitizeError } from '../../common/errors/error-diagnostics';
@@ -160,8 +161,8 @@ export class Sub2apiImageAdapter {
       if (!references.length || references.length !== input.referenceIds.length) unavailable('INVALID_REFERENCE');
       const form = new FormData();
       for (const [index, bytes] of references.entries()) {
-        inspectMediaPng(bytes, IMAGE_REFERENCE_MAX_BYTES);
-        form.append('image[]', new Blob([new Uint8Array(bytes)], { type: 'image/png' }), `reference-${index}.png`);
+        const { mimeType, extension } = await inspectReferenceImage(bytes, IMAGE_REFERENCE_MAX_BYTES);
+        form.append('image[]', new Blob([new Uint8Array(bytes)], { type: mimeType }), `reference-${index}.${extension}`);
       }
       for (const [key, value] of Object.entries({ model: modelId, prompt: input.creativeBrief,
         n: String(spec.count), size: spec.size, quality: spec.quality, response_format: 'b64_json' })) form.append(key, value);

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { MAX_MEDIA_REFERENCE_COUNT, MediaUpstreamErrorSchema } from './media-reference.dto';
+import { MAX_MEDIA_REFERENCE_COUNT, MediaUpstreamErrorSchema, MediaReferenceMimeTypeSchema } from './media-reference.dto';
 import { IMAGE_ADAPTER_MAX_OUTPUTS } from './media-runtime-parameters';
 import { MediaGatewayIdSchema, MediaGatewayOutputSchema, MediaGatewayErrorCodeSchema } from './media-gateway.dto';
 import { MediaConfigVersionV3Schema, MediaImageSpecV3Schema, MediaProfileIdV3Schema, MediaSpecAcceptanceSchema, MediaSpecMetadataV3Schema } from './media-spec.dto';
@@ -46,7 +46,7 @@ export const MediaFundingSchema = z.object({
 }).strict();
 export const MediaRealReferenceSchema = z.object({
   mock: z.literal(false), referenceId: MediaGatewayIdSchema, expiresAt: z.string().datetime({ offset: true }),
-  mimeType: z.literal('image/png'), byteLength: z.number().int().positive().max(5 * 1024 * 1024),
+  mimeType: MediaReferenceMimeTypeSchema, byteLength: z.number().int().positive().max(5 * 1024 * 1024),
   sha256: z.string().regex(/^[a-f0-9]{64}$/), width: z.number().int().positive().max(4096), height: z.number().int().positive().max(4096),
 }).strict();
 export type MediaRealReference = z.infer<typeof MediaRealReferenceSchema>;

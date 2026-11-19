@@ -7,6 +7,7 @@ import { Sub2apiVideoAdapter, VideoDispatchError } from './sub2api-video.adapter
 import { MEDIA_MOCK_PNG } from './media-gateway-mock.adapter';
 import { capabilities, fingerprint, input, outputMetadata, scope, videoBytes, videoClaims, videoRealPrisma } from './media-video-real.test-support';
 import { MediaVideoGatewayQuoteRequestV3Schema } from '../../shared/media-video.dto';
+import { referenceFixture } from './media-reference.test-support';
 
 const code = (value: string) => ({ response: { error: { code: value } } });
 describe('MediaVideoRealService', () => {
@@ -58,6 +59,28 @@ describe('MediaVideoRealService', () => {
     return { request, receipt: await service.submit(videoClaims, request) };
   }
 
+  it.each(['jpeg', 'webp'] as const)('saves original %s reference metadata and dispatches its original bytes', async format => {
+    Object.assign(runtime, { getRuntimeVideoV3: jest.fn(async () => ({ profiles: [{
+      authorized: true, operations: ['image-to-video'], adapter: { available: true,
+        referenceSupport: { maxCount: 1, maxInputBytes: 10 * 1024 * 1024 } },
+    }] })) });
+    const original = await referenceFixture(format);
+    const sha256 = createHash('sha256').update(original).digest('hex');
+    cache.saveReference.mockResolvedValue({ sha256, byteLength: original.length, width: 3, height: 2 });
+    cache.readReference.mockResolvedValue(original);
+    const reference = await service.reference(videoClaims, { buffer: original, size: original.length,
+      mimetype: `image/${format}`, originalname: `original.${format}` } as Express.Multer.File);
+    expect(reference).toMatchObject({ mimeType: `image/${format}`, sha256, byteLength: original.length, width: 3, height: 2 });
+    expect(cache.saveReference).toHaveBeenCalledWith(scope, reference.referenceId, original, reference.expiresAt);
+    const value = { ...input, operation: 'image-to-video' as const, referenceIds: [reference.referenceId] };
+    adapter.pricing.mockResolvedValue({ model: 'minimax-h3', operation: 'image-to-video', resolution: '720p',
+      duration_seconds: 4, pricing_status: 'quoted', amount_usd: '0.2', pricing_version: 'pricing-1',
+      expires_at: new Date(Date.now() + 60000).toISOString() });
+    const quote = await service.quote(videoClaims, value);
+    await service.submit(videoClaims, { ...value, quoteId: quote.quoteId, clientRequestId: `original-${format}` });
+    expect(adapter.submit.mock.calls[0][3]).toEqual([original]);
+  });
+
   it('freezes, restores and dispatches multiple references while enforcing the configured maximum', async () => {
     db.state.model.capabilities.maxReferenceCount = 3;
     Object.assign(runtime, { getRuntimeVideoV3: jest.fn(async () => ({ protocolVersion: 3,
@@ -107,6 +130,23 @@ describe('MediaVideoRealService', () => {
     const record = await store.findByClientId(videoClaims.enterpriseId, request.clientRequestId, scope);
     expect(record.receipt.upstreamError).toEqual(original);
     await service.submit(videoClaims, request);
+    expect(adapter.submit).toHaveBeenCalledTimes(1);
+    expect(billing.release).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { failure: new HttpException({ error: { code: 'INVALID_REFERENCE', message: 'Reference cannot be decoded',
+      cause: { name: 'Error', message: 'Truncated WebP payload' } } }, 400),
+      diagnostic: { status: 400, body: { error: { code: 'INVALID_REFERENCE', message: 'Reference cannot be decoded',
+        cause: { name: 'Error', message: 'Truncated WebP payload' } } } } },
+    { failure: Object.assign(new Error('Connection reset while submitting'), { code: 'ECONNRESET' }),
+      diagnostic: { status: 502, body: { error: { message: 'Connection reset while submitting', code: 'ECONNRESET' } } } },
+  ])('retains local submission diagnostics in the returned and persisted receipt %#', async ({ failure, diagnostic }) => {
+    adapter.submit.mockRejectedValue(failure);
+    const { receipt, request } = await quotedSubmit();
+    expect(receipt).toMatchObject({ status: 'SUBMISSION_UNKNOWN', upstreamError: diagnostic });
+    expect((await store.findRequest(scope, receipt.receiptId)).receipt.upstreamError).toMatchObject(diagnostic);
+    await expect(service.submit(videoClaims, request)).resolves.toMatchObject({ upstreamError: diagnostic });
     expect(adapter.submit).toHaveBeenCalledTimes(1);
     expect(billing.release).not.toHaveBeenCalled();
   });

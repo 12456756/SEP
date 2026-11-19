@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import fixture from '../../shared/fixtures/media-video-v1.json';
 import { VideoFileCacheService } from './video-file-cache.service';
+import { referenceFixture } from './media-reference.test-support';
+import { MEDIA_MOCK_PNG } from './media-gateway-mock.adapter';
 
 const bytes = Buffer.from(fixture.mediaFixture.base64, 'base64');
 const sha256 = createHash('sha256').update(bytes).digest('hex');
@@ -27,6 +29,19 @@ describe('VideoFileCacheService', () => {
     if (original === undefined) delete process.env.MEDIA_VIDEO_CACHE_DIR;
     else process.env.MEDIA_VIDEO_CACHE_DIR = original;
     await rm(root, { recursive: true, force: true });
+  });
+
+  it.each(['png', 'jpeg', 'webp'] as const)('persists and restores the original %s reference across cache instances', async format => {
+    const original = format === 'png' ? MEDIA_MOCK_PNG : await referenceFixture(format);
+    const expiresAt = new Date(Date.now() + 60_000).toISOString();
+    const saved = await cache.saveReference('scope', 'original', original, expiresAt);
+    const restored = new VideoFileCacheService();
+    const actual = await restored.readReference('scope', 'original', { ...saved, expiresAt });
+    expect(actual).toEqual(original);
+    expect(createHash('sha256').update(actual).digest('hex')).toBe(saved.sha256);
+    const target = join(root, createHash('sha256').update(JSON.stringify(['reference', 'scope', 'original'])).digest('hex'), 'manifest.json');
+    expect(JSON.parse(await readFile(target, 'utf8')).mimeType).toBe(`image/${format}`);
+    await expect(restored.readReference('other-scope', 'original', { ...saved, expiresAt })).rejects.toMatchObject({ status: 410 });
   });
 
   it('persists scoped MP4 with probed metadata and streams the same verified bytes', async () => {

@@ -124,7 +124,7 @@ export class MediaVideoConfigService {
 
   private assertExecutable(profile: MediaVideoProfile): void {
     if (profile.modelId !== 'mock-video-v1' && this.realEnabled()) {
-      if (!this.v3Compatible(profile)) throw new BadRequestException('视频配置超出通用适配器协议边界：异步查询、PNG 参考、MP4/WebM，不支持取消');
+      if (!this.v3Compatible(profile)) throw new BadRequestException('视频配置超出通用适配器协议边界：异步查询、JPEG/PNG/WebP 参考、MP4/WebM，不支持取消');
       return;
     }
     if (!this.mockEnabled()) throw new ServiceUnavailableException('视频仅支持显式启用的 mock，尚未接入真实执行');

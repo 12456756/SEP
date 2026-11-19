@@ -22,7 +22,7 @@ describe('effective runtime capabilities', () => {
     expect(result.parameters.quality).toMatchObject({ values: ['auto', 'high'], valuesMode: 'suggested' });
     expect(result.referenceSupport.maxCount).toBe(2);
     expect(result.referenceRules).toContainEqual({ operation: 'edit', minCount: 1, maxCount: 2,
-      maxInputBytes: 5242880, mimeTypes: ['image/png'] });
+      maxInputBytes: 5242880, mimeTypes: ['image/png', 'image/jpeg', 'image/webp'] });
   });
   it('publishes adapter limits without turning profile suggestions into fixed options', () => {
     const profile = MediaProfileSchema.parse({ profileId: 'image-test', kind: 'image', modelId: 'future-image', displayName: '图片',
@@ -34,7 +34,7 @@ describe('effective runtime capabilities', () => {
     expect(result.parameters.quality).not.toHaveProperty('default');
     expect(result.referenceRules).toEqual([
       { operation: 'generate', minCount: 0, maxCount: 0, maxInputBytes: 0, mimeTypes: [] },
-      { operation: 'edit', minCount: 1, maxCount: 4, maxInputBytes: 5242880, mimeTypes: ['image/png'] },
+      { operation: 'edit', minCount: 1, maxCount: 4, maxInputBytes: 5242880, mimeTypes: ['image/png', 'image/jpeg', 'image/webp'] },
     ]);
     expect(validateMediaParameterConstraints({ width: 2048, height: 3072 }, 'generate', result.constraints)).toEqual([]);
     expect(validateMediaParameterConstraints({ width: 2048 }, 'generate', result.constraints)).toHaveLength(2);
@@ -43,7 +43,7 @@ describe('effective runtime capabilities', () => {
     const profile = MediaVideoProfileSchema.parse({ ...fixture.profile, operations: ['text-to-video', 'image-to-video'],
       capabilities: { ...fixture.profile.capabilities, supportsTextToVideo: true, maxInputBytes: 4096, outputFormats: ['video/mp4', 'video/webm'] } });
     const result = videoRuntimeCapabilities(profile, profile.operations);
-    expect(result.referenceSupport).toEqual({ maxCount: 1, maxInputBytes: 4096, mimeTypes: ['image/png'] });
+    expect(result.referenceSupport).toEqual({ maxCount: 1, maxInputBytes: 4096, mimeTypes: ['image/png', 'image/jpeg', 'image/webp'] });
     expect(result.referenceRules).toContainEqual({ operation: 'text-to-video', minCount: 0, maxCount: 0, maxInputBytes: 0, mimeTypes: [] });
     expect(result.parameters.outputFormat).toMatchObject({ valuesMode: 'allowed', values: ['video/mp4'] });
     expect(result.parameters.frameRate.support).toBe('unsupported');

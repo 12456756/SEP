@@ -154,7 +154,7 @@ describe('MediaVideoConfigService real configuration', () => {
       tools: ['video_from_image', 'video_generate', 'video_get_job'], profiles: [{
         profileId: f.row.profileId, authorized: true,
         adapter: { id: 'sub2api-video', available: true, supportsTaskQuery: true, supportsCancel: false,
-          referenceSupport: { maxCount: 1, maxInputBytes: 10 * 1024 * 1024, mimeTypes: ['image/png'] } },
+          referenceSupport: { maxCount: 1, maxInputBytes: 10 * 1024 * 1024, mimeTypes: ['image/png', 'image/jpeg', 'image/webp'] } },
       }] });
     expect(runtime.profiles[0].parameters).toMatchObject({
       durationSeconds: { values: [4], valuesMode: 'suggested', confidence: 'declared' },

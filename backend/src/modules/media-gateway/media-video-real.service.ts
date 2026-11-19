@@ -17,7 +17,7 @@ import { MediaVideoConfigService } from '../media-config/media-video-config.serv
 import type { ClientEmploymentClaims } from '../client/client-employment.guard';
 import { clientSubscriptionAccessWhere } from '../client/client-subscription-access';
 import { MediaRealBillingService } from './media-real-billing.service';
-import { inspectMediaPng } from './media-png';
+import { inspectReferenceImage } from './media-reference-image';
 import { MediaVideoRealStore, VIDEO_REAL_ADAPTER } from './media-video-real.store';
 import type { VideoRealRecord } from './media-video-real.store';
 import { Sub2apiVideoAdapter, VideoDispatchError } from './sub2api-video.adapter';
@@ -74,15 +74,13 @@ export class MediaVideoRealService {
     const profiles = await this.profiles(claims, 3);
     if (!profiles.profiles.some((profile: any) => profile.operations.includes('image-to-video') && profile.adapter.available && profile.adapter.referenceSupport.maxCount >= 1)) fail(403, 'MEDIA_FORBIDDEN', '无图生视频授权');
     if (fields && Object.keys(fields as object).length) fail(400, 'INVALID_REFERENCE', '参考上传不接受额外字段');
-    if (!file || !Buffer.isBuffer(file.buffer) || file.size !== file.buffer.length || file.mimetype !== 'image/png' || file.size > VIDEO_REFERENCE_MAX_BYTES) fail(400, 'INVALID_REFERENCE', '需要不超过 10MiB 的 PNG 参考图');
-    let dimensions: { width: number; height: number };
-    try { dimensions = inspectMediaPng(file.buffer, VIDEO_REFERENCE_MAX_BYTES); }
-    catch (cause) { fail(400, 'INVALID_REFERENCE', '参考 PNG 无效', { cause: exceptionDetails(cause) }); }
+    if (!file || !Buffer.isBuffer(file.buffer) || file.size !== file.buffer.length || file.size > VIDEO_REFERENCE_MAX_BYTES) fail(400, 'INVALID_REFERENCE', '需要不超过 10MiB 的 JPEG、PNG 或 WebP 参考图');
+    const { mimeType, width, height } = await inspectReferenceImage(file.buffer, VIDEO_REFERENCE_MAX_BYTES, file.mimetype);
     if (!profiles.profiles.some((profile: any) => profile.operations.includes('image-to-video') && profile.adapter.referenceSupport.maxInputBytes >= file.size)) fail(400, 'INVALID_REFERENCE', '参考图超过 Profile 输入限制');
     const expiresAt = new Date(Date.now() + REFERENCE_TTL).toISOString();
     const scope = this.scope(claims);
-    const reference = await this.store.saveReference(scope, { mock: false, expiresAt, mimeType: 'image/png',
-      sha256: hash(file.buffer), byteLength: file.buffer.length, ...dimensions });
+    const reference = await this.store.saveReference(scope, { mock: false, expiresAt, mimeType,
+      sha256: hash(file.buffer), byteLength: file.buffer.length, width, height });
     const stored = await this.cache.saveReference(scope, reference.referenceId, file.buffer, expiresAt);
     if (stored.sha256 !== reference.sha256 || stored.byteLength !== reference.byteLength || stored.width !== reference.width || stored.height !== reference.height) videoStorageUnavailable();
     return reference;
@@ -222,8 +220,9 @@ export class MediaVideoRealService {
       if (record.receipt.errorCode && result.error !== undefined) record.receipt.upstreamError = { status: 200, body: { error: result.error } };
       record = await this.saveDispatch(record);
     } catch (error) {
+      record.receipt.upstreamError = error instanceof VideoDispatchError && error.upstreamError
+        ? error.upstreamError : mediaFailure(error);
       if (error instanceof VideoDispatchError && error.definitelyRejected) {
-        if (error.upstreamError) record.receipt.upstreamError = error.upstreamError;
         record.configuration.dispatchState = 'REJECTED';
         record.configuration.upstreamRequestId = error.requestId;
         record.receipt.status = 'FAILED'; record.receipt.errorCode = 'UPSTREAM_FAILED';
@@ -236,7 +235,6 @@ export class MediaVideoRealService {
       record.receipt.status = 'SUBMISSION_UNKNOWN';
       record.receipt.errorCode = error instanceof VideoDispatchError && error.specUnsupported ? 'UPSTREAM_SPEC_UNSUPPORTED' : 'SUBMISSION_UNKNOWN';
       record.receipt.billingStatus = 'RECONCILING';
-      if (error instanceof VideoDispatchError && error.upstreamError) record.receipt.upstreamError = error.upstreamError;
       record = await this.saveDispatch(record);
       if (error instanceof VideoDispatchError && error.upstreamError) throw new MediaUpstreamException(error.upstreamError);
       return this.snapshot(record);

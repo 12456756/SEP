@@ -22,7 +22,7 @@ import { exceptionDetails } from '../../common/errors/error-diagnostics';
 @ApiResponse({ status: 200, description: 'Original video receipt or verified content' })
 @ApiResponse({ status: 201, description: 'Reference or frozen quote saved' })
 @ApiResponse({ status: 202, description: 'Original asynchronous request is pending' })
-@ApiResponse({ status: 400, description: 'Invalid parameters or PNG' })
+@ApiResponse({ status: 400, description: 'Invalid parameters or JPEG/PNG/WebP reference' })
 @ApiResponse({ status: 401, description: 'Invalid employment token' })
 @ApiResponse({ status: 402, description: 'Insufficient funds' })
 @ApiResponse({ status: 403, description: 'Membership, subscription or video grant revoked' })
@@ -49,7 +49,7 @@ export class MediaVideoRealController {
 
   @Post('references')
   @Header('Cache-Control', 'no-store')
-  @ApiOperation({ summary: 'Upload a validated PNG reference' })
+  @ApiOperation({ summary: 'Upload a validated JPEG, PNG or WebP reference without conversion' })
   @ApiConsumes('multipart/form-data')
   @ApiBody({ schema: { type: 'object', required: ['file'], properties: { file: { type: 'string', format: 'binary' } } } })
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: VIDEO_REFERENCE_MAX_BYTES, files: 1, fields: 0, parts: 2 } }))

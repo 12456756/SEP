@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { MediaUpstreamErrorSchema } from './media-reference.dto';
+import { MediaUpstreamErrorSchema, MediaReferenceMimeTypeSchema } from './media-reference.dto';
 import { MediaFundingSchema, MediaMoneySchema } from './media-real.dto';
 import {
   MediaVideoGatewayQuoteRequestSchema, MediaVideoGatewayQuoteRequestV3Schema,
@@ -16,7 +16,9 @@ export type MediaVideoRealQuoteRequest = z.infer<typeof MediaVideoRealQuoteReque
 export type MediaVideoRealRequest = z.infer<typeof MediaVideoRealRequestSchema>;
 
 export const MediaVideoUsdSchema = z.string().regex(/^\d+(?:\.\d{1,12})?$/);
-export const MediaVideoRealReferenceSchema = MediaVideoGatewayReferenceSchema.extend({ mock: z.literal(false) }).strict();
+export const MediaVideoRealReferenceSchema = MediaVideoGatewayReferenceSchema.extend({
+  mock: z.literal(false), mimeType: MediaReferenceMimeTypeSchema,
+}).strict();
 export type MediaVideoRealReference = z.infer<typeof MediaVideoRealReferenceSchema>;
 
 export const MediaVideoRealQuoteBaseSchema = z.object({

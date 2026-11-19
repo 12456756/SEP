@@ -6,6 +6,7 @@ import { MediaRealQuoteRequestSchema, MediaRealQuoteRequestV3Schema, MediaRealQu
 import { MEDIA_MOCK_PNG } from './media-gateway-mock.adapter';
 import type { ClientEmploymentClaims } from '../client/client-employment.guard';
 import type { RealRequestRecord } from './media-real.store';
+import { referenceFixture } from './media-reference.test-support';
 
 const claims = { enterpriseId: 'enterprise', sub: 'user', memberId: 'member', subscriptionId: 'subscription' } as ClientEmploymentClaims;
 const scope = JSON.stringify([claims.enterpriseId, claims.sub, claims.memberId, claims.subscriptionId]);
@@ -69,6 +70,25 @@ function harness() {
 }
 
 describe('MediaRealService', () => {
+  it.each(['jpeg', 'webp'] as const)('uploads and caches the original %s reference', async format => {
+    const h = harness();
+    const bytes = await referenceFixture(format);
+    const file = { buffer: bytes, size: bytes.length, mimetype: `image/${format}`, originalname: `original.${format}` } as Express.Multer.File;
+    const reference = await h.service.uploadReference(claims, file);
+    expect(reference).toMatchObject({ referenceId: 'reference', mimeType: `image/${format}`,
+      byteLength: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), width: 3, height: 2 });
+    expect(h.cache.put).toHaveBeenCalledWith('reference', scope, 'reference', bytes, reference.expiresAt);
+    expect(h.adapter.execute).not.toHaveBeenCalled();
+  });
+
+  it('rejects mismatched MIME before storing the image reference', async () => {
+    const h = harness();
+    const bytes = await referenceFixture('jpeg');
+    await expect(h.service.uploadReference(claims, { buffer: bytes, size: bytes.length, mimetype: 'image/png' } as Express.Multer.File))
+      .rejects.toMatchObject({ status: 400, response: { error: { code: 'INVALID_REFERENCE' } } });
+    expect(h.store.saveReference).not.toHaveBeenCalled();
+    expect(h.cache.put).not.toHaveBeenCalled();
+  });
   it('rejects excessive total reference bytes before asking for a price', async () => {
     const h = harness();
     h.prisma.mediaModelProfile.findUnique.mockResolvedValue({ ...profile, modelId: 'gpt-image-2', enabled: true, verified: true,
