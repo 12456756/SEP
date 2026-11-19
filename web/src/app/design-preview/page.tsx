@@ -408,7 +408,7 @@ export default function DesignPreviewPage() {
             <div className="glass-card p-6">
               <div className="mb-3 text-sm text-gtext-muted">.gradient-text-glass</div>
               <div className="gradient-text-glass text-3xl font-bold">
-                硅基人才平台
+                元机AI
               </div>
             </div>
 

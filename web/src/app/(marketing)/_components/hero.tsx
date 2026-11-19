@@ -24,7 +24,7 @@ function DashboardMockup() {
         <span className="h-2.5 w-2.5 rounded-full bg-gwarning/70" />
         <span className="h-2.5 w-2.5 rounded-full bg-gsuccess/70" />
         <span className="ml-3 text-xs text-gtext-muted">
-          工作台 · 硅基人才平台
+          工作台 · 元机AI
         </span>
       </div>
 

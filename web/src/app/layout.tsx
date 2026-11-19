@@ -5,7 +5,7 @@ import { Providers } from '@/components/providers';
 import NextTopLoader from 'nextjs-toploader';
 
 export const metadata: Metadata = {
-  title: '硅基人才平台 - Silicon Talent Platform',
+  title: '元机AI',
   description: '订阅硅基员工，调度硅基能力 | 像招募团队一样订阅硅基员工，用一句话驱动 Agent、RPA、技能与 AI 应用',
   icons: {
     icon: '/favicon.ico',

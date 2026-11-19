@@ -4,7 +4,7 @@ import { AuroraBackground } from '@/components/ui/aurora-background';
 import { PageTransition } from '@/components/ui/page-transition';
 
 export const metadata: Metadata = {
-  title: '硅基人才市场 — 硅基人才平台',
+  title: '硅基人才市场 — 元机AI',
   description: '浏览、筛选、订阅 AI 硅基员工，涵盖人事、销售、财务、技术等职能。',
 };
 

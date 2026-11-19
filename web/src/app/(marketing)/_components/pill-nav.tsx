@@ -53,7 +53,7 @@ export function PillNav() {
           >
             <ThemeLogo width={28} height={28} />
             <span className="text-sm font-semibold text-gtext-primary">
-              硅基人才平台
+              元机AI
             </span>
           </Link>
 

@@ -56,7 +56,7 @@ export function SiteFooter() {
                 <Bot className="h-4 w-4 text-white" />
               </span>
               <span className="text-sm font-semibold text-gtext-primary">
-                硅基人才平台
+                元机AI
               </span>
             </Link>
             <p className="mt-4 max-w-xs text-sm leading-relaxed text-gtext-muted">
@@ -87,7 +87,7 @@ export function SiteFooter() {
 
         <div className="mt-14 flex flex-col-reverse items-center justify-between gap-4 border-t border-glassline pt-8 sm:flex-row">
           <p className="text-xs text-gtext-disabled">
-            © {new Date().getFullYear()} 硅基人才平台. All rights reserved.
+            © {new Date().getFullYear()} 元机AI. All rights reserved.
           </p>
           <p className="text-xs text-gtext-muted">
             硅基员工与碳基团队的组织协作平台

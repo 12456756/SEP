@@ -46,7 +46,7 @@ describe('MailService', () => {
         MAIL_ENABLED: 'false',
         NODE_ENV: 'test',
         MAIL_FROM: 'noreply@example.com',
-        MAIL_FROM_NAME: '硅基人才平台',
+        MAIL_FROM_NAME: '元机AI',
       } as Record<string, string>)[key]),
       getOrThrow: jest.fn(),
     };
@@ -64,7 +64,7 @@ describe('MailService', () => {
       get: jest.fn((key: string) => ({
         MAIL_PORT: '587',
         MAIL_FROM: 'noreply@example.com',
-        MAIL_FROM_NAME: '硅基人才平台',
+        MAIL_FROM_NAME: '元机AI',
         MAIL_SECURE: 'false',
         MAIL_HOST: 'smtp.example.com',
         MAIL_USER: 'mailer',
@@ -94,7 +94,7 @@ describe('MailService', () => {
       auth: { user: 'mailer', pass: 'password' },
     });
     expect(transport.sendMail).toHaveBeenCalledWith({
-      from: '硅基人才平台 <noreply@example.com>',
+      from: '元机AI <noreply@example.com>',
       to: 'user@example.com',
       subject: '主题',
       text: '正文',
@@ -108,7 +108,7 @@ describe('MailService', () => {
       get: jest.fn((key: string) => ({
         MAIL_ENABLED: 'true',
         MAIL_FROM: 'noreply@example.com',
-        MAIL_FROM_NAME: '硅基人才平台',
+        MAIL_FROM_NAME: '元机AI',
       } as Record<string, string>)[key]),
       getOrThrow: jest.fn((key: string) => {
         if (key === 'MAIL_HOST') return 'smtp.example.com';
@@ -132,7 +132,7 @@ describe('MailService', () => {
       get: jest.fn((key: string) => ({
         MAIL_ENABLED: 'true',
         MAIL_FROM: 'noreply@example.com',
-        MAIL_FROM_NAME: '硅基人才平台',
+        MAIL_FROM_NAME: '元机AI',
       } as Record<string, string>)[key]),
       getOrThrow: jest.fn((key: string) => key === 'MAIL_HOST' ? 'smtp.example.com' : 'secret'),
     };
@@ -143,7 +143,7 @@ describe('MailService', () => {
 
     expect(provider.send).toHaveBeenCalledWith(expect.objectContaining({
       to: 'user@example.com',
-      subject: '[硅基人才平台] 邮箱注册验证码',
+      subject: '[元机AI] 邮箱注册验证码',
       text: expect.stringContaining('012345'),
     }));
     expect(provider.send.mock.calls[0][0].text).toContain('10 分钟');
@@ -159,7 +159,7 @@ describe('MailService', () => {
         MAIL_USER: 'mailer',
         MAIL_PASSWORD: 'password',
         MAIL_FROM: 'noreply@example.com',
-        MAIL_FROM_NAME: '硅基人才平台',
+        MAIL_FROM_NAME: '元机AI',
       } as Record<string, string>)[key]),
       getOrThrow: jest.fn((key: string) => ({
         MAIL_HOST: 'smtp.example.com', MAIL_USER: 'mailer', MAIL_PASSWORD: 'password',
@@ -199,7 +199,7 @@ describe('MailService', () => {
     const values: Record<string, string> = {
       MAIL_ENABLED: 'true', MAIL_PORT: '587', MAIL_SECURE: 'false',
       MAIL_HOST: 'smtp.example.com', MAIL_USER: 'mailer', MAIL_PASSWORD: 'old-secret',
-      MAIL_FROM: 'noreply@example.com', MAIL_FROM_NAME: '硅基人才平台',
+      MAIL_FROM: 'noreply@example.com', MAIL_FROM_NAME: '元机AI',
     };
     const setting = { getEffectiveValue: jest.fn(async (key: string) => values[key]) };
     const config = {

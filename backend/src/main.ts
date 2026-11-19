@@ -97,8 +97,8 @@ async function bootstrap() {
 
   // Swagger documentation
   const config = new DocumentBuilder()
-    .setTitle('Silicon Talent Platform API')
-    .setDescription('硅基人才平台 API 文档')
+    .setTitle('元机AI API')
+    .setDescription('元机AI API 文档')
     .setVersion('0.1.0')
     .addBearerAuth()
     .addBearerAuth(

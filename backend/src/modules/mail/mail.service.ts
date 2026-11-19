@@ -51,7 +51,7 @@ export class SmtpMailProvider implements MailDeliveryProvider {
   constructor(config: ConfigService) {
     const port = Number(config.get<string>('MAIL_PORT') ?? 587);
     const address = config.get<string>('MAIL_FROM') ?? 'no-reply@example.com';
-    const fromName = config.get<string>('MAIL_FROM_NAME') ?? '硅基人才平台';
+    const fromName = config.get<string>('MAIL_FROM_NAME') ?? '元机AI';
     this.from = `${fromName} <${address}>`;
     this.transporter = nodemailer.createTransport({
       host: config.getOrThrow<string>('MAIL_HOST'),
@@ -104,7 +104,7 @@ export class MailService {
       user: config.get<string>('MAIL_USER'),
       password: config.get<string>('MAIL_PASSWORD'),
       from: config.get<string>('MAIL_FROM') ?? 'no-reply@example.com',
-      fromName: config.get<string>('MAIL_FROM_NAME') ?? '硅基人才平台',
+      fromName: config.get<string>('MAIL_FROM_NAME') ?? '元机AI',
     });
   }
 
@@ -167,7 +167,7 @@ export class MailService {
       user,
       password,
       from: from ?? 'no-reply@example.com',
-      fromName: fromName ?? '硅基人才平台',
+      fromName: fromName ?? '元机AI',
     };
     const fingerprint = JSON.stringify({
       ...values,

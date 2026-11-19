@@ -11,7 +11,7 @@ import { AuroraBackground } from "@/components/ui/aurora-background";
  */
 
 export const metadata: Metadata = {
-  title: "硅基人才平台 · 让公司从个体提效到组织提效",
+  title: "元机AI · 让公司从个体提效到组织提效",
   description:
     "让公司从个体提效到组织提效：把 Agent、RPA、技能与 AI 应用包装成可订阅、可授权、可追踪的硅基员工，与碳基团队协同工作。",
 };

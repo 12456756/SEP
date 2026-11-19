@@ -19,7 +19,7 @@ export default function AuthLayout({
       <div className="hidden w-1/2 flex-col justify-between p-12 lg:flex">
         <div className="flex items-center gap-2.5">
           <ThemeLogo width={40} height={40} priority />
-          <span className="text-xl font-semibold tracking-tight text-gtext-primary">硅基人才平台</span>
+          <span className="text-xl font-semibold tracking-tight text-gtext-primary">元机AI</span>
         </div>
 
         {/* 中间内容区 - 垂直居中 */}
@@ -32,7 +32,7 @@ export default function AuthLayout({
           </p>
         </div>
 
-        <div className="text-sm text-gtext-tertiary">© 2026 Silicon Talent Platform</div>
+        <div className="text-sm text-gtext-tertiary">© 2026 元机AI</div>
       </div>
 
       {/* Form panel - 玻璃态卡片 */}
