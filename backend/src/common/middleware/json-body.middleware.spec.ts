@@ -42,8 +42,8 @@ describe('JSON request body policies', () => {
     const gateway = await request(app.getHttpServer()).post(endpoint).send(body).expect(201);
     expect(gateway.body).toEqual({ bytes });
     const ordinary = await request(app.getHttpServer()).post('/api/ordinary').send(body).expect(413);
-    expect(ordinary.body.message).toBe('请求体超过 HTTP 解析上限');
-    expect(ordinary.body).not.toHaveProperty('error');
+    expect(ordinary.body).toMatchObject({ message: 'request entity too large', code: 'REQUEST_BODY_TOO_LARGE',
+      error: { code: 'REQUEST_BODY_TOO_LARGE', source: 'platform' } });
   });
 
   it('returns an actionable, correlated 413 above the model HTTP limit without exposing input', async () => {
@@ -53,7 +53,7 @@ describe('JSON request body policies', () => {
       .send({ value: 'private-input'.repeat(Math.ceil(4 * 1024 * 1024 / 13)) }).expect(413);
     expect(response.headers['x-request-id']).toBe('body-limit-test');
     expect(response.body.error).toEqual({
-      message: '请求体超过 HTTP 解析上限', type: 'invalid_request_error',
+      message: 'request entity too large', type: 'invalid_request_error',
       code: 'REQUEST_BODY_TOO_LARGE', source: 'platform', param: null, requestId: 'body-limit-test',
     });
     expect(JSON.stringify(response.body)).not.toContain('private-input');
@@ -101,7 +101,7 @@ describe('JSON request body policies', () => {
       .post('/api/skill-import/connector/sessions/s-1/events')
       .send({ value: 'a'.repeat(1024 * 1024) }).expect(413);
     expect(tooLarge.body.code).toBe('REQUEST_BODY_TOO_LARGE');
-    expect(tooLarge.body).not.toHaveProperty('error');
+    expect(tooLarge.body.error).toMatchObject({ code: 'REQUEST_BODY_TOO_LARGE', source: 'platform' });
   });
 
   it('charges actual escaped JSON bytes on every delivery, including malformed JSON', async () => {

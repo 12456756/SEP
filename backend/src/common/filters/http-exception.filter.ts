@@ -14,6 +14,14 @@ function waitingSeconds(value: unknown): number | undefined {
   return Number.isSafeInteger(seconds) ? seconds : undefined;
 }
 
+function knowledgeErrorDetails(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(knowledgeErrorDetails);
+  if (!record(value)) return value;
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key]) => !/^(?:internalhost|query|content|documentname|enterpriseid|memberid)$/i.test(key.replace(/[-_]/g, '')))
+    .map(([key, child]) => [key, knowledgeErrorDetails(child)]));
+}
+
 /** Adds correlation/protocol framing without discarding the producer's diagnostic fields. */
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
@@ -38,10 +46,15 @@ export class HttpExceptionFilter implements ExceptionFilter {
     }
     if (record(exception) && exception.type === 'entity.too.large' && exception.status === 413) {
       exception = new PayloadTooLargeException({ message: exception instanceof Error ? exception.message : 'Request body exceeds HTTP parser limit',
+        code: 'REQUEST_BODY_TOO_LARGE',
         error: { code: 'REQUEST_BODY_TOO_LARGE', source: 'platform' } });
     }
     const status = exception instanceof HttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
-    const raw = exceptionDetails(exception);
+    // Explicit HTTP exceptions carry client diagnostics; unexpected failures stay in server logs.
+    const path = request.originalUrl.split('?')[0].toLowerCase();
+    const diagnostic = exception instanceof HttpException ? exceptionDetails(exception) : { message: 'Internal server error' };
+    // Knowledge failures must not reveal private source data or tenant identities.
+    const raw = /^\/api\/knowledge-bases(?:\/|$)/.test(path) ? knowledgeErrorDetails(diagnostic) : diagnostic;
     const details: Record<string, unknown> = record(raw) ? raw : { message: raw };
     const requestId = request.requestId || response.getHeader('x-request-id');
     const message = details.message ?? errorMessage(raw) ?? 'No error reason was provided';
@@ -59,7 +72,6 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const body: Record<string, unknown> = { statusCode: status, message, requestId,
       timestamp: new Date().toISOString(), path: request.originalUrl.split('?')[0], ...details };
     if (details.requestId !== undefined && details.requestId !== requestId) body.sepRequestId = requestId;
-    const path = request.originalUrl.split('?')[0].toLowerCase();
     if (path === '/api/gateway' || path.startsWith('/api/gateway/')) {
       const nested = record(details.error) ? details.error : {};
       const errors = Array.isArray(details.errors) ? details.errors : [];

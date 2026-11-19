@@ -68,7 +68,7 @@ export function sanitizeError(value: unknown, secrets: readonly string[] = []): 
       for (const [key, child] of Object.entries(record)) {
         if (child === undefined || typeof child === 'function' || key === '__proto__' || key === 'constructor') continue;
         const normalized = key.replace(/[-_\s]/g, '');
-        if (/^(?:stack|requestbody|requestheaders|request|config)$/i.test(normalized)) continue;
+        if (/^(?:stack|requestbody|requestheaders|request|config|storagekey|packagekey)$/i.test(normalized)) continue;
         result[redactErrorText(key, knownSecrets)] = secretField.test(normalized) ? REDACTED : visit(child, depth + 1);
       }
       return result;

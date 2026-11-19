@@ -309,6 +309,7 @@ describe('Gateway tool-call HTTP round trip', () => {
     const res = await request(app.getHttpServer()).post(endpoint).send({ ...body, stream: true }).expect(502);
     expect(res.headers['content-type']).toContain('application/json');
     expect(res.body.error).toMatchObject({ code: 'UPSTREAM_INVALID_CONTENT_TYPE', source: 'upstream' });
+    expect(res.body).not.toHaveProperty('choices');
     expect(res.headers['x-accel-buffering']).toBeUndefined();
     expect(executions.fail).toHaveBeenCalledWith(res.headers['x-sep-execution-id'], 'UPSTREAM_INVALID_CONTENT_TYPE', false, false);
     expect(executions.saveUsage).not.toHaveBeenCalled();
@@ -373,11 +374,13 @@ describe('Gateway tool-call HTTP round trip', () => {
     expect(releaseRequest).toHaveBeenCalledTimes(1);
   });
 
-  it('aborts incomplete SSE at EOF while persisting observed usage and releasing resources', async () => {
+  it('reports incomplete SSE at EOF while persisting observed usage and releasing resources', async () => {
     const sse = `data: ${JSON.stringify({ choices: [{ delta: { content: 'partial' }, finish_reason: null }], usage })}\n\n` + 'data: [DONE]\n\n';
     fetchMock.mockResolvedValue(new Response(sse, { headers: { 'Content-Type': 'text/event-stream' } }));
-    await expect(request(app.getHttpServer()).post(endpoint).send({ ...body, stream: true }))
-      .rejects.toThrow(/aborted|socket hang up|ECONNRESET/);
+    const response = await request(app.getHttpServer()).post(endpoint).send({ ...body, stream: true }).expect(200);
+    expect(response.text).toContain('partial');
+    expect(response.text).toContain('event: error');
+    expect(response.text).toContain('UPSTREAM_INCOMPLETE_STREAM');
     await new Promise((resolve) => setImmediate(resolve));
     const { id } = await executions.start.mock.results[0].value;
     expect(executions.saveUsage).toHaveBeenCalledWith(id, usage);
@@ -437,11 +440,11 @@ describe('Gateway tool-call HTTP round trip', () => {
       model: 'deepseek-v4.1-flash', messages: [{ role: 'user', content: 'hello' }], stream: true,
     }).expect(status);
     expect(res.headers['content-type']).toContain('application/json');
-    expect(res.body.error).toMatchObject({ ...error, requestId: 'test-upstream' });
+    expect(res.body).toEqual({ error });
     expect(res.headers['x-request-id']).toBe('test-upstream');
+    expect(res.headers['x-sep-error-source']).toBe('upstream');
     if (status === 429) {
-      expect(res.body.error.source).toBe('upstream');
-      expect(res.headers['retry-after']).toBe('60');
+      expect(res.headers['retry-after']).toBeUndefined();
     }
   });
 
@@ -454,7 +457,10 @@ describe('Gateway tool-call HTTP round trip', () => {
     }).expect(429);
     expect(res.headers['retry-after']).toBe('7');
     expect(res.headers['content-type']).toContain('application/json');
-    expect(res.body.error).toMatchObject({ source: 'upstream', code: 'UPSTREAM_RATE_LIMIT_EXCEEDED', requestId: 'platform-123' });
+    expect(res.body).toEqual({ error: { message: 'Please wait' } });
+    expect(res.headers['x-sep-error-source']).toBe('upstream');
+    expect(res.headers['x-request-id']).toBe('platform-123');
+    expect(res.headers['x-compute-request-id']).toBe('relay-123');
     expect(fetchMock.mock.calls[0][1].headers['x-request-id']).toBe('platform-123');
     expect(res.body.error.rateLimit).toBeUndefined();
   });

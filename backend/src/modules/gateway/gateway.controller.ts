@@ -37,7 +37,7 @@ import { GatewayAdmissionService, GatewayAdmissionLease } from './gateway-admiss
 import { GatewayLifecycleService } from '../../common/lifecycle/gateway-lifecycle.service';
 import { gatewayUpstreamError, validGatewayCompletion, validGatewayUsage } from './gateway-response';
 import { streamErrorDetails, upstreamException, upstreamHeaders } from '../../common/errors/upstream-http.exception';
-import { exceptionDetails } from '../../common/errors/error-diagnostics';
+import { exceptionDetails, hasBusinessError } from '../../common/errors/error-diagnostics';
 
 @ApiTags('gateway')
 @Controller('gateway/v1')
@@ -158,7 +158,12 @@ export class GatewayController {
         });
       if (prepared.stream) {
         if (!upstreamRes.body || upstreamRes.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'text/event-stream') {
-          throw await upstreamException(upstreamRes);
+          const failure = await upstreamException(upstreamRes);
+          if (hasBusinessError(failure.upstreamError.body)) throw failure;
+          throw gatewayUpstreamError('UPSTREAM_INVALID_CONTENT_TYPE', 'sub2api 未返回有效的 SSE 流', {
+            upstreamStatus: upstreamRes.status, contentType: upstreamRes.headers.get('content-type'),
+            ...(failure.readDiagnostics ?? {}),
+          });
         }
         // Successful frames retain their bytes; upstream failure frames have already been redacted.
         for (const [name, value] of Object.entries(upstreamHeaders(upstreamRes))) {

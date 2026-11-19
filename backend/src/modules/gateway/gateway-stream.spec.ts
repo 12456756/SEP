@@ -261,9 +261,14 @@ describe('Gateway streaming time budgets', () => {
       ? operation.then(response => response.json()).catch(error => error)
       : operation.catch(error => error);
     await jest.advanceTimersByTimeAsync(50);
-    expect(await failure).toMatchObject({ status: 502, response: { error: {
-      code: 'UPSTREAM_NON_STREAM_TIMEOUT', policyVersion: 7,
-    } } });
+    if (status === 200) {
+      expect(await failure).toMatchObject({ status: 502, response: { error: {
+        code: 'UPSTREAM_NON_STREAM_TIMEOUT', policyVersion: 7,
+      } } });
+    } else {
+      expect(await failure).toMatchObject({ status: 503, upstreamError: { status: 503, body: '' },
+        readDiagnostics: { readError: { response: { error: { code: 'UPSTREAM_NON_STREAM_TIMEOUT', policyVersion: 7 } } } } });
+    }
     expect(requestSignal.aborted).toBe(true);
     expect(jest.getTimerCount()).toBe(0);
   });

@@ -75,7 +75,7 @@ describe('approved skill artifact HTTP contract', () => {
     expect(response.body.message).toBe('Skill artifact unavailable');
   });
 
-  it('preserves only the scoped allowlisted 409 code/reason through the production exception filter', async () => {
+  it('preserves 409 diagnostics without internal storage keys through the production exception filter', async () => {
     artifacts.download.mockRejectedValue(new ConflictException({ message: 'Skill artifact is not installable',
       code: 'SKILL_ARTIFACT_BLOCKED', reason: 'PACKAGE_CONTENT_MISMATCH', storageKey: 'private/mock.zip' }));
     const response = await request(app.getHttpServer()).get(path).set('Authorization', 'Bearer access-test-token').expect(409);
@@ -122,11 +122,11 @@ describe('approved skill artifact HTTP contract', () => {
     expect(artifacts.download).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['PRIVATE_STORAGE_ERROR', 'unknown-reason'])('does not forward unrecognized business fields (%s)', async (value) => {
+  it.each(['PRIVATE_STORAGE_ERROR', 'unknown-reason'])('preserves new business codes and reasons (%s)', async (value) => {
     artifacts.download.mockRejectedValue(new ConflictException({ message: 'Not installable', code: value === 'unknown-reason' ? 'SKILL_ARTIFACT_BLOCKED' : value,
       reason: value === 'unknown-reason' ? value : 'INVALID_ENTRY' }));
     const response = await request(app.getHttpServer()).get(path).set('Authorization', 'Bearer access-test-token').expect(409);
-    expect(response.body.code).toBeUndefined();
-    expect(response.body.reason).toBeUndefined();
+    expect(response.body.code).toBe(value === 'unknown-reason' ? 'SKILL_ARTIFACT_BLOCKED' : value);
+    expect(response.body.reason).toBe(value === 'unknown-reason' ? value : 'INVALID_ENTRY');
   });
 });

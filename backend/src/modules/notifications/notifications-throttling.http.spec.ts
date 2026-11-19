@@ -120,8 +120,8 @@ describe('Notifications HTTP with production throttling and real JWT guards', ()
     // Reuse a single listener for the high-frequency sequence.
     await app.listen(0, '127.0.0.1');
     jwt = module.get(JwtService);
-    token = jwt.sign({ sub: 'user-1', type: 'access' }, { expiresIn: '1h' });
-    otherToken = jwt.sign({ sub: 'user-2', type: 'access' }, { expiresIn: '1h' });
+    token = jwt.sign({ sub: 'user-1', sid: 'session-1', type: 'access' }, { expiresIn: '1h' });
+    otherToken = jwt.sign({ sub: 'user-2', sid: 'session-2', type: 'access' }, { expiresIn: '1h' });
   });
 
   afterEach(async () => {

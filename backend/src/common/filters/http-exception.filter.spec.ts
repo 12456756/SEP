@@ -58,13 +58,13 @@ describe('HttpExceptionFilter diagnostic passthrough', () => {
   });
 
   it.each([gatewayPath, '/api/client/tasks', '/api/client/subscriptions/s/runtime'])(
-    'preserves local failure details consistently on %s', path => {
+    'keeps unhandled local failure details on the server on %s', path => {
       const error = Object.assign(new Error('fetch failed'), { code: 'NETWORK_FAILURE',
         cause: Object.assign(new Error('connection refused'), { code: 'ECONNREFUSED' }) });
       const { response, body } = catchException(error, path);
       expect(response.status).toHaveBeenCalledWith(500);
-      expect(body).toMatchObject({ message: 'fetch failed', name: 'Error', code: 'NETWORK_FAILURE',
-        cause: { message: 'connection refused', code: 'ECONNREFUSED' } });
+      expect(body).toMatchObject({ message: 'Internal server error', requestId: 'sep-request' });
+      expect(JSON.stringify(body)).not.toMatch(/fetch failed|connection refused|NETWORK_FAILURE|ECONNREFUSED/);
       expect(body.stack).toBeUndefined();
     });
 
@@ -165,5 +165,15 @@ describe('HttpExceptionFilter diagnostic passthrough', () => {
 
   it('does not trust arbitrary non-HTTP status properties', () => {
     expect(catchException({ message: 'failure', status: 401 }).response.status).toHaveBeenCalledWith(500);
+  });
+
+  it('keeps knowledge failure reasons while omitting private source metadata recursively', () => {
+    const { body } = catchException(new HttpException({ code: 'KNOWLEDGE_RESOURCE_NOT_FOUND', message: 'Source unavailable',
+      details: [{ documentName: 'private.txt', content: 'private text', enterpriseId: 'other-tenant',
+        reason: 'Source is no longer accessible', internalHost: 'private-host', query: 'private query' }] }, 404),
+    '/api/knowledge-bases/kb/sources/source');
+    expect(body).toMatchObject({ code: 'KNOWLEDGE_RESOURCE_NOT_FOUND', message: 'Source unavailable',
+      details: [{ reason: 'Source is no longer accessible' }] });
+    expect(JSON.stringify(body)).not.toMatch(/private|other-tenant/);
   });
 });

@@ -186,7 +186,7 @@ describe('HTTP runtime logging', () => {
 
   it('logs parser 413 failures registered before controller handling', async () => {
     await request(app.getHttpServer()).post('/api/parse').send({ data: 'private-input'.repeat(100) }).expect(413);
-    expect(entries(warn)[0]).toEqual(expect.objectContaining({ statusCode: 413, message: '请求体超过 HTTP 解析上限' }));
+    expect(entries(warn)[0]).toEqual(expect.objectContaining({ statusCode: 413, message: 'request entity too large' }));
     expect(JSON.stringify(entries())).not.toContain('private-input');
   });
 

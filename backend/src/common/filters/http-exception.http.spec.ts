@@ -4,6 +4,7 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { SensitiveDataFilter } from '../../modules/security/filters/sensitive-data.filter';
 import { fetchUpstream, readUpstreamJson } from '../errors/upstream-http.exception';
+import { localError } from '../errors/error-diagnostics';
 import { HttpExceptionFilter } from './http-exception.filter';
 
 @Controller('diagnostics')
@@ -22,6 +23,9 @@ class DiagnosticController {
   local(@Param('name') name: string) {
     if (name === 'business') throw new HttpException({ error: { code: 'CONFIG_CHANGED', stage: 'video-query',
       recovery: 'refresh_capabilities', message: 'Profile revision changed', requestId: 'supplier-request' } }, 409);
+    if (name === 'transport') throw localError(Object.assign(new Error('fetch failed'), {
+      cause: Object.assign(new Error('connection refused'), { code: 'ECONNREFUSED' }),
+    }), 502, { stage: 'transport' });
     throw Object.assign(new Error('Storage connection refused at postgres://user:password@db/private'), {
       code: 'STORAGE_UNAVAILABLE', cause: { code: 'ECONNREFUSED' } });
   }
@@ -79,10 +83,18 @@ describe('HTTP error diagnostic contract', () => {
       message: 'Required', received: null }], stage: 'quote', recovery: 'revise_request' });
   });
 
-  it('retains local errno and cause while removing connection credentials', async () => {
+  it('does not expose unhandled storage failures and connection details', async () => {
     const result = await request(app.getHttpServer()).get('/diagnostics/local/storage').expect(500);
-    expect(result.body).toMatchObject({ code: 'STORAGE_UNAVAILABLE', message: 'Storage connection refused at [REDACTED]',
-      cause: { code: 'ECONNREFUSED' } });
-    expect(result.text).not.toContain('password');
+    expect(result.body).toMatchObject({ message: 'Internal server error', requestId: 'sep-request' });
+    expect(result.text).not.toMatch(/password|STORAGE_UNAVAILABLE|ECONNREFUSED|Storage connection/);
+  });
+
+  it('retains explicit transport diagnostics and business recovery details', async () => {
+    const transport = await request(app.getHttpServer()).get('/diagnostics/local/transport').expect(502);
+    expect(transport.body).toMatchObject({ message: 'fetch failed', stage: 'transport',
+      cause: { cause: { message: 'connection refused', code: 'ECONNREFUSED' } } });
+    const business = await request(app.getHttpServer()).get('/diagnostics/local/business').expect(409);
+    expect(business.body.error).toMatchObject({ code: 'CONFIG_CHANGED', stage: 'video-query',
+      recovery: 'refresh_capabilities', message: 'Profile revision changed', requestId: 'supplier-request' });
   });
 });

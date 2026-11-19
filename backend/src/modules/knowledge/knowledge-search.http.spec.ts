@@ -72,7 +72,7 @@ describe('Knowledge search HTTP authentication, limiting and audit contract', ()
     search.getSource.mockReset().mockResolvedValue(source);
     telemetry.resolveActor.mockReset().mockResolvedValue(actor);
     telemetry.record.mockReset().mockResolvedValue(undefined);
-    token = jwt.sign({ sub: 'jwt-subject', type: 'access', userId: 'spoofed-user',
+    token = jwt.sign({ sub: 'jwt-subject', sid: 'session-real', type: 'access', userId: 'spoofed-user',
       enterpriseId: 'spoofed-enterprise', memberId: 'spoofed-member' }, { expiresIn: '5m' });
   });
 
@@ -116,7 +116,7 @@ describe('Knowledge search HTTP authentication, limiting and audit contract', ()
     auth.validateUser.mockResolvedValueOnce(null);
     const response = await call('search').expect(401);
     expect(response.headers['cache-control']).toBe('no-store');
-    expect(auth.validateUser).toHaveBeenCalledWith('jwt-subject');
+    expect(auth.validateUser).toHaveBeenCalledWith('jwt-subject', 'session-real');
     expect(policy.resolve).not.toHaveBeenCalled();
     expect(limiter.consume).not.toHaveBeenCalled();
   });
@@ -175,7 +175,7 @@ describe('Knowledge search HTTP authentication, limiting and audit contract', ()
       .send({ query: 'private question', knowledgeBaseIds: ['kb-a'], topK: 3 }).expect(200);
     expect(response.body).toEqual(result);
     expect(response.headers['cache-control']).toBe('no-store');
-    expect(auth.validateUser).toHaveBeenCalledWith('jwt-subject');
+    expect(auth.validateUser).toHaveBeenCalledWith('jwt-subject', 'session-real');
     expect(policy.resolve).toHaveBeenCalledWith('user-real');
     expect(limiter.consume).toHaveBeenCalledWith({ enterpriseId: viewer.enterpriseId, memberId: viewer.memberId }, 'search');
     expect(search.searchForMember).toHaveBeenCalledTimes(1);

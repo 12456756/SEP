@@ -27,6 +27,12 @@ describe('error diagnostic preservation', () => {
         stage: 'video-query', recovery: 'refresh_capabilities', attempts: [{ code: 'bad_size' }] } });
   });
 
+  it('omits internal storage keys while retaining safe failure reasons', () => {
+    expect(sanitizeError({ code: 'SKILL_ARTIFACT_BLOCKED', reason: 'INVALID_ENTRY',
+      storageKey: 'private/mock.zip', nested: { package_key: 'private/package.zip', message: 'Archive entry is invalid' } }))
+      .toEqual({ code: 'SKILL_ARTIFACT_BLOCKED', reason: 'INVALID_ENTRY', nested: { message: 'Archive entry is invalid' } });
+  });
+
   it('keeps causes but removes credentials, request context and stack traces', () => {
     const error = Object.assign(new Error('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED'),
       { code: 'ECONNREFUSED', url: 'postgres://user:password@private/db' }), request: { password: 'secret' } });

@@ -46,7 +46,7 @@ describe('Gateway production guard chain over HTTP', () => {
   let forward: jest.Mock;
   let authorize: jest.Mock;
   const prepare = jest.fn();
-  const sessions = { assertActiveSession: jest.fn() };
+  const sessions = { assertActiveSession: jest.fn(), assertEnterpriseActive: jest.fn() };
   const authProtection = { consumeFailure: jest.fn() };
   const executions = {
     start: jest.fn(), saveUsage: jest.fn(), finish: jest.fn(), fail: jest.fn(), setUpstreamRequest: jest.fn(),
@@ -109,6 +109,7 @@ describe('Gateway production guard chain over HTTP', () => {
       return [Number(allowed), bucket.count, bucket.resetAt - now, bucket.resetAt, windowMs];
     });
     sessions.assertActiveSession.mockReset().mockResolvedValue(undefined);
+    sessions.assertEnterpriseActive.mockReset().mockResolvedValue(undefined);
     authProtection.consumeFailure.mockReset().mockResolvedValue({
       allowed: true, rule: 'gateway-auth', dimension: 'token/socket', limit: 120, count: 1,
       windowMs: 60_000, retryAfterSeconds: 60, resetAt: 1_060_000,

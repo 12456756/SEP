@@ -258,7 +258,7 @@ describe("ComputeCreditService.chargeUsage", () => {
   it('未知中转倍率不扣费，也不落入倍率 1', async () => {
     (global.fetch as jest.Mock).mockRejectedValue(new Error('unavailable'));
 
-    await expect(charge()).rejects.toMatchObject({ status: 503 });
+    await expect(charge()).rejects.toMatchObject({ status: 502, response: { stage: 'transport', message: 'unavailable' } });
     expect(prisma.computeUsageRecord.create).not.toHaveBeenCalled();
     expect(wallet.consumeComputeUpTo).not.toHaveBeenCalled();
   });
