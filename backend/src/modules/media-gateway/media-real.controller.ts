@@ -21,7 +21,7 @@ import { MediaSpecValidationPipe } from './media-spec-validation.pipe';
 
 @ApiTags('media-gateway-real')
 @ApiBearerAuth()
-@ApiResponse({ status: 400, description: '字段、PNG 参考图片或参数无效' })
+@ApiResponse({ status: 400, description: '字段、JPEG/PNG/WebP 参考图片或参数无效' })
 @ApiResponse({ status: 401, description: 'employment token 无效' })
 @ApiResponse({ status: 403, description: '订阅授权失效或真实媒体预算不足' })
 @ApiResponse({ status: 404, description: '当前作用域内不存在资源' })
@@ -45,7 +45,7 @@ export class MediaRealController {
 
   @Post('references')
   @Header('Cache-Control', 'no-store')
-  @ApiOperation({ summary: '上传 PNG 参考图并保存作用域隔离的元数据' })
+  @ApiOperation({ summary: '上传 JPEG、PNG 或 WebP 原始参考图并保存作用域隔离的元数据' })
   @ApiConsumes('multipart/form-data')
   @ApiBody({ schema: { type: 'object', required: ['file'], properties: { file: { type: 'string', format: 'binary' } } } })
   @ApiResponse({ status: 201, description: '真实参考图描述' })

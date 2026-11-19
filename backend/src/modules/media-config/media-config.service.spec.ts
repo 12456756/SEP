@@ -116,7 +116,7 @@ describe('MediaConfigService', () => {
     expect(runtime).toMatchObject({ protocolVersion: 3, executionMode: 'real', executionAvailable: true,
       defaultProfileId: row.profileId, tools: ['image_generate', 'image_edit'], profiles: [{
         profileId: row.profileId, authorized: true, adapter: { id: 'sub2api-image', available: true,
-          referenceSupport: { maxCount: 4, maxInputBytes: 5 * 1024 * 1024, mimeTypes: ['image/png'] } },
+          referenceSupport: { maxCount: 4, maxInputBytes: 5 * 1024 * 1024, mimeTypes: ['image/png', 'image/jpeg', 'image/webp'] } },
       }] });
     expect(runtime.profiles[0]).toMatchObject({ modelId: row.modelId, modelDisplayName: row.modelId,
       parameters: { size: { values: row.capabilities.sizes, valuesMode: 'suggested', confidence: 'declared' },

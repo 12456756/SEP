@@ -28,7 +28,10 @@ describe('real video contracts', () => {
     const ref = { mock: false, referenceId: 'reference-1', expiresAt: '2026-10-20T01:00:00Z',
       mimeType: 'image/png', byteLength: 100, sha256: 'a'.repeat(64), width: 1280, height: 720 };
     expect(MediaVideoRealReferenceSchema.parse(ref)).toEqual(ref);
-    for (const extra of [{ mock: true }, { bytes: 'private' }, { mimeType: 'image/jpeg' }, { byteLength: 10 * 1024 * 1024 + 1 }]) {
+    for (const mimeType of ['image/jpeg', 'image/webp']) {
+      expect(MediaVideoRealReferenceSchema.parse({ ...ref, mimeType }).mimeType).toBe(mimeType);
+    }
+    for (const extra of [{ mock: true }, { bytes: 'private' }, { mimeType: 'image/heic' }, { byteLength: 10 * 1024 * 1024 + 1 }]) {
       expect(MediaVideoRealReferenceSchema.safeParse({ ...ref, ...extra }).success).toBe(false);
     }
   });

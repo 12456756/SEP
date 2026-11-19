@@ -14,6 +14,7 @@ import { MAX_MEDIA_REFERENCE_TOTAL_BYTES, effectiveImageLimits, IMAGE_REFERENCE_
 import type { MediaImageSpecV3, MediaRealAnyQuoteRequest, MediaRealAnyRequest, MediaRealQuoteRequestV3, MediaRealReceipt, MediaRealErrorCode } from 'shared';
 import { MediaRealAnyQuoteRequestSchema, MediaRealAnyRequestSchema, MediaRealAnyReceiptSchema } from 'shared';
 import { inspectMediaPng } from './media-png';
+import { inspectReferenceImage } from './media-reference-image';
 import { MediaByteCacheService } from './media-byte-cache.service';
 import { MediaRealBillingService } from './media-real-billing.service';
 import { MediaRealStore, RealRequestRecord, realMediaStorageUnavailable } from './media-real.store';
@@ -63,13 +64,11 @@ export class MediaRealService {
   async uploadReference(claims: ClientEmploymentClaims, file?: Express.Multer.File, fields?: unknown) {
     await this.authorize(claims);
     if (fields && Object.keys(fields as object).length) error(400, 'INVALID_REFERENCE', '参考上传不接受额外字段');
-    if (!file || !Buffer.isBuffer(file.buffer) || file.size !== file.buffer.length || file.mimetype !== 'image/png') error(400, 'INVALID_REFERENCE', '需要 PNG 文件');
-    let dimensions: { width: number; height: number };
-    try { dimensions = inspectMediaPng(file.buffer, IMAGE_REFERENCE_MAX_BYTES); }
-    catch (cause) { error(400, 'INVALID_REFERENCE', 'PNG 参考图无效或超出限制', { cause: exceptionDetails(cause) }); }
+    if (!file || !Buffer.isBuffer(file.buffer) || file.size !== file.buffer.length) error(400, 'INVALID_REFERENCE', '需要 JPEG、PNG 或 WebP 文件');
+    const { mimeType, width, height } = await inspectReferenceImage(file.buffer, IMAGE_REFERENCE_MAX_BYTES, file.mimetype);
     const expiresAt = new Date(Date.now() + REFERENCE_TTL).toISOString();
     const reference = await this.store.saveReference(this.scope(claims), {
-      mock: false, expiresAt, mimeType: 'image/png', byteLength: file.buffer.length, sha256: sha(file.buffer), ...dimensions,
+      mock: false, expiresAt, mimeType, byteLength: file.buffer.length, sha256: sha(file.buffer), width, height,
     });
     await this.cache.put('reference', this.scope(claims), reference.referenceId, file.buffer, expiresAt);
     return reference;

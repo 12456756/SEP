@@ -1,5 +1,9 @@
 import { z } from 'zod';
 
+export const MEDIA_REFERENCE_MIME_TYPES = ['image/png', 'image/jpeg', 'image/webp'] as const;
+export const MediaReferenceMimeTypeSchema = z.enum(MEDIA_REFERENCE_MIME_TYPES);
+export type MediaReferenceMimeType = z.infer<typeof MediaReferenceMimeTypeSchema>;
+
 export const MAX_MEDIA_REFERENCE_COUNT = 32;
 export const MAX_MEDIA_REFERENCE_TOTAL_BYTES = 100 * 1024 * 1024;
 export const MediaReferenceCountSchema = z.number().int().min(0).max(MAX_MEDIA_REFERENCE_COUNT);

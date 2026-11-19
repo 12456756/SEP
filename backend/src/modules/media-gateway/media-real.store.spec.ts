@@ -75,8 +75,8 @@ describe('MediaRealStore (mock PrismaService; no database)', () => {
     expect(JSON.stringify(failure.getResponse())).not.toContain('storage-secret');
   });
 
-  it('writes and reads references through the strict shared schema with the database ID', async () => {
-    const value = reference();
+  it.each(['image/png', 'image/jpeg', 'image/webp'] as const)('writes and reads %s references with the database ID', async mimeType => {
+    const value = { ...reference(), mimeType };
     prisma.mediaRealReference.create.mockResolvedValue({ id: 'reference-1' });
     const saved = await store.saveReference(SCOPE, value);
     expect(saved).toEqual(MediaRealReferenceSchema.parse({ ...value, referenceId: 'reference-1' }));

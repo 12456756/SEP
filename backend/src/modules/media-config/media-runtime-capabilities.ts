@@ -1,6 +1,7 @@
 import {
   effectiveImageLimits, IMAGE_REFERENCE_MAX_BYTES, VIDEO_OUTPUT_FORMAT, VIDEO_REFERENCE_MAX_BYTES,
   MediaAuthorizationSchema, MediaPolicySchema, MediaVideoAuthorizationSchema, MediaVideoPolicySchema,
+  MEDIA_REFERENCE_MIME_TYPES,
 } from 'shared';
 import type { MediaParameter, MediaParameterConstraint, MediaProfile, MediaReferenceRule, MediaVideoProfile } from 'shared';
 import { InternalServerErrorException } from '@nestjs/common';
@@ -49,7 +50,7 @@ function references(operations: MediaParameter['operations'], maxCount: number, 
   const referenceRules: MediaReferenceRule[] = operations.map(operation => {
     const needsImage = operation === 'edit' || operation === 'image-to-video';
     return { operation, minCount: needsImage ? 1 : 0, maxCount: needsImage ? maxCount : 0,
-      maxInputBytes: needsImage ? maxBytes : 0, mimeTypes: needsImage && maxCount > 0 ? ['image/png'] : [] };
+      maxInputBytes: needsImage ? maxBytes : 0, mimeTypes: needsImage && maxCount > 0 ? [...MEDIA_REFERENCE_MIME_TYPES] : [] };
   });
   return { referenceRules, referenceSupport: {
     maxCount: Math.max(0, ...referenceRules.map(rule => rule.maxCount)),

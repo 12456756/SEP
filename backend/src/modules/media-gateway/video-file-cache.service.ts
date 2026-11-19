@@ -7,8 +7,8 @@ import { lstat, mkdir, open, readdir, rename, rm, rmdir } from 'node:fs/promises
 import { join, parse, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { z } from 'zod';
-import { VIDEO_REFERENCE_MAX_BYTES } from 'shared';
-import { inspectMediaPng } from './media-png';
+import { MediaReferenceMimeTypeSchema, VIDEO_REFERENCE_MAX_BYTES } from 'shared';
+import { inspectReferenceImage } from './media-reference-image';
 import { exceptionDetails } from '../../common/errors/error-diagnostics';
 
 const run = promisify(execFile);
@@ -18,14 +18,14 @@ const hour = 60 * 60 * 1000;
 type Expected = { sha256: string; byteLength: number; expiresAt: string | null };
 const MetadataSchema = z.object({
   sha256: z.string().regex(/^[a-f0-9]{64}$/), byteLength: z.number().int().positive().max(VIDEO_CACHE_MAX_BYTES),
-  expiresAt: z.string().datetime({ offset: true }), mimeType: z.enum(['image/png', 'video/mp4']),
+  expiresAt: z.string().datetime({ offset: true }), mimeType: z.union([MediaReferenceMimeTypeSchema, z.literal('video/mp4')]),
   width: z.number().int().positive().max(16384), height: z.number().int().positive().max(16384),
   durationSeconds: z.number().finite().positive().max(Number.MAX_SAFE_INTEGER).optional(),
   frameRate: z.number().finite().positive().max(Number.MAX_SAFE_INTEGER).optional(),
   hasAudio: z.boolean().optional(),
 }).strict().superRefine((value, ctx) => {
   if (value.mimeType === 'video/mp4' && (value.durationSeconds === undefined || value.frameRate === undefined || value.hasAudio === undefined) ||
-    value.mimeType === 'image/png' && (value.byteLength > referenceMax || value.width > 4096 || value.height > 4096 ||
+    value.mimeType !== 'video/mp4' && (value.byteLength > referenceMax || value.width > 4096 || value.height > 4096 ||
       value.durationSeconds !== undefined || value.frameRate !== undefined || value.hasAudio !== undefined)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Invalid cached media metadata.' });
   }
@@ -49,8 +49,9 @@ export class VideoFileCacheService {
 
   async saveReference(scope: string, id: string, bytes: Buffer, expiresAt = new Date(Date.now() + 15 * 60_000).toISOString()) {
     this.deadline(expiresAt, 15 * 60_000);
-    const dimensions = inspectMediaPng(bytes, referenceMax);
-    const metadata: Metadata = { ...dimensions, mimeType: 'image/png', byteLength: bytes.length,
+    const { width, height, mimeType } = await inspectReferenceImage(bytes, referenceMax);
+    const dimensions = { width, height };
+    const metadata: Metadata = { ...dimensions, mimeType, byteLength: bytes.length,
       sha256: createHash('sha256').update(bytes).digest('hex'), expiresAt };
     let stage: string;
     try {
@@ -216,7 +217,9 @@ export class VideoFileCacheService {
     const info = await lstat(target);
     if (!info.isDirectory() || info.isSymbolicLink()) fail('MEDIA_STORAGE_UNAVAILABLE');
     const metadata = MetadataSchema.safeParse(JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(await this.bytes(join(target, 'manifest.json'), 4096))));
-    if (!metadata.success || metadata.data.mimeType !== (kind === 'reference' ? 'image/png' : 'video/mp4')) fail('OUTPUT_FAILED', 502);
+    if (!metadata.success || (kind === 'reference'
+      ? !MediaReferenceMimeTypeSchema.safeParse(metadata.data.mimeType).success
+      : metadata.data.mimeType !== 'video/mp4')) fail('OUTPUT_FAILED', 502);
     const value = metadata.data;
     if (Date.parse(value.expiresAt) <= Date.now()) fail(kind === 'reference' ? 'REFERENCE_EXPIRED' : 'RESULT_EXPIRED', 410);
     if (!includeBytes) return { metadata: value };

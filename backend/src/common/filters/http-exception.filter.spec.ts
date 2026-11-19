@@ -48,6 +48,15 @@ describe('HttpExceptionFilter diagnostic passthrough', () => {
     expect(JSON.stringify(body)).not.toMatch(/secret-token|secret-signature|raw-key|raw-credentials|internal stack/);
   });
 
+  it.each(['real', 'video-real'])('returns reference decoder messages and causes to the %s client', route => {
+    const diagnostic = { code: 'INVALID_REFERENCE', message: 'Reference cannot be decoded',
+      cause: { name: 'Error', message: 'Truncated WebP payload' } };
+    const { response, body } = catchException(new BadRequestException({ error: diagnostic }),
+      '/api/gateway/v1/media/' + route + '/references');
+    expect(response.status).toHaveBeenCalledWith(400);
+    expect(body).toMatchObject({ message: diagnostic.message, error: diagnostic, requestId: 'sep-request' });
+  });
+
   it.each([gatewayPath, '/api/client/tasks', '/api/client/subscriptions/s/runtime'])(
     'preserves local failure details consistently on %s', path => {
       const error = Object.assign(new Error('fetch failed'), { code: 'NETWORK_FAILURE',

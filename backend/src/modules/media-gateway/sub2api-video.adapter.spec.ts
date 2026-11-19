@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { MediaVideoGatewayQuoteRequestSchema, MediaVideoGatewayQuoteRequestV3Schema } from '../../shared/media-video.dto';
 import { SettingService } from '../setting/setting.service';
 import { Sub2apiVideoAdapter, VideoDispatchError } from './sub2api-video.adapter';
+import { referenceFixture } from './media-reference.test-support';
 
 const KEY = 'private-video-test-key';
 const BASE = 'https://relay.example.test/v1';
@@ -294,6 +295,18 @@ describe('Sub2apiVideoAdapter (mock fetch only)', () => {
     expect(JSON.parse(options.body.get('metadata'))).toEqual({ resolution: '768P', ratio: '16:9' });
     const file = options.body.get('input_reference') as Blob;
     expect(file.type).toBe('image/png'); expect(Buffer.from(await file.arrayBuffer())).toEqual(PNG);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('forwards mixed PNG, JPEG and WebP references in their original order and formats', async () => {
+    const references = [PNG, await referenceFixture('jpeg'), await referenceFixture('webp')];
+    const value = { ...inputV3(), operation: 'image-to-video' as const, referenceIds: ['png', 'jpeg', 'webp'] };
+    fetchMock.mockResolvedValueOnce(response(task()));
+    await adapter.submit(CONNECTION, value, 'minimax-h3', references, 'mixed-formats', 'price-1');
+    const files = fetchMock.mock.calls[0][1].body.getAll('input_reference') as File[];
+    expect(files.map(file => file.type)).toEqual(['image/png', 'image/jpeg', 'image/webp']);
+    expect(files.map(file => file.name)).toEqual(['reference-0.png', 'reference-1.jpg', 'reference-2.webp']);
+    for (const [index, file] of files.entries()) expect(Buffer.from(await file.arrayBuffer())).toEqual(references[index]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
