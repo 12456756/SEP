@@ -135,7 +135,7 @@ export type TaskStreamFrame =
   | { type: 'step_input'; stepKey: string; inputPrompt: string; handoff: TaskHandoffEntry[] }
   | { type: 'tool'; stepKey: string; name: string; phase: 'start' | 'end'; success?: boolean; durationMs?: number }
   | { type: 'event'; event: TaskRunEventView }
-  | { type: 'deliverable'; deliverable: string; degraded: boolean; generatedAt: string }
+  | { type: 'deliverable'; deliverable: string; degraded: boolean; generatedAt: string; diagnostic?: unknown }
   /** 保活帧，同时携带 worker 心跳，前端据此判断「还活着」 */
   | { type: 'ping'; heartbeatAt: string | null };
 

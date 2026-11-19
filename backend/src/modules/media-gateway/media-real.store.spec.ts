@@ -51,9 +51,10 @@ async function expectUnavailable(action: Promise<unknown>) {
   const error: unknown = await action.then(() => { throw new Error('Expected storage rejection'); }, reason => reason);
   expect(error).toBeInstanceOf(HttpException);
   expect((error as HttpException).getStatus()).toBe(503);
-  expect((error as HttpException).getResponse()).toEqual({ error: {
+  expect((error as HttpException).getResponse()).toMatchObject({ error: {
     code: 'MEDIA_STORAGE_UNAVAILABLE', message: '媒体存储暂不可用，请查询原请求，不要重新生成',
   } });
+  return error as HttpException;
 }
 
 describe('MediaRealStore (mock PrismaService; no database)', () => {
@@ -62,6 +63,16 @@ describe('MediaRealStore (mock PrismaService; no database)', () => {
   beforeEach(() => {
     prisma = mockPrisma();
     store = new MediaRealStore(prisma as unknown as PrismaService);
+  });
+
+  it('retains database diagnostics with credentials redacted and without retrying writes', async () => {
+    prisma.mediaRealReference.create.mockRejectedValueOnce(Object.assign(
+      new Error('Database connection refused postgres://user:storage-secret@private/db'), { code: 'ECONNREFUSED' }));
+    const failure = await expectUnavailable(store.saveReference(SCOPE, reference()));
+    expect(failure.getResponse()).toMatchObject({ error: { cause: { code: 'ECONNREFUSED',
+      message: 'Database connection refused [REDACTED]' } } });
+    expect(prisma.mediaRealReference.create).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(failure.getResponse())).not.toContain('storage-secret');
   });
 
   it('writes and reads references through the strict shared schema with the database ID', async () => {

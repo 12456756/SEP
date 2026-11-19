@@ -28,6 +28,7 @@ import {
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { ConversationService } from './conversation.service';
 import { ConversationStreamService } from './conversation-stream.service';
+import { streamErrorDetails } from '../../common/errors/upstream-http.exception';
 import {
   ConversationCreateDto,
   ConversationCreateDtoSchema,
@@ -188,10 +189,7 @@ export class ConversationController {
       this.logger.error(`SSE error session=${id} status=${err instanceof HttpException ? err.getStatus() : 'internal'}`);
       if (!res.headersSent && !abort.signal.aborted) throw err;
       if (!abort.signal.aborted) {
-        const response = err instanceof HttpException ? err.getResponse() : undefined;
-        const details = response && typeof response === 'object' && 'error' in response &&
-          response.error && typeof response.error === 'object' ? response.error : response;
-        res.write(`event: error\ndata: ${JSON.stringify({ message: err instanceof HttpException ? err.message : '对话处理失败，请稍后重试', ...(details && typeof details === 'object' ? details : {}) })}\n\n`);
+        res.write(`event: error\ndata: ${JSON.stringify(streamErrorDetails(err))}\n\n`);
       }
     } finally {
       res.off('close', onClose);

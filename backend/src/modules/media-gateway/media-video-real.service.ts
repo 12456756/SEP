@@ -3,7 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import { Decimal } from '@prisma/client/runtime/library';
 import { createHash } from 'node:crypto';
 import { MAX_MEDIA_REFERENCE_TOTAL_BYTES } from 'shared';
-import { MediaUpstreamException } from '../../common/errors/media-upstream.exception';
+import { MediaUpstreamException, mediaFailure, retainMediaFailure } from '../../common/errors/media-upstream.exception';
+import { exceptionDetails } from '../../common/errors/error-diagnostics';
 import { z } from 'zod';
 import { isVideoDurationInRange, MediaVideoDurationRangeSchema, parseUsdToCnyRate, SETTING_KEYS, VIDEO_REFERENCE_MAX_BYTES } from 'shared';
 import type { MediaVideoGatewayQuoteRequest, MediaVideoGatewayQuoteRequestV3,
@@ -75,7 +76,8 @@ export class MediaVideoRealService {
     if (fields && Object.keys(fields as object).length) fail(400, 'INVALID_REFERENCE', '参考上传不接受额外字段');
     if (!file || !Buffer.isBuffer(file.buffer) || file.size !== file.buffer.length || file.mimetype !== 'image/png' || file.size > VIDEO_REFERENCE_MAX_BYTES) fail(400, 'INVALID_REFERENCE', '需要不超过 10MiB 的 PNG 参考图');
     let dimensions: { width: number; height: number };
-    try { dimensions = inspectMediaPng(file.buffer, VIDEO_REFERENCE_MAX_BYTES); } catch { fail(400, 'INVALID_REFERENCE', '参考 PNG 无效'); }
+    try { dimensions = inspectMediaPng(file.buffer, VIDEO_REFERENCE_MAX_BYTES); }
+    catch (cause) { fail(400, 'INVALID_REFERENCE', '参考 PNG 无效', { cause: exceptionDetails(cause) }); }
     if (!profiles.profiles.some((profile: any) => profile.operations.includes('image-to-video') && profile.adapter.referenceSupport.maxInputBytes >= file.size)) fail(400, 'INVALID_REFERENCE', '参考图超过 Profile 输入限制');
     const expiresAt = new Date(Date.now() + REFERENCE_TTL).toISOString();
     const scope = this.scope(claims);
@@ -354,7 +356,7 @@ export class MediaVideoRealService {
         const current = await this.store.findRequest(record.scope, record.receipt.receiptId);
         if (current && ['QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN'].includes(current.receipt.status)) {
           current.receipt.errorCode = downloading ? 'OUTPUT_FAILED' : 'UPSTREAM_FAILED';
-          if (error instanceof MediaUpstreamException) current.receipt.upstreamError = error.upstreamError;
+          current.receipt.upstreamError = error instanceof MediaUpstreamException ? error.upstreamError : mediaFailure(error);
           record = (await this.store.save(this.normalize(current))).record;
         } else if (current) record = current;
         if (error instanceof MediaUpstreamException) throw error;
@@ -394,6 +396,7 @@ export class MediaVideoRealService {
     } catch (error) {
       // Missing or contradictory billing evidence is not authorization to release money.
       record.receipt.billingStatus = 'RECONCILING';
+      record.receipt.upstreamError = retainMediaFailure(record.receipt.upstreamError, error, 'billing');
       record = (await this.store.save(this.normalize(record))).record;
       if (error instanceof MediaUpstreamException) throw error;
     }
@@ -416,7 +419,10 @@ export class MediaVideoRealService {
       }
       await this.billing.release(record.receipt.receiptId);
       record.receipt.billingStatus = 'RELEASED';
-    } catch { record.receipt.billingStatus = 'RECONCILING'; }
+    } catch (error) {
+      record.receipt.billingStatus = 'RECONCILING';
+      record.receipt.upstreamError = retainMediaFailure(record.receipt.upstreamError, error, 'release');
+    }
     await this.store.save(this.normalize(record));
   }
 
@@ -461,11 +467,11 @@ export class MediaVideoRealService {
     if (execution) this.assertRealEnabled();
     const member = await this.prisma.enterpriseMember.findFirst({
       where: { id: claims.memberId, enterpriseId: claims.enterpriseId, userId: claims.sub, user: { status: 'ACTIVE' }, enterprise: { status: 'ACTIVE' } }, select: { departmentId: true },
-    }).catch(() => videoStorageUnavailable());
+    }).catch(cause => videoStorageUnavailable(cause));
     if (!member) fail(403, 'MEDIA_FORBIDDEN', '成员无视频访问权限');
     const subscription = await this.prisma.subscription.findFirst({ where: clientSubscriptionAccessWhere({
       enterpriseId: claims.enterpriseId, memberId: claims.memberId, departmentId: member.departmentId, role: 'MEMBER',
-    }, claims.subscriptionId), select: { id: true } }).catch(() => videoStorageUnavailable());
+    }, claims.subscriptionId), select: { id: true } }).catch(cause => videoStorageUnavailable(cause));
     if (!subscription) fail(403, 'MEDIA_FORBIDDEN', '订阅已失效或视频授权已撤销');
   }
 
@@ -646,7 +652,7 @@ export class MediaVideoRealService {
   private scope(claims: ClientEmploymentClaims) { return JSON.stringify([claims.enterpriseId, claims.subscriptionId, claims.memberId, claims.sub]); }
   private parse<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, raw: unknown): T {
     const parsed = schema.safeParse(raw);
-    if (!parsed.success) fail(400, 'INVALID_PARAMETER', '视频参数无效');
+    if (!parsed.success) fail(400, 'INVALID_PARAMETER', '视频参数无效', { cause: exceptionDetails(parsed.error) });
     return parsed.data;
   }
 }

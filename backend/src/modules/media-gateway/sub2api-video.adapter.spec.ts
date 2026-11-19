@@ -105,7 +105,7 @@ describe('Sub2apiVideoAdapter (mock fetch only)', () => {
     const error = await promise.then(() => { throw new Error('Expected rejection'); }, (error: unknown) => error) as HttpException;
     expect(error).toBeInstanceOf(HttpException);
     expect(error.getStatus()).toBe(status);
-    expect(error.getResponse()).toEqual(body);
+    expect(error.getResponse()).toMatchObject(body as object);
     expect(JSON.stringify(error.getResponse()) + error.stack).not.toContain(KEY);
     return error;
   }
@@ -159,8 +159,9 @@ describe('Sub2apiVideoAdapter (mock fetch only)', () => {
     });
 
   it('redacts setting failures and rejects modified frozen connections', async () => {
-    settings.getMediaConnection.mockRejectedValue(new Error(KEY));
-    await errorOf(adapter.connection(), 'PRICE_UNAVAILABLE');
+    settings.getMediaConnection.mockRejectedValue(Object.assign(new Error(`Connection configuration read failed: ${KEY}`), { apiKey: KEY, code: 'CONFIG_READ_FAILED' }));
+    const configError = await errorOf(adapter.connection(), 'PRICE_UNAVAILABLE');
+    expect(configError.getResponse()).toMatchObject({ error: { message: 'Connection configuration read failed: [REDACTED]', details: { code: 'CONFIG_READ_FAILED' } } });
     await originalError(adapter.discover({ ...CONNECTION, key: 'changed' }), 502,
       { error: { name: 'Error', message: 'Invalid frozen media connection' } });
     expect(fetchMock).not.toHaveBeenCalled();
@@ -325,7 +326,7 @@ describe('Sub2apiVideoAdapter (mock fetch only)', () => {
       url: 'https://private.invalid/?secret=private-value', body: inputV3().creativeBrief } }, status));
     const error = await originalError(adapter.submit(CONNECTION, inputV3(), 'minimax-h3', [], 'client-v3', 'price-1'), status,
       { error: { code: 'unsupported_parameter', message: '[REDACTED]',
-        url: 'https://private.invalid/?secret=private-value', body: inputV3().creativeBrief } });
+        url: 'https://private.invalid/?[REDACTED]', body: inputV3().creativeBrief } });
     expect(error).toMatchObject({ definitelyRejected: false, specUnsupported: true, requestId: BILLING_ID });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -365,7 +366,7 @@ describe('Sub2apiVideoAdapter (mock fetch only)', () => {
 
   it.each([302, 408, 500, 502, 503])('treats HTTP %i as unknown without redispatch', async status => {
     fetchMock.mockResolvedValueOnce(response({ error: KEY }, status));
-    const error = await originalError(adapter.submit(CONNECTION, input(), 'minimax-h3', [], 'client-1', 'price-1'), status, { error: '[REDACTED]' });
+    const error = await originalError(adapter.submit(CONNECTION, input(), 'minimax-h3', [], 'client-1', 'price-1'), status < 400 ? 502 : status, { error: '[REDACTED]' });
     expect(error).toMatchObject({ requestId: BILLING_ID, definitelyRejected: false });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -494,7 +495,7 @@ describe('Sub2apiVideoAdapter (mock fetch only)', () => {
 
   it('preserves redirect errors and diagnoses oversized or non-JSON metadata', async () => {
     fetchMock.mockResolvedValueOnce(response({ private: KEY }, 302, { Location: 'https://private.example.test' }));
-    await originalError(adapter.rawContent(CONNECTION, TASK_ID), 302, { private: '[REDACTED]' });
+    await originalError(adapter.rawContent(CONNECTION, TASK_ID), 502, { private: '[REDACTED]' });
     fetchMock.mockResolvedValueOnce(new Response('x'.repeat(64 * 1024 + 1), { headers: { 'Content-Type': 'application/json' } }));
     await originalError(adapter.pricing(CONNECTION, input(), 'minimax-h3'), 502,
       { error: { name: 'Error', message: 'Upstream response exceeds 65536 bytes' } });

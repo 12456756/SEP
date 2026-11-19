@@ -6,8 +6,10 @@ import { IMAGE_ADAPTER_MAX_OUTPUTS, IMAGE_REFERENCE_MAX_BYTES } from 'shared';
 import { SettingService } from '../setting/setting.service';
 import { isSupportedImageModel } from './image-model-contract';
 import { inspectMediaPng } from './media-png';
-import { MediaUpstreamException, mediaFailure, readMediaUpstreamError, protectMediaCredential } from '../../common/errors/media-upstream.exception';
+import { MediaUpstreamException, mediaFailure, mediaDispatchFailure, readMediaUpstreamError, protectMediaCredential } from '../../common/errors/media-upstream.exception';
 import type { MediaUpstreamError } from 'shared';
+import { errorMessage, hasBusinessError, sanitizeError } from '../../common/errors/error-diagnostics';
+import { upstreamHeaders } from '../../common/errors/upstream-http.exception';
 
 const ModelIdSchema = z.string().min(1).max(160).regex(/^[^\s\p{Cc}\p{Cf}]+$/u);
 const ModelsSchema = z.object({
@@ -37,15 +39,19 @@ export type Sub2apiImageUsage = z.infer<typeof UsageSchema>;
 export interface Sub2apiImageConnection { base: string; key: string }
 export const SUB2API_IMAGE_ADAPTER_VERSION = 'sub2api-image-v3';
 export class ImageDispatchError extends HttpException {
+  readonly upstreamError?: MediaUpstreamError;
   constructor(readonly requestId: string | null, readonly definitelyRejected: boolean,
     readonly safeCode: 'UPSTREAM_FAILED' | 'UPSTREAM_SPEC_UNSUPPORTED' = 'UPSTREAM_FAILED',
-    readonly upstreamError?: MediaUpstreamError) {
+    upstreamError?: MediaUpstreamError) {
+    upstreamError = mediaDispatchFailure(upstreamError);
     super((upstreamError?.body ?? { error: { code: safeCode === 'UPSTREAM_SPEC_UNSUPPORTED' ? safeCode : definitelyRejected ? safeCode : 'SUBMISSION_UNKNOWN',
-      message: '图片上游执行未完成，请查询原请求' } }) as string | Record<string, unknown>, upstreamError?.status ?? 502);
+      message: '图片上游执行未完成，请查询原请求' } }) as string | Record<string, unknown>, upstreamError?.status >= 400 ? upstreamError.status : 502);
+    this.upstreamError = upstreamError;
   }
 }
-function unavailable(code = 'PRICE_UNAVAILABLE'): never {
-  throw new HttpException({ error: { code, message: '图片上游合同暂不可核验，不能提交收费执行' } }, 503);
+function unavailable(code = 'PRICE_UNAVAILABLE', diagnostic: unknown = 'Image upstream contract could not be verified'): never {
+  const details = sanitizeError(diagnostic);
+  throw new HttpException({ error: { code, message: errorMessage(details) ?? String(diagnostic), details, origin: 'sep' } }, 503);
 }
 export function resolveSub2apiImageSpec(input: MediaRealAnyQuoteRequest, stage: 'quote' | 'submit'): MediaImageSpecV3 & { size: string; count: number; quality: string } {
   if ('parameters' in input) return input.parameters as MediaImageSpecV3 & { size: string; count: number; quality: string };
@@ -88,7 +94,7 @@ export class Sub2apiImageAdapter {
   async discoverModels(connection?: Sub2apiImageConnection): Promise<Array<{ modelId: string; displayName: string }>> {
     const result = await this.call('/models', { method: 'GET' }, 15_000, 1024 * 1024, false, undefined, connection);
     const parsed = ModelsSchema.safeParse(result.value);
-    if (!parsed.success) unavailable();
+    if (!parsed.success) unavailable('PRICE_UNAVAILABLE', { message: 'Image model catalog validation failed', errors: parsed.error.issues });
     // The shared catalog is not evidence that a model supports image operations.
     const models = new Map<string, { modelId: string; displayName: string }>();
     for (const model of parsed.data.data) {
@@ -110,14 +116,16 @@ export class Sub2apiImageAdapter {
       headers: { 'Content-Type': 'application/json' },
     }, 15_000, 64 * 1024, false, undefined, snapshot);
     const parsed = PricingSchema.safeParse(result.value);
-    if (!parsed.success) unavailable();
+    if (!parsed.success) unavailable('PRICE_UNAVAILABLE', { message: 'Image quote response validation failed', errors: parsed.error.issues });
     const price = parsed.data;
     if (price.model !== modelId || price.operation !== input.operation || price.size !== spec.size ||
       price.n !== spec.count || price.quality !== spec.quality || price.pricing_status !== 'quoted' ||
       price.billing_mode === 'token' || price.amount_usd === null || Date.parse(price.expires_at) <= Date.now() ||
       Date.parse(price.expires_at) > Date.now() + 120_000 || Date.parse(price.observed_at) > Date.now() + 5000 ||
       (/fallback|default|unknown/i.test(price.pricing_source) &&
-        !(price.pricing_source === 'fallback' && price.pricing_authority === 'sub2api_customer_billing'))) unavailable();
+        !(price.pricing_source === 'fallback' && price.pricing_authority === 'sub2api_customer_billing'))) unavailable('PRICE_UNAVAILABLE', {
+          message: 'Image quote is unavailable, expired or does not match the requested model/specification', quote: price,
+          expected: { modelId, operation: input.operation, size: spec.size, n: spec.count, quality: spec.quality } });
     return price;
   }
 
@@ -128,7 +136,9 @@ export class Sub2apiImageAdapter {
     if (!parsed.success || parsed.data.request_id !== requestId ||
       (parsed.data.status === 'settled' && (parsed.data.actual_cost_usd === null || parsed.data.model == null ||
         parsed.data.image_count == null || parsed.data.image_count < 1 || parsed.data.image_count > 4)) ||
-      (parsed.data.status === 'pending' && parsed.data.actual_cost_usd !== null)) unavailable('BILLING_PENDING');
+      (parsed.data.status === 'pending' && parsed.data.actual_cost_usd !== null)) unavailable('BILLING_PENDING', {
+        message: 'Image usage response is invalid or does not match the original request/settlement state',
+        details: parsed.success ? parsed.data : parsed.error.issues });
     return parsed.data;
   }
 
@@ -158,24 +168,27 @@ export class Sub2apiImageAdapter {
       body = form;
     }
     const result = await this.call(`/images/${input.operation === 'generate' ? 'generations' : 'edits'}`, { method: 'POST', headers, body }, 180_000, 140 * 1024 * 1024, true, onRequestId, snapshot, !('parameters' in input));
-    if (!result.requestId) throw new ImageDispatchError(null, false);
+    if (!result.requestId) throw new ImageDispatchError(null, false, 'UPSTREAM_FAILED',
+      mediaFailure(new HttpException({ error: { message: 'Image response is missing a valid billing correlation/request ID', origin: 'sep' } }, 502)));
     const value = z.object({ model: ModelIdSchema.optional(),
       data: z.array(z.object({ b64_json: z.string().min(1) })).min(1).max(IMAGE_ADAPTER_MAX_OUTPUTS) }).safeParse(result.value);
     if (!value.success || (value.data.model !== undefined && value.data.model !== modelId) ||
-      ('parameters' in input && value.data.data.length > spec.count)) throw new ImageDispatchError(result.requestId, false);
+      ('parameters' in input && value.data.data.length > spec.count)) throw new ImageDispatchError(result.requestId, false, 'UPSTREAM_FAILED',
+        mediaFailure(new HttpException({ error: { message: 'Image response schema, model or output count does not match the request',
+          origin: 'sep', details: value.success ? { model: value.data.model, count: value.data.data.length } : value.error.issues } }, 502)));
     const images: Buffer[] = [];
     try {
       for (const item of value.data.data) {
-        if (item.b64_json.length > Math.ceil(25 * 1024 * 1024 / 3) * 4 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(item.b64_json)) throw new Error();
+        if (item.b64_json.length > Math.ceil(25 * 1024 * 1024 / 3) * 4 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(item.b64_json)) throw new Error('Image base64 output is invalid or exceeds the size limit');
         const bytes = Buffer.from(item.b64_json, 'base64');
         const dimensions = inspectMediaPng(bytes);
         if ('parameters' in input) {
           const expected = spec.size.match(/^([1-9]\d*)x([1-9]\d*)$/);
-          if (expected && (dimensions.width !== Number(expected[1]) || dimensions.height !== Number(expected[2]))) throw new Error();
+          if (expected && (dimensions.width !== Number(expected[1]) || dimensions.height !== Number(expected[2]))) throw new Error(`Image dimensions ${dimensions.width}x${dimensions.height} do not match requested ${spec.size}`);
         }
         images.push(bytes);
       }
-    } catch { throw new ImageDispatchError(result.requestId, false); }
+    } catch (error) { throw new ImageDispatchError(result.requestId, false, 'UPSTREAM_FAILED', mediaFailure(error)); }
     return { requestId: result.requestId, images };
   }
 
@@ -183,7 +196,7 @@ export class Sub2apiImageAdapter {
     try {
       const { baseUrl, apiKey } = await this.settings.getMediaConnection('image');
       return this.normalizeConnection({ base: baseUrl, key: apiKey });
-    } catch { unavailable(); }
+    } catch (error) { if (error instanceof HttpException) throw error; unavailable('PRICE_UNAVAILABLE', error); }
   }
 
   private normalizeConnection(connection: Sub2apiImageConnection): Sub2apiImageConnection {
@@ -191,7 +204,7 @@ export class Sub2apiImageAdapter {
       const url = new URL(connection.base);
       if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || !connection.key || /[^\x21-\x7e]/.test(connection.key)) unavailable();
       return { base: url.href.replace(/\/+$/, '').replace(/\/v1$/, '') + '/v1', key: connection.key };
-    } catch { unavailable(); }
+    } catch (error) { if (error instanceof HttpException) throw error; unavailable('PRICE_UNAVAILABLE', error); }
   }
 
   private async call(path: string, options: RequestInit, timeout: number, maxBytes: number, dispatch = false, onRequestId?: (requestId: string) => Promise<void>, snapshot?: Sub2apiImageConnection, classifySpec = false): Promise<{ value: unknown; requestId: string | null }> {
@@ -207,10 +220,13 @@ export class Sub2apiImageAdapter {
       requestId = rawId && /^[A-Za-z0-9_.:-]{1,256}$/.test(rawId) && clientId !== '' ? rawId : null;
       if (requestId && onRequestId) {
         try { await onRequestId(requestId); }
-        catch {
+        catch (error) {
           await response.body?.cancel().catch(() => {});
           // Persistence failure cannot establish that upstream work was rejected.
-          throw new ImageDispatchError(requestId, false);
+          throw new ImageDispatchError(requestId, false, 'UPSTREAM_FAILED', { status: 502, body: { error: {
+            code: 'SUBMISSION_UNKNOWN', origin: 'sep', stage: 'request-id-persistence',
+            message: errorMessage(mediaFailure(error).body) ?? 'Request ID persistence failed', cause: mediaFailure(error).body,
+          } } });
         }
       }
       if (!response.ok) {
@@ -231,7 +247,13 @@ export class Sub2apiImageAdapter {
           length += part.value.length; if (length > maxBytes) throw new Error(`Upstream response exceeds ${maxBytes} bytes`); chunks.push(Buffer.from(part.value));
         }
       } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
-      return { value: JSON.parse(Buffer.concat(chunks).toString('utf8')), requestId };
+      const value = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      if (hasBusinessError(value)) {
+        const failure = protectMediaCredential({ status: response.status, body: value, headers: upstreamHeaders(response) }, connection.key);
+        if (dispatch) throw new ImageDispatchError(requestId, false, 'UPSTREAM_FAILED', failure);
+        throw new MediaUpstreamException(failure);
+      }
+      return { value, requestId };
     } catch (error) {
       if (error instanceof HttpException) throw error;
       const failure = protectMediaCredential(mediaFailure(error), connection.key);

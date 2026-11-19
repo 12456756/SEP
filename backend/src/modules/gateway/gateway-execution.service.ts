@@ -8,6 +8,7 @@ import { ModelBillingSnapshotSchema, type ChatCompletionUsage, type ModelRuntime
 import { validGatewayUsage } from './gateway-response';
 import { timeoutValue } from './gateway-stream';
 import { waitForGatewayOperation } from './gateway-operation';
+import { exceptionDetails } from '../../common/errors/error-diagnostics';
 
 @Injectable()
 export class GatewayExecutionService implements OnModuleInit {
@@ -21,7 +22,7 @@ export class GatewayExecutionService implements OnModuleInit {
   ) {}
 
   onModuleInit() {
-    void this.reconcile().catch(() => this.logger.error({ event: 'gateway_reconcile_unavailable' }));
+    void this.reconcile().catch(error => this.logger.error({ event: 'gateway_reconcile_unavailable', diagnostic: exceptionDetails(error) }));
   }
 
   async start(claims: ClientEmploymentClaims, employeeId: string, modelId: string, requestId: string,
@@ -54,6 +55,7 @@ export class GatewayExecutionService implements OnModuleInit {
       throw new ServiceUnavailableException({ error: {
         code: 'EXECUTION_JOURNAL_UNAVAILABLE', type: 'server_error', source: 'platform',
         message: '模型执行记录暂不可用，请稍后重试', param: null,
+        cause: exceptionDetails(error),
       } });
     }
   }

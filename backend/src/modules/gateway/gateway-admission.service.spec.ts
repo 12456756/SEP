@@ -92,26 +92,27 @@ describe('GatewayAdmissionService', () => {
     },
   );
 
-  it('fails closed on Redis failures during acquire and reserve without leaking details', async () => {
-    evalMock.mockRejectedValue(new Error('private credentials'));
-    for (const operation of [service.acquire(identity, policySnapshot()),
-      service.reserve(identity, policySnapshot({ GATEWAY_ENTERPRISE_TOKEN_BUDGET: 1000 }), {}, 10)]) {
-      const error = await operation.catch(error => error);
+  it('fails closed and retains Redis causes after credential redaction', async () => {
+    evalMock.mockRejectedValue(Object.assign(new Error('Redis AUTH failed password=redis-secret'), { code: 'WRONGPASS' }));
+    for (const operation of [() => service.acquire(identity, policySnapshot()),
+      () => service.reserve(identity, policySnapshot({ GATEWAY_ENTERPRISE_TOKEN_BUDGET: 1000 }), {}, 10)]) {
+      const error = await operation().catch(error => error);
       expect(error).toMatchObject({ status: 503, response: { error: {
         source: 'platform', code: 'PLATFORM_ADMISSION_UNAVAILABLE', policyVersion: 7,
+        cause: { code: 'WRONGPASS', message: 'Redis AUTH failed password=[REDACTED]' },
       } } });
-      expect(JSON.stringify(error.getResponse())).not.toContain('private');
+      expect(JSON.stringify(error.getResponse())).not.toContain('redis-secret');
     }
   });
 
   it('logs a failed release without masking the upstream outcome or leaking Redis details', async () => {
     const lease = await service.acquire(identity, policySnapshot());
-    evalMock.mockRejectedValueOnce(new Error('private Redis credentials'));
+    evalMock.mockRejectedValueOnce(new Error('Redis AUTH failed password=redis-secret'));
     await expect(lease.release()).resolves.toBeUndefined();
     await lease.release();
     expect(evalMock).toHaveBeenCalledTimes(2);
     expect(Logger.prototype.error).toHaveBeenCalledWith(expect.stringContaining('gateway_admission_release_failed'));
-    expect(JSON.stringify((Logger.prototype.error as jest.Mock).mock.calls)).not.toContain('private');
+    expect(JSON.stringify((Logger.prototype.error as jest.Mock).mock.calls)).not.toContain('redis-secret');
   });
 
   it('preserves main raw identity hashes and token bucket names across deployments', () => {

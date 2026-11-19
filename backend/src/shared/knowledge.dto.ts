@@ -116,6 +116,7 @@ export interface KnowledgeSearchResponse {
   actualStrategy: KnowledgeSearchStrategy | null;
   degraded: boolean;
   degradationReason: 'QUERY_EMBEDDING_UNAVAILABLE' | null;
+  diagnostic?: unknown;
   durationMs: number;
   count: number;
   partial: boolean;

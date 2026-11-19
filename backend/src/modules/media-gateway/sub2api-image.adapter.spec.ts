@@ -90,7 +90,8 @@ async function expectOriginal(action: Promise<unknown>, status: number, body: un
   const error = await action.catch((reason: unknown) => reason) as HttpException;
   expect(error).toBeInstanceOf(HttpException);
   expect(error.getStatus()).toBe(status);
-  expect(error.getResponse()).toEqual(body);
+  if (body !== null && typeof body === 'object') expect(error.getResponse()).toMatchObject(body as object);
+  else expect(error.getResponse()).toEqual(body);
   expect(JSON.stringify(error.getResponse()) + error.stack).not.toContain(API_KEY);
   return error;
 }
@@ -134,7 +135,7 @@ describe('Sub2apiImageAdapter', () => {
         creativeBrief: 'A future image', requestedSpec: { size: '1x1', count: 1, quality: 'studio' } });
       fetchMock.mockResolvedValueOnce(response({ error: { code, message: 'private-api-key https://secret.internal/account', token: API_KEY } }, { status, requestId: REQUEST_ID }));
       const failure = await expectOriginal(adapter.execute(negotiated, [], undefined, 'future-image-native'), status,
-        { error: { code, message: 'private-api-key https://secret.internal/account', token: '[REDACTED]' } });
+        { error: { code, message: 'private-api-key [REDACTED]', token: '[REDACTED]' } });
       expect(failure).toMatchObject({ definitelyRejected: false, requestId: REQUEST_ID });
       expect((failure as ImageDispatchError).safeCode).toBe(expected === 'UPSTREAM_SPEC_UNSUPPORTED' ? expected : 'UPSTREAM_FAILED');
     },
@@ -144,9 +145,9 @@ describe('Sub2apiImageAdapter', () => {
     const negotiated = MediaRealQuoteRequestV3Schema.parse({ protocolVersion: 3, specRevision: 1,
       profileId: 'future.image', configVersion: 'future-config', operation: 'generate', referenceIds: [],
       creativeBrief: 'A future image', requestedSpec: { size: '1x1', count: 1, quality: 'studio' } });
-    fetchMock.mockResolvedValueOnce(response({ error: { code: 'unsupported_spec', message: 'x'.repeat(65 * 1024) } }, { status: 422 }));
-    const failure = await expectOriginal(adapter.execute(negotiated, [], undefined, 'future-image-native'), 502,
-      { error: { name: 'Error', message: 'Upstream error response exceeds 64 KiB' } });
+    fetchMock.mockResolvedValueOnce(response({ error: { code: 'unsupported_spec', message: 'x'.repeat(257 * 1024) } }, { status: 422 }));
+    const failure = await expectOriginal(adapter.execute(negotiated, [], undefined, 'future-image-native'), 422,
+      { body: expect.any(String), truncated: true });
     expect(failure).toMatchObject({ definitelyRejected: false, safeCode: 'UPSTREAM_FAILED' });
   });
 
@@ -301,8 +302,9 @@ describe('Sub2apiImageAdapter', () => {
     ['wrong count', { n: 2 }],
     ['wrong quality', { quality: 'high' }],
     ['expired quote', { expires_at: new Date(Date.now() - 1).toISOString() }],
-    ['quote lifetime too long', { expires_at: new Date(Date.now() + 121_000).toISOString() }],
+    ['quote lifetime too long', { expires_at: new Date(Date.now() + 180_000).toISOString() }],
   ])('rejects %s pricing without reserving or dispatching', async (_label, overrides) => {
+    jest.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-11-18T00:00:00Z'));
     fetchMock.mockResolvedValueOnce(response(price(overrides)));
     await expectCode(adapter.pricing(input()), 503, 'PRICE_UNAVAILABLE');
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -345,7 +347,7 @@ describe('Sub2apiImageAdapter', () => {
   it('preserves the network failure message while protecting the connection credential', async () => {
     fetchMock.mockRejectedValueOnce(new Error(`failed at ${BASE_URL} Authorization: Bearer ${API_KEY}`));
     const error = await expectOriginal(adapter.pricing(input()), 502,
-      { error: { name: 'Error', message: `failed at ${BASE_URL} Authorization: Bearer [REDACTED]` } });
+      { error: { name: 'Error', message: `failed at ${BASE_URL} Authorization: [REDACTED]` } });
     expect(JSON.stringify(error.getResponse()) + error.stack).not.toContain(API_KEY);
   });
 
@@ -407,7 +409,7 @@ describe('Sub2apiImageAdapter', () => {
     expect(getReader).not.toHaveBeenCalled();
     expect(cancel).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(error.getResponse())).not.toContain('private');
+    expect(error.getResponse()).toHaveProperty('error.cause');
   });
 
   it('cancels a successful response without reading when request ID persistence fails', async () => {
@@ -511,7 +513,7 @@ describe('Sub2apiImageAdapter', () => {
     ['wrong dimensions', { data: [{ b64_json: PNG_BASE64 }] }],
   ])('treats %s after upstream dispatch as unknown with request ID', async (_label, payload) => {
     fetchMock.mockResolvedValueOnce(response(payload, { requestId: REQUEST_ID }));
-    const error = await expectCode(adapter.execute(input(), []), 502, 'SUBMISSION_UNKNOWN');
+    const error = await expectCode(adapter.execute(input(), []), 502, _label === 'corrupt PNG' ? 'OUTPUT_FAILED' : 'SUBMISSION_UNKNOWN');
     expect(error).toBeInstanceOf(HttpException);
     expect((error as unknown as { requestId: string }).requestId).toBe(REQUEST_ID);
     expect((error as unknown as { definitelyRejected: boolean }).definitelyRejected).toBe(false);

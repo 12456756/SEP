@@ -23,9 +23,9 @@ export class MediaSpecValidationPipe implements PipeTransform {
     const message = conflict ? '请求规格存在冲突' : '请求参数格式无效';
     throw new BadRequestException({ message, error: {
       code: conflict ? 'SPEC_CONFLICT' : 'INVALID_PARAMETER', message, field,
-      reason: conflict ? conflict.message : '请检查字段类型、取值和必需字段',
+      reason: issue.message,
       source: 'request', stage: 'validation', retryable: false,
       submissionState: 'not_submitted', billingState: 'not_reserved',
-    } });
+    }, errors: issues.map(item => ({ field: item.path.map(String).join('.'), message: item.message, code: item.code })) });
   }
 }

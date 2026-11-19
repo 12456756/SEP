@@ -265,10 +265,11 @@ describe('VideoFileCacheService concurrency and security', () => {
   it('cleans partial files and redacts stream failure after some bytes were written', async () => {
     let pulls = 0;
     const response = new Response(new ReadableStream({ pull(c) {
-      if (!pulls++) c.enqueue(new Uint8Array(MP4)); else c.error(new Error('private upstream failure'));
+      if (!pulls++) c.enqueue(new Uint8Array(MP4)); else c.error(new Error('ECONNRESET token=private-stream-key'));
     } }), { headers: { 'Content-Type': 'video/mp4' } });
     const error = await errorOf(cache.saveOutput('scope', 'output-1', response, expiresAt), 'OUTPUT_FAILED');
-    expect(JSON.stringify(error.getResponse()) + error.stack).not.toContain('private upstream failure');
+    expect(error.getResponse()).toMatchObject({ error: { cause: { message: 'ECONNRESET token=[REDACTED]' } } });
+    expect(JSON.stringify(error.getResponse()) + error.stack).not.toContain('private-stream-key');
     expect(await noParts()).toEqual([]);
   });
 
@@ -316,9 +317,10 @@ describe('VideoFileCacheService concurrency and security', () => {
   });
 
   it('fails closed for missing or failing ffprobe without publishing files or private errors', async () => {
-    (execFile as unknown as jest.Mock).mockRejectedValue(new Error('private ffprobe failure'));
+    (execFile as unknown as jest.Mock).mockRejectedValue(Object.assign(new Error('ffprobe ENOENT password=private-probe-key'), { code: 'ENOENT' }));
     const error = await errorOf(cache.assertAvailable(), 'VIDEO_INSPECTOR_UNAVAILABLE');
-    expect(JSON.stringify(error.getResponse()) + error.stack).not.toContain('private ffprobe failure');
+    expect(error.getResponse()).toMatchObject({ error: { cause: { code: 'ENOENT', message: 'ffprobe ENOENT password=[REDACTED]' } } });
+    expect(JSON.stringify(error.getResponse()) + error.stack).not.toContain('private-probe-key');
     await errorOf(cache.saveOutput('scope', 'output-1', content(), expiresAt), 'OUTPUT_FAILED');
     expect(await noParts()).toEqual([]);
   });

@@ -5,6 +5,7 @@ import { MediaConfigVersionV3Schema, MediaProfileIdV3Schema, MediaRealAnyQuoteSc
 import { z } from 'zod';
 import { MAX_MEDIA_REFERENCE_COUNT } from 'shared';
 import { PrismaService } from '../../prisma/prisma.service';
+import { exceptionDetails } from '../../common/errors/error-diagnostics';
 
 const legacyConfigurationSchema = z.object({
   profileId: z.string().min(1),
@@ -35,8 +36,9 @@ export type RealRequestRecord = {
   configuration: unknown; receipt: MediaRealReceipt; revision: number; submissionDeadline: Date;
 };
 
-export function realMediaStorageUnavailable(): never {
-  throw new HttpException({ error: { code: 'MEDIA_STORAGE_UNAVAILABLE', message: '媒体存储暂不可用，请查询原请求，不要重新生成' } }, 503);
+export function realMediaStorageUnavailable(cause?: unknown): never {
+  throw new HttpException({ error: { code: 'MEDIA_STORAGE_UNAVAILABLE', message: '媒体存储暂不可用，请查询原请求，不要重新生成',
+    ...(cause !== undefined ? { cause: exceptionDetails(cause) } : {}) } }, 503);
 }
 
 @Injectable()
@@ -192,7 +194,7 @@ export class MediaRealStore {
     try { return await action(); }
     catch (error) {
       if (error instanceof HttpException) throw error;
-      realMediaStorageUnavailable();
+      realMediaStorageUnavailable(error);
     }
   }
 }

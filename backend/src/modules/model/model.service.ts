@@ -10,6 +10,9 @@ import { SettingService } from "../setting/setting.service";
 import { SETTING_KEYS, hasPricing, type UpdatePlatformModelDto } from "shared";
 import { ModelBillingService } from './model-billing.service';
 import { z } from 'zod';
+import { localError, sanitizeError } from '../../common/errors/error-diagnostics';
+import { fetchUpstream, readUpstreamJson, UpstreamHttpException, upstreamHeaders } from '../../common/errors/upstream-http.exception';
+import { createSseErrorDiagnostics } from '../../common/errors/sse-error-diagnostics';
 
 /** 上游返回的模型条目（标准化后）。 */
 export interface UpstreamModelEntry {
@@ -75,27 +78,22 @@ export class ModelService {
 
     let res: Response;
     try {
-      res = await fetch(url, {
+      res = await fetchUpstream(url, {
         headers: { Authorization: `Bearer ${apiKey}` },
         signal: AbortSignal.timeout(10_000),
-      });
+      }, [apiKey]);
     } catch (err) {
-      this.logger.error(`Failed to reach upstream ${url}`, err);
-      throw new ServiceUnavailableException(
-        "无法连接上游渠道，请检查地址和网络",
-      );
+      throw localError(err, 503, { origin: 'sep', stage: 'models' }, [apiKey]);
     }
 
-    if (!res.ok) {
-      this.logger.error(`Upstream /models returned ${res.status}`);
-      throw new ServiceUnavailableException(
-        `上游返回错误 (${res.status})，请检查密钥是否有效`,
-      );
+    const payload = await readUpstreamJson<Record<string, unknown>>(res, [apiKey]);
+    if (payload?.partial || res.headers.get('x-data-degraded') === 'true') {
+      throw new ServiceUnavailableException({ message: 'Upstream model catalog is partial; platform models were not changed',
+        partial: true, diagnostics: sanitizeError(payload?.diagnostics, [apiKey]), body: sanitizeError(payload, [apiKey]), origin: 'longdao' });
     }
-
-    const parsed = upstreamModelsSchema.safeParse(await res.json().catch(() => null));
+    const parsed = upstreamModelsSchema.safeParse(payload);
     if (!parsed.success) {
-      throw new ServiceUnavailableException('上游模型列表格式无效或为空，本次未修改平台模型');
+      throw new ServiceUnavailableException({ message: '上游模型列表格式无效或为空，本次未修改平台模型', errors: parsed.error.issues });
     }
     return [...new Map(parsed.data.data.map((model) => [model.id, model])).values()]
       .map((m) => ({ id: m.id, label: m.display_name || m.id }))
@@ -280,7 +278,7 @@ export class ModelService {
     const startTime = Date.now();
 
     try {
-      const res = await fetch(url, {
+      const res = await fetchUpstream(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -297,28 +295,23 @@ export class ModelService {
           stream: true,
         }),
         signal: AbortSignal.timeout(TEST_TIMEOUT_MS),
-      });
+      }, [apiKey]);
 
-      if (!res.ok) {
-        const text = await res.text().catch(() => '');
-        this.logger.error(`Model test failed for ${model.modelId}: ${res.status} ${text}`);
-        throw new ServiceUnavailableException(
-          `模型测试失败 (${res.status})：${text.substring(0, 200)}`,
-        );
+      if (res.headers.get('content-type')?.includes('application/json')) {
+        const body = await readUpstreamJson(res, [apiKey]);
+        throw new ServiceUnavailableException({ message: '模型流式测试返回了 JSON，未返回 SSE', body });
       }
-
-      const stream = await this.readFirstStreamDelta(res);
+      const stream = await this.readFirstStreamDelta(res, apiKey);
       const latency = Date.now() - startTime;
 
       if (!stream.receivedAnyByte) {
         throw new ServiceUnavailableException(
-          `模型测试失败：上游接受了请求但 ${Math.round(TEST_TIMEOUT_MS / 1000)} 秒内没有返回任何流式数据。` +
-            '该模型不能用于对话（对话链路只走流式）。',
+          '模型测试失败：上游流已结束，但没有返回任何数据',
         );
       }
       if (!stream.text) {
         throw new ServiceUnavailableException(
-          `模型测试失败：上游返回了流但没有任何文本内容${stream.raw ? `（原始片段：${stream.raw.slice(0, 160)}）` : ''}。`,
+          { message: '模型测试失败：上游流中没有文本内容', diagnostic: sanitizeError(stream.raw, [apiKey]) },
         );
       }
 
@@ -330,19 +323,7 @@ export class ModelService {
         message: `流式测试成功，首字延迟 ${latency}ms`,
       };
     } catch (err) {
-      this.logger.error(`Model test error for ${model.modelId}`, err);
-      // fetch 的 AbortSignal.timeout 抛的是 "The operation was aborted due to
-      // timeout"，对运营毫无信息量 —— 他要判断的是「这个模型能不能启用」。
-      // 上游连响应头都不给的情况实测存在（gemini-3.5-flash 就是），必须说清。
-      const raw = (err as Error).message ?? '';
-      const timedOut =
-        (err as Error).name === 'TimeoutError' || raw.includes('aborted');
-      throw new ServiceUnavailableException(
-        timedOut
-          ? `模型测试失败：${Math.round(TEST_TIMEOUT_MS / 1000)} 秒内上游没有返回任何流式数据。` +
-            '该模型不能用于对话（对话链路只走流式），不要启用它。'
-          : `模型测试失败：${raw}`,
-      );
+      throw localError(err, 503, { stage: 'model-test', timeoutMs: TEST_TIMEOUT_MS }, [apiKey]);
     }
   }
 
@@ -352,7 +333,7 @@ export class ModelService {
    * 只读开头、不读完整回复：测试要回答的是「这个模型能不能开始流」，
    * 读完整段既慢又白花上游的钱。
    */
-  private async readFirstStreamDelta(res: Response): Promise<{
+  private async readFirstStreamDelta(res: Response, apiKey: string): Promise<{
     receivedAnyByte: boolean;
     text: string;
     raw: string;
@@ -361,18 +342,19 @@ export class ModelService {
     if (!body) return { receivedAnyByte: false, text: '', raw: '' };
 
     const reader = body.getReader();
-    const decoder = new TextDecoder();
+    const parser = createSseErrorDiagnostics([apiKey]);
     let raw = '';
     let text = '';
     try {
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
-        raw += decoder.decode(value, { stream: true });
-        for (const line of raw.split('\n')) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith('data:')) continue;
-          const payload = trimmed.slice(5).trim();
+        const frames = done ? parser.finish() : parser.write(value);
+        if (parser.error() !== undefined) throw new UpstreamHttpException({ status: res.status,
+          body: sanitizeError(parser.error(), [apiKey]) }, upstreamHeaders(res));
+        for (const frame of frames) {
+          raw += frame.toString('utf8');
+          const payload = frame.toString('utf8').split(/\r\n|\r|\n/).filter(line => line.startsWith('data:'))
+            .map(line => line.slice(5).replace(/^ /, '')).join('\n');
           if (!payload || payload === '[DONE]') continue;
           try {
             const parsed = JSON.parse(payload) as {
@@ -384,10 +366,11 @@ export class ModelService {
             // 半截 JSON：下一个 chunk 拼上再解析
           }
         }
-        if (text) break;
+        if (text || done) break;
       }
     } finally {
       await reader.cancel().catch(() => undefined);
+      reader.releaseLock();
     }
     return { receivedAnyByte: raw.length > 0, text, raw };
   }

@@ -380,7 +380,7 @@ describe('CapabilityInsightService SKILL write closure', () => {
 
         await expect(
           service.generate('admin-1', 'skill-1', { scope: 'ALL' }),
-        ).rejects.toThrow('分析模型暂时不可用，请稍后重试');
+        ).rejects.toMatchObject({ status: 502, response: { message: expect.stringContaining(stage === 'network' ? secret : 'JSON') } });
 
         const log = (Logger.prototype.log as jest.Mock).mock
           .calls[0][0] as string;
@@ -388,7 +388,7 @@ describe('CapabilityInsightService SKILL write closure', () => {
         expect(requestId).toBeDefined();
         expect(Logger.prototype.error).toHaveBeenCalledTimes(1);
         expect(Logger.prototype.error).toHaveBeenCalledWith(
-          `Model request failed requestId=${requestId} chain=capability-insight policyVersion=19 status=internal`,
+          `Model request failed requestId=${requestId} chain=capability-insight policyVersion=19 status=${stage === 'model-json' ? 'internal' : 502}`,
         );
         expect(
           JSON.stringify((Logger.prototype.log as jest.Mock).mock.calls),
@@ -459,7 +459,7 @@ describe('CapabilityInsightService SKILL write closure', () => {
           );
         await expect(
           service.generate('admin-1', 'skill-1', { scope: 'ALL' }),
-        ).rejects.toBeInstanceOf(BadGatewayException);
+        ).rejects.toMatchObject({ status: kind === 'upstream-status' ? 429 : 502 });
         expect(release).toHaveBeenCalledTimes(1);
         expect(prisma.capabilityInsight.create).not.toHaveBeenCalled();
       },

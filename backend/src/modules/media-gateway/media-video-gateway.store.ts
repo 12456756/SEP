@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { MediaVideoGatewayQuoteSchema, MediaVideoGatewayReceiptSchema, MediaVideoGatewayReferenceSchema, MediaVideoParametersSchema } from 'shared';
 import type { MediaVideoGatewayQuote, MediaVideoGatewayReceipt, MediaVideoGatewayReference } from 'shared';
 import { PrismaService } from '../../prisma/prisma.service';
+import { exceptionDetails } from '../../common/errors/error-diagnostics';
 
 export const VIDEO_ADAPTER = 'static-video-v1';
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -35,6 +36,7 @@ export type VideoRequestClaim = Omit<VideoRequestRecord, 'revision' | 'receipt'>
 };
 
 export type VideoErrorDetails = {
+  cause?: unknown;
   field?: string;
   stage?: 'video-authorization' | 'video-quote' | 'video-submit' | 'video-query' | 'video-content';
   recovery?: string;
@@ -46,8 +48,9 @@ export function videoGatewayError(status: number, code: string, message: string,
     code, message, type: status >= 500 ? 'server_error' : 'invalid_request_error', source: 'platform', param: null, ...details,
   } }, status);
 }
-export function videoStorageUnavailable(): never {
-  videoGatewayError(503, 'MEDIA_STORAGE_UNAVAILABLE', '视频存储暂不可用，请查询原请求，不要重新生成');
+export function videoStorageUnavailable(cause?: unknown): never {
+  videoGatewayError(503, 'MEDIA_STORAGE_UNAVAILABLE', '视频存储暂不可用，请查询原请求，不要重新生成',
+    cause !== undefined ? { cause: exceptionDetails(cause) } : {});
 }
 function isVideo(value: unknown): boolean {
   return value !== null && typeof value === 'object' && 'adapter' in value && value.adapter === VIDEO_ADAPTER;
@@ -177,7 +180,7 @@ export class MediaVideoGatewayStore {
     try { return await action(); }
     catch (error) {
       if (error instanceof HttpException) throw error;
-      videoStorageUnavailable();
+      videoStorageUnavailable(error);
     }
   }
 }

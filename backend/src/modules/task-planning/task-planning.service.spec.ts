@@ -194,8 +194,7 @@ describe('TaskPlanningService', () => {
   it.each([200, 502])('times out a stalled %s response body, not just fetch headers', async (status) => {
     jest.useFakeTimers();
     runtimePolicies.getSnapshot.mockResolvedValueOnce({ ...policy, values: { ...policy.values, PLANNER_REQUEST_TIMEOUT_MS: 1000 } });
-    (global.fetch as jest.Mock).mockResolvedValueOnce({ ok: status === 200,
-      json: () => new Promise(() => undefined), text: () => new Promise(() => undefined) });
+    (global.fetch as jest.Mock).mockResolvedValueOnce(new Response(new ReadableStream({}), { status }));
     const pending = service.preview('user-1', { objective: '分析销售数据' });
     const assertion = expect(pending).rejects.toBeInstanceOf(GatewayTimeoutException);
     await jest.advanceTimersByTimeAsync(1001);
@@ -207,8 +206,8 @@ describe('TaskPlanningService', () => {
   it('propagates client cancellation while reading the response body', async () => {
     const abort = new AbortController();
     (global.fetch as jest.Mock).mockImplementationOnce(async () => {
-      queueMicrotask(() => abort.abort());
-      return { ok: true, json: () => new Promise(() => undefined) };
+      setTimeout(() => abort.abort(), 0);
+      return new Response(new ReadableStream({}));
     });
     await expect(service.preview('user-1', { objective: '分析销售数据' }, abort.signal)).rejects.toMatchObject({ status: 499 });
     expect(release).toHaveBeenCalledTimes(1);

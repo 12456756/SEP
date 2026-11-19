@@ -126,4 +126,21 @@ describe('EmployeeStatusGateway', () => {
     expect((gateway as any).statusCache.has('user-1')).toBe(false);
     expect((gateway as any).statusRequests.has('user-1')).toBe(false);
   });
+
+  it('状态查询失败时返回脱敏原因并使用服务故障关闭码', async () => {
+    const handlers = new Map<string, (raw: Buffer) => Promise<void>>();
+    const client = { readyState: WebSocket.OPEN, send: jest.fn(), close: jest.fn(),
+      on: jest.fn((name: string, handler: (raw: Buffer) => Promise<void>) => handlers.set(name, handler)),
+    };
+    (gateway as any).jwt.verify.mockReturnValue({ sub: 'user-1' });
+    enterprise.getEmployeeStatuses.mockRejectedValue(new Error('Database timeout password=status-secret'));
+    await gateway.handleConnection(client as any, { headers: {} });
+    await handlers.get('message')!(Buffer.from(JSON.stringify({ type: 'auth', token: 'token' })));
+    expect(client.send).toHaveBeenCalledWith(JSON.stringify({ type: 'error', error: {
+      name: 'Error', message: 'Database timeout password=[REDACTED]',
+    } }));
+    expect(client.close).toHaveBeenCalledWith(1011, 'Employee status query failed');
+    expect(client.close).not.toHaveBeenCalledWith(1008, 'Invalid token');
+    gateway.handleDisconnect(client as any);
+  });
 });

@@ -83,9 +83,25 @@ describe('VideoFileCacheService', () => {
   it('rejects an interrupted stream and leaves no visible entry or stale temporary directory', async () => {
     const expiresAt = new Date(Date.now() + 60_000).toISOString();
     const body = new ReadableStream<Uint8Array>({
-      start(controller) { controller.enqueue(bytes.subarray(0, 64)); controller.error(new Error('interrupted')); },
+      start(controller) {
+        controller.enqueue(bytes.subarray(0, 64));
+        controller.error(new Error('interrupted ECONNRESET token=private-stream-token'));
+      },
     });
-    await expect(cache.saveOutput('scope', 'broken', new Response(body, { headers: { 'content-type': 'video/mp4' } }), expiresAt)).rejects.toThrow();
+    const failure = await cache.saveOutput('scope', 'broken', new Response(body, { headers: { 'content-type': 'video/mp4' } }), expiresAt)
+      .catch(error => error);
+    expect(failure.getStatus()).toBe(502);
+    expect(failure.getResponse()).toMatchObject({ error: { code: 'OUTPUT_FAILED',
+      cause: { message: 'interrupted ECONNRESET token=[REDACTED]' } } });
     expect(await cache.pruneExpired(10)).toBe(0);
+  });
+
+  it('retains a missing file reason without exposing the private cache path', async () => {
+    const failure = await cache.streamOutput('scope', 'missing', {
+      sha256, byteLength: bytes.length, expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    }).catch(error => error);
+    expect(failure.getStatus()).toBe(410);
+    expect(failure.getResponse()).toMatchObject({ error: { code: 'RESULT_EXPIRED', cause: { code: 'ENOENT' } } });
+    expect(JSON.stringify(failure.getResponse())).not.toContain(root);
   });
 });

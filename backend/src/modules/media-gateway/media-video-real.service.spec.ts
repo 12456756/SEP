@@ -122,6 +122,22 @@ describe('MediaVideoRealService', () => {
     expect(billing.release).not.toHaveBeenCalled();
   });
 
+  it('retains the task rejection when a subsequent billing query also fails', async () => {
+    const { receipt } = await quotedSubmit('failed-task-and-billing');
+    const original = { code: 'reference_rejected', message: 'Reference 2 rejected', reference_index: 1 };
+    adapter.query.mockResolvedValueOnce({ id: 'task-original', model: 'minimax-h3', status: 'failed', error: original });
+    adapter.usage.mockRejectedValueOnce(Object.assign(new Error('Billing query connection reset'), { code: 'ECONNRESET' }));
+    const result = await service.receipt(videoClaims, receipt.receiptId);
+    expect(result).toMatchObject({ status: 'FAILED', billingStatus: 'RECONCILING', upstreamError: { status: 200, body: {
+      error: original, sepDiagnostics: { billing: { status: 502, body: { error: {
+        code: 'ECONNRESET', message: 'Billing query connection reset' } } } },
+    } } });
+    expect(adapter.submit).toHaveBeenCalledTimes(1);
+    expect(billing.release).not.toHaveBeenCalled();
+    const saved = await store.findRequest(scope, receipt.receiptId);
+    expect(saved.receipt.upstreamError).toEqual(result.upstreamError);
+  });
+
   it.each(['quote', 'submit'] as const)('rejects a duration outside configured bounds before %s reserves or dispatches', async stage => {
     Object.assign(db.state.model.capabilities, { durationRange: { minimum: 5, maximum: 10 } });
     const value = MediaVideoGatewayQuoteRequestV3Schema.parse({ protocolVersion: 3, specRevision: 1,

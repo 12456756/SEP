@@ -1,6 +1,8 @@
 import { Injectable, Logger, OnModuleInit, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TextChunker } from './text-chunker.util';
+import { localError } from '../../common/errors/error-diagnostics';
+import { fetchUpstream, readUpstreamJson } from '../../common/errors/upstream-http.exception';
 
 export interface EmbeddingResponse {
   embedding: Float32Array;
@@ -91,11 +93,12 @@ export class EmbeddingService implements OnModuleInit {
     return results;
   }
 
-  async isAvailable(): Promise<boolean> {
+  async isAvailable(onError?: (error: unknown) => void): Promise<boolean> {
     try {
       await this.requestBatch(['health check']);
       return true;
-    } catch {
+    } catch (error) {
+      onError?.(error);
       return false;
     }
   }
@@ -126,22 +129,17 @@ export class EmbeddingService implements OnModuleInit {
     const origin = baseUrl.replace(/\/+$/, '');
     const endpoint = `${origin}${origin.endsWith('/v1') ? '' : '/v1'}/embeddings`;
     try {
-      const response = await fetch(endpoint, {
+      const response = await fetchUpstream(endpoint, {
         method: 'POST',
         redirect: 'error',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
         signal: AbortSignal.timeout(this.timeoutMs),
         body: JSON.stringify({ model: this.profile.model, input: texts, encoding_format: 'float' }),
-      });
-      if (!response.ok) {
-        throw new ServiceUnavailableException(`Sub2api embedding request failed (HTTP ${response.status})`);
-      }
-      const payload: unknown = await response.json();
+      }, [apiKey]);
+      const payload: unknown = await readUpstreamJson(response, [apiKey]);
       return this.validateEmbeddings(payload, texts.length);
     } catch (error) {
-      if (error instanceof ServiceUnavailableException) throw error;
-      // Never propagate gateway bodies, URLs, headers, or credential-bearing transport errors.
-      throw new ServiceUnavailableException('Sub2api embedding request failed');
+      throw localError(error, 503, { origin: 'sep', stage: 'embedding' }, [apiKey]);
     }
   }
 
@@ -160,9 +158,8 @@ export class EmbeddingService implements OnModuleInit {
     const origin = url.toString().replace(/\/+$/, '');
     const signal = AbortSignal.timeout(this.timeoutMs);
     try {
-      const tags = await fetch(`${origin}/api/tags`, { redirect: 'error', signal });
-      if (!tags.ok) throw new ServiceUnavailableException(`Ollama model verification failed (HTTP ${tags.status})`);
-      const models: unknown = await tags.json();
+      const tags = await fetchUpstream(`${origin}/api/tags`, { redirect: 'error', signal });
+      const models: unknown = await readUpstreamJson(tags);
       const match = models && typeof models === 'object' && 'models' in models && Array.isArray(models.models)
         ? models.models.find((item: unknown) => item && typeof item === 'object' &&
           'name' in item && item.name === this.profile.model)
@@ -170,13 +167,12 @@ export class EmbeddingService implements OnModuleInit {
       if (!match || match.digest !== this.modelDigest) {
         throw new ServiceUnavailableException('Ollama embedding model digest mismatch');
       }
-      const response = await fetch(`${origin}/api/embed`, {
+      const response = await fetchUpstream(`${origin}/api/embed`, {
         method: 'POST', redirect: 'error', signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: this.profile.model, input: texts, truncate: false, keep_alive: '5m' }),
       });
-      if (!response.ok) throw new ServiceUnavailableException(`Ollama embedding request failed (HTTP ${response.status})`);
-      const payload: unknown = await response.json();
+      const payload: unknown = await readUpstreamJson(response);
       if (!payload || typeof payload !== 'object' || !('model' in payload) || payload.model !== this.profile.model) {
         throw new ServiceUnavailableException('Invalid embedding response: model mismatch');
       }
@@ -184,8 +180,7 @@ export class EmbeddingService implements OnModuleInit {
         ? payload.embeddings : [];
       return this.validateEmbeddings({ data: embeddings.map((embedding: unknown, index: number) => ({ index, embedding })) }, texts.length);
     } catch (error) {
-      if (error instanceof ServiceUnavailableException) throw error;
-      throw new ServiceUnavailableException('Ollama embedding request failed');
+      throw localError(error, 503, { stage: 'ollama-embedding', origin: 'sep' });
     }
   }
 

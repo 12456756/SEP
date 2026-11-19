@@ -10,6 +10,8 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
+import { localError } from '../../common/errors/error-diagnostics';
+import { fetchUpstream, readUpstreamJson } from '../../common/errors/upstream-http.exception';
 import { PrismaService } from '../../prisma/prisma.service';
 import { EnterpriseContextService } from '../enterprise/enterprise-context.service';
 import { SkillVersionService } from '../skill-version/skill-version.service';
@@ -352,7 +354,7 @@ export class CapabilityInsightService {
       );
       lifecycle.assertActive();
       response = await lifecycle.wait(
-        fetch(`${baseURL.replace(/\/$/, '')}/chat/completions`, {
+        fetchUpstream(`${baseURL.replace(/\/$/, '')}/chat/completions`, {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${apiKey}`,
@@ -360,15 +362,9 @@ export class CapabilityInsightService {
           },
           body: JSON.stringify(request),
           signal: lifecycle.signal,
-        }),
+        }, [apiKey]),
       );
-      if (!response.ok) {
-        const detail = await lifecycle.wait(response.text());
-        throw new BadGatewayException(
-          `relay ${response.status}: ${detail.slice(0, 240)}`,
-        );
-      }
-      const payload = (await lifecycle.wait(response.json())) as {
+      const payload = (await lifecycle.wait(readUpstreamJson(response, [apiKey]))) as {
         choices?: Array<{ message?: { content?: string } }>;
       };
       const text = payload.choices?.[0]?.message?.content;
@@ -376,11 +372,11 @@ export class CapabilityInsightService {
       return InsightOutputSchema.parse(this.extractJson(text));
     } catch (error) {
       if (lifecycle.signal.aborted) throw lifecycle.signal.reason;
-      if (error instanceof HttpException) throw error;
       this.logger.error(
-        `Model request failed requestId=${requestId} chain=capability-insight policyVersion=${snapshot.version} status=internal`,
+        `Model request failed requestId=${requestId} chain=capability-insight policyVersion=${snapshot.version} status=${error instanceof HttpException ? error.getStatus() : 'internal'}`,
       );
-      throw new BadGatewayException('分析模型暂时不可用，请稍后重试');
+      if (error instanceof HttpException) throw error;
+      throw localError(error, 502, { origin: 'sep', stage: 'capability-insight' }, [apiKey]);
     } finally {
       lifecycle.dispose();
       if (response?.body && !response.body.locked)

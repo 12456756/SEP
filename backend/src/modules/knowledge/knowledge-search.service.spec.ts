@@ -226,8 +226,18 @@ describe('KnowledgeSearchService authorization and logging', () => {
   it('reports dependency failure as 503 instead of a successful empty result', async () => {
     lexical.search.mockRejectedValue(new Error('database credentials or internal error'));
     await expect(service.searchForMember('u-a', { query: '退款', topK: 5 })).rejects.toMatchObject({
-      status: 503, response: { code: 'KNOWLEDGE_SERVICE_UNAVAILABLE', message: '知识库检索暂时不可用' },
+      status: 503, response: { code: 'KNOWLEDGE_SERVICE_UNAVAILABLE', message: 'database credentials or internal error',
+        cause: { name: 'Error', message: 'database credentials or internal error' } },
     });
+  });
+
+  it('preserves an embedding availability error on explicit vector searches', async () => {
+    embedding.isAvailable.mockImplementationOnce(async (onError: (error: unknown) => void) => {
+      onError(new Error('Embedding connection refused token=embedding-secret'));
+      return false;
+    });
+    await expect(service.searchByKnowledgeBase('query', ['kb-a'], 5, 0.7, 'vector', 'u-a')).rejects.toMatchObject({ status: 503,
+      response: { code: 'KNOWLEDGE_SERVICE_UNAVAILABLE', message: 'Embedding connection refused token=[REDACTED]' } });
   });
 
   it('returns the client search contract and marks lexical fallback when embeddings are unavailable', async () => {
@@ -238,6 +248,17 @@ describe('KnowledgeSearchService authorization and logging', () => {
     expect(result.results[0]).toMatchObject({ sourceId: 'c-a', chunkId: 'c-a', documentId: 'doc-a',
       documentName: '政策.txt', versionId: 'c-a', tokenCount: 4, truncated: false,
       location: { pageStart: null, pageEnd: null, sectionPath: [], blockStart: 0, blockEnd: 0 } });
+  });
+
+  it('includes the redacted availability failure in lexical fallback diagnostics', async () => {
+    embedding.isAvailable.mockImplementationOnce(async (onError: (error: unknown) => void) => {
+      onError(new Error('Embedding model unavailable at http://sep-ollama:11434 token=embedding-secret'));
+      return false;
+    });
+    const result = await service.searchForMember('u-a', { query: '退款', topK: 5 });
+    expect(result).toMatchObject({ degraded: true, actualStrategy: 'LEXICAL', diagnostic: {
+      name: 'Error', message: 'Embedding model unavailable at [REDACTED] token=[REDACTED]',
+    } });
   });
 
   it('returns NO_ACCESS without executing retrieval when no readable base exists', async () => {
@@ -292,9 +313,10 @@ describe('KnowledgeSearchService authorization and logging', () => {
 
   it('declares fallback if embedding fails after availability checks', async () => {
     embedding.isAvailable.mockResolvedValue(true);
-    embedding.embed.mockRejectedValue(new Error('sensitive dependency error'));
+    embedding.embed.mockRejectedValue(new Error('Query embedding failed token=embedding-secret'));
     expect(await service.searchForMember('u-a', { query: '退款', topK: 5 })).toMatchObject({
       status: 'MATCHED', actualStrategy: 'LEXICAL', degraded: true, degradationReason: 'QUERY_EMBEDDING_UNAVAILABLE',
+      diagnostic: { message: 'Query embedding failed token=[REDACTED]' },
     });
   });
 

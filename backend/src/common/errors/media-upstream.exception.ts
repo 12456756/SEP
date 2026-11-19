@@ -1,51 +1,51 @@
 import { HttpException } from '@nestjs/common';
 import type { MediaJsonValue, MediaUpstreamError } from 'shared';
+import { sanitizeError, exceptionDetails } from './error-diagnostics';
+import { UpstreamHttpException, upstreamException } from './upstream-http.exception';
 
-export class MediaUpstreamException extends HttpException {
-  constructor(readonly upstreamError: MediaUpstreamError) {
-    super(upstreamError.body as string | Record<string, unknown>, upstreamError.status);
+export class MediaUpstreamException extends UpstreamHttpException {
+  constructor(upstreamError: MediaUpstreamError, headers: Record<string, string> = upstreamError.headers ?? {}) {
+    super({ status: upstreamError.status, body: upstreamError.body, ...(Object.keys(headers).length ? { headers } : {}) }, headers);
   }
 }
 
 export function mediaFailure(error: unknown): MediaUpstreamError {
-  if (error instanceof MediaUpstreamException) return error.upstreamError;
-  if (error instanceof HttpException) return { status: error.getStatus(), body: error.getResponse() as MediaJsonValue };
-  return { status: 502, body: { error: error instanceof Error
-    ? { name: error.name, message: error.message }
-    : { message: String(error) } } };
+  if (error instanceof UpstreamHttpException) return { ...error.upstreamError, headers: error.diagnosticHeaders };
+  if (error instanceof HttpException) return { status: error.getStatus(), body: exceptionDetails(error) };
+  return { status: 502, body: { error: { ...asRecord(exceptionDetails(error)), origin: 'sep' } } };
+}
+
+function asRecord(value: MediaJsonValue): Record<string, MediaJsonValue> {
+  if (value === undefined) return {};
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : { message: value };
+}
+
+export function mediaDispatchFailure(failure: MediaUpstreamError | undefined): MediaUpstreamError | undefined {
+  if (!failure) return failure;
+  const body = asRecord(failure.body);
+  const error = asRecord(body.error);
+  return error.origin === 'sep' && error.code === undefined
+    ? { ...failure, body: { ...body, error: { ...error, code: 'SUBMISSION_UNKNOWN' } } } : failure;
+}
+
+/** A billing/query outage must not replace a previously reported generation failure. */
+export function retainMediaFailure(previous: MediaUpstreamError | undefined, error: unknown, stage: string): MediaUpstreamError {
+  const failure = mediaFailure(error);
+  if (!previous) return failure;
+  return { ...previous, body: { ...asRecord(previous.body), sepDiagnostics: {
+    ...asRecord(asRecord(previous.body).sepDiagnostics), [stage]: sanitizeError(failure),
+  } } };
 }
 
 // Connection credentials must never enter client responses or persisted receipts.
 export function protectMediaCredential(error: MediaUpstreamError, credential: string): MediaUpstreamError {
-  const redact = (value: MediaJsonValue): MediaJsonValue => {
-    if (typeof value === 'string') return credential ? value.split(credential).join('[REDACTED]') : value;
-    if (Array.isArray(value)) return value.map(redact);
-    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, child]) => [
-      credential ? key.split(credential).join('[REDACTED]') : key, redact(child),
-    ]));
-    return value;
-  };
-  return { status: error.status, body: redact(error.body) };
+  return { status: error.status, body: sanitizeError(error.body, [credential]),
+    ...(error.headers ? { headers: sanitizeError(error.headers, [credential]) as Record<string, string> } : {}) };
 }
 
 export async function readMediaUpstreamError(response: Response): Promise<MediaUpstreamError> {
-  const reader = response.body?.getReader();
-  const chunks: Uint8Array[] = [];
-  let length = 0;
-  try {
-    while (reader) {
-      const part = await reader.read();
-      if (part.done) break;
-      length += part.value.length;
-      if (length > 64 * 1024) throw new Error('Upstream error response exceeds 64 KiB');
-      chunks.push(part.value);
-    }
-  } finally {
-    await reader?.cancel().catch(() => {});
-    reader?.releaseLock();
-  }
-  const text = Buffer.concat(chunks).toString('utf8');
-  let body: MediaJsonValue = text;
-  try { body = JSON.parse(text); } catch { /* Preserve non-JSON upstream errors. */ }
-  return { status: response.status, body };
+  const failure = await upstreamException(response);
+  return { status: response.status, ...(Object.keys(failure.diagnosticHeaders).length ? { headers: failure.diagnosticHeaders } : {}), body: failure.readDiagnostics
+    ? { body: failure.upstreamError.body, ...failure.readDiagnostics } as MediaJsonValue
+    : failure.upstreamError.body };
 }

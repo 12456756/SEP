@@ -1,4 +1,4 @@
-import { BadGatewayException, HttpException, Logger } from '@nestjs/common';
+import { HttpException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SETTING_KEYS } from 'shared';
 import { GatewayService } from './gateway.service';
@@ -87,127 +87,69 @@ describe('GatewayService.forwardChatCompletion', () => {
     expect(warnMock).not.toHaveBeenCalled();
   });
 
-  it.each([400, 429, 503])('preserves upstream HTTP %i and structured error details', async (status) => {
-    const error = { message: 'invalid tool message', type: 'invalid_request_error', code: 'invalid_tool', param: 'messages[2].tool_call_id' };
-    fetchMock.mockResolvedValue(new Response(JSON.stringify({ error }), { status }));
-    try {
-      await service.forwardChatCompletion(dto, policySnapshot());
-      throw new Error('Expected upstream rejection');
-    } catch (exception) {
-      expect(exception).toBeInstanceOf(HttpException);
-      expect((exception as HttpException).getStatus()).toBe(status);
-      expect((exception as HttpException).getResponse()).toEqual({
-        error: { ...error, ...(status === 429 ? { source: 'upstream' } : {}) },
-      });
-    }
+  it.each([400, 401, 403, 422, 429, 500, 503])('preserves HTTP %i and all diagnostic fields', async status => {
+    const body = { error: { code: 40103, message: 'Invalid tool arguments', param: { key: 'duration' },
+      source: 'supplier', details: { minimum: 4 }, attempts: [{ status: 422, reason: 'missing seconds' }] }, request_id: 'compute-1' };
+    fetchMock.mockResolvedValue(new Response(JSON.stringify(body), { status }));
+    await expect(service.forwardChatCompletion(dto, policySnapshot())).rejects.toMatchObject({ status, response: body });
   });
 
-  it.each([
-    ['17', 17],
-    ['0', 0],
-    [' 23 ', 23],
-    ['Sat, 10 Oct 2026 00:00:18 GMT', 18],
-    ['Saturday, 10-Oct-26 00:00:18 GMT', 18],
-    ['Sat Oct 10 00:00:18 2026', 18],
-    ['Sat, 10 Oct 2026 00:00:00 GMT', 0],
-    ['Fri, 09 Oct 2026 23:59:50 GMT', 0],
-  ])('normalizes upstream Retry-After %s to %i seconds', async (retryAfter, expected) => {
-    jest.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-10-10T00:00:00.100Z'));
-    fetchMock.mockResolvedValue(new Response('{}', {
-      status: 429, headers: { 'Retry-After': retryAfter, 'x-request-id': 'upstream-123' },
-    }));
-    await expect(service.forwardChatCompletion(dto, policySnapshot(), 'platform-123')).rejects.toMatchObject({
-      status: 429,
-      response: {
-        error: {
-          message: 'sub2api 请求失败（HTTP 429）', type: 'rate_limit_error',
-          code: 'UPSTREAM_RATE_LIMIT_EXCEEDED', param: null, source: 'upstream',
-        },
-        retryAfterSeconds: expected,
-      },
-    });
-    expect(warnMock).toHaveBeenCalledWith({
-      message: 'sub2api rate limit', status: 429, requestId: 'platform-123',
-      upstreamRequestId: 'upstream-123', retryAfterSeconds: expected,
-    });
-  });
-
-  it.each([null, '', '-1', '1.5', 'NaN', 'Infinity', 'tomorrow', '2026-10-10',
-    '9007199254740992', 'Tue, 31 Feb 2026 00:00:00 GMT', 'Sat, 10 Oct 2026 25:00:00 GMT'])(
-    'does not present invalid/missing Retry-After %p as known waiting information', async (retryAfter) => {
-      fetchMock.mockResolvedValue(new Response('not-json', {
-        status: 429, headers: retryAfter === null ? {} : { 'Retry-After': retryAfter },
-      }));
-      const exception = await service.forwardChatCompletion(dto, policySnapshot()).catch((error: HttpException) => error);
-      expect(exception).toBeInstanceOf(HttpException);
-      expect((exception as HttpException).getStatus()).toBe(429);
-      expect((exception as HttpException).getResponse()).toMatchObject({
-        error: { source: 'upstream', code: 'UPSTREAM_RATE_LIMIT_EXCEEDED' },
-      });
-      expect((exception as HttpException).getResponse()).not.toHaveProperty('retryAfterSeconds');
-      expect(warnMock.mock.calls[0][0]).not.toHaveProperty('retryAfterSeconds');
+  it.each([{ code: 'missing_model', message: 'Model is required' }, { error: 'Account quota exhausted' },
+    { detail: [{ loc: ['body', 'duration'], msg: 'Required' }] }, ['provider failure'], 'proxy connection refused'])(
+    'preserves alternate upstream error shape %j', async body => {
+      const raw = typeof body === 'string' ? body : JSON.stringify(body);
+      fetchMock.mockResolvedValue(new Response(raw, { status: 502 }));
+      const error = await service.forwardChatCompletion(dto, policySnapshot()).catch(error => error);
+      expect(error.getStatus()).toBe(502);
+      expect(error.getResponse()).toEqual(body);
     },
   );
 
-  it('rejects unsafe upstream error field types without exposing nested objects', async () => {
-    fetchMock.mockResolvedValue(new Response(JSON.stringify({ error: {
-      message: { secret: 'private' }, type: ['private'], code: 123, param: { token: 'private' },
-    } }), { status: 429 }));
-    const exception = await service.forwardChatCompletion(dto, policySnapshot()).catch((error: HttpException) => error);
-    expect((exception as HttpException).getResponse()).toEqual({
-      error: {
-        message: 'sub2api 请求失败（HTTP 429）', type: 'rate_limit_error',
-        code: 'UPSTREAM_RATE_LIMIT_EXCEEDED', param: null, source: 'upstream',
-      },
-    });
+  it.each(['17', '0', 'Sat, 10 Oct 2026 00:00:18 GMT', 'tomorrow', '1.5', ''])(
+    'preserves Retry-After %j as received instead of inventing recovery timing', async retryAfter => {
+      fetchMock.mockResolvedValue(new Response('{}', { status: 503, headers: { 'Retry-After': retryAfter,
+        'X-Request-ID': 'compute-123', 'X-Upstream-Request-ID': 'vendor-1', 'Set-Cookie': 'secret-cookie' } }));
+      const error = await service.forwardChatCompletion(dto, policySnapshot()).catch(error => error);
+      expect(error.diagnosticHeaders).toEqual({ 'retry-after': retryAfter, 'x-request-id': 'compute-123', 'x-upstream-request-id': 'vendor-1' });
+      expect(error.getResponse()).toEqual({});
+    },
+  );
+
+  it('redacts sensitive fragments while retaining numeric codes, context and nested fields', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ error: { message: 'Bad parameter test-key',
+      code: 40012, param: { key: 'duration' }, details: { token: 'private', minimum: 4, url: 'http://10.0.0.1:8080/private' },
+      credentials: 'private-key' }, attempts: [{ upstream_status: 422 }] }), { status: 422 }));
+    const error = await service.forwardChatCompletion(dto, policySnapshot()).catch(error => error);
+    expect(error.getResponse()).toEqual({ error: { message: 'Bad parameter [REDACTED]', code: 40012, param: { key: 'duration' },
+      details: { token: '[REDACTED]', minimum: 4, url: '[REDACTED]' }, credentials: '[REDACTED]' },
+      attempts: [{ upstream_status: 422 }] });
   });
 
-  it('logs only safe correlation metadata and strips upstream error metadata', async () => {
-    const upstream = new Response(JSON.stringify({
-      error: {
-        message: 'Quota exceeded', type: 'rate_limit_error', code: 'existing_code', param: 'model',
-        source: 'platform', rateLimit: { limit: 1, secret: 'private' },
-        credentials: 'private-key', headers: { authorization: 'private-key' },
-      },
-      debug: 'private-body',
-    }), { status: 429, headers: { 'x-request-id': `upstream [31m"${'a'.repeat(300)}` } });
-    fetchMock.mockResolvedValue(upstream);
-
-    const exception = await service.forwardChatCompletion(dto, policySnapshot(), 'platform-123').catch((error: HttpException) => error);
-    expect((exception as HttpException).getResponse()).toEqual({
-      error: {
-        message: 'Quota exceeded', type: 'rate_limit_error', code: 'existing_code',
-        param: 'model', source: 'upstream',
-      },
-    });
-    const logged = warnMock.mock.calls[0][0];
-    expect(logged).toEqual({
-      message: 'sub2api rate limit', status: 429, requestId: 'platform-123',
-      upstreamRequestId: expect.stringMatching(/^[a-zA-Z0-9._:-]{128}$/),
-    });
-    expect(JSON.stringify(logged)).not.toMatch(/private|hello|test-key|Quota|existing_code/);
+  it('retains the transport cause and errno without exposing the connection credential', async () => {
+    fetchMock.mockRejectedValue(Object.assign(new Error('fetch failed test-key'), { cause: { code: 'ECONNREFUSED',
+      message: 'Connection refused http://127.0.0.1:8080/private' } }));
+    await expect(service.forwardChatCompletion(dto, policySnapshot())).rejects.toMatchObject({ status: 502,
+      response: { message: 'fetch failed [REDACTED]', cause: { cause: { code: 'ECONNREFUSED', message: 'Connection refused [REDACTED]' } } } });
   });
 
-  it('ignores Retry-After on non-429 errors and does not add rate limit metadata', async () => {
-    fetchMock.mockResolvedValue(new Response('{}', { status: 503, headers: { 'Retry-After': '12' } }));
-    const exception = await service.forwardChatCompletion(dto, policySnapshot()).catch((error: HttpException) => error);
-    expect((exception as HttpException).getResponse()).toEqual({
-      error: { message: 'sub2api 请求失败（HTTP 503）', type: 'api_error', code: 'UPSTREAM_ERROR', param: null },
-    });
-    expect(warnMock).toHaveBeenCalledWith(expect.objectContaining({ message: 'sub2api request rejected', status: 503 }));
+  it('preserves business failures carried by HTTP 200', async () => {
+    const body = { error: { code: 'unsupported_parameter', message: 'seconds is required', details: { field: 'seconds' } } };
+    fetchMock.mockResolvedValue(new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } }));
+    const response = await service.forwardChatCompletion(dto, policySnapshot());
+    await expect(service.readCompletion(response)).rejects.toMatchObject({ status: 502, upstreamError: { status: 200, body } });
   });
 
-  it.each(['', '<html>private proxy diagnostics</html>'])('gives a readable fallback without echoing a raw proxy body', async (body) => {
-    fetchMock.mockResolvedValue(new Response(body, { status: 502 }));
-    await expect(service.forwardChatCompletion(dto, policySnapshot())).rejects.toMatchObject({
-      response: { error: { message: 'sub2api 请求失败（HTTP 502）', code: 'UPSTREAM_ERROR' } },
-      status: 502,
-    });
-  });
-
-  it('maps transport failures to 502 without exposing internal connection details', async () => {
-    fetchMock.mockRejectedValue(new Error('secret internal connection detail'));
-    await expect(service.forwardChatCompletion(dto, policySnapshot())).rejects.toBeInstanceOf(BadGatewayException);
+  it('redacts SSE failures with the active key while preserving successful frames', async () => {
+    const success = 'data: {"choices":[{"delta":{"content":"hello"}}]}\r\n\r\n';
+    const failure = 'event: error\ndata: {"error":{"code":"bad_tool","message":"test-key","details":{"field":"seconds"}}}\n\n';
+    fetchMock.mockResolvedValue(new Response(success + failure, { headers: { 'content-type': 'text/event-stream' } }));
+    const response = await service.forwardChatCompletion({ ...dto, stream: true }, policySnapshot());
+    const text = await response.text();
+    expect(text.startsWith(success)).toBe(true);
+    expect(text).toContain('"code":"bad_tool"');
+    expect(text).toContain('"field":"seconds"');
+    expect(text).toContain('[REDACTED]');
+    expect(text).not.toContain('test-key');
   });
 
   it('forces usage collection for streams even if the caller disables it', async () => {
@@ -234,13 +176,15 @@ describe('GatewayService.forwardChatCompletion', () => {
     await response.body!.cancel();
   });
 
-  it('bounds error response bodies', async () => {
-    fetchMock.mockResolvedValue(new Response('x'.repeat(65537), { status: 429 }));
-    await expect(service.forwardChatCompletion(dto, policySnapshot())).rejects.toMatchObject({
-      response: { error: { code: 'UPSTREAM_RESPONSE_TOO_LARGE' } }, status: 502,
-    });
-  });
-});
+  it('bounds diagnostic bodies without replacing the received HTTP status', async () => {
+    service = new GatewayService({} as never, new ConfigService({ GATEWAY_ERROR_MAX_BYTES: 1024 }), {} as never, {} as never, {} as never);
+    jest.spyOn(service, 'getSub2ApiConfig').mockResolvedValue({ baseUrl: 'https://relay.test/v1', apiKey: 'test-key', defaultModel: dto.model });
+    fetchMock.mockResolvedValue(new Response('x'.repeat(1025), { status: 429 }));
+    const error = await service.forwardChatCompletion(dto, policySnapshot()).catch(error => error);
+    expect(error.getStatus()).toBe(429);
+    expect(error.upstreamError.body.length).toBe(1024);
+    expect(error.readDiagnostics).toEqual({ truncated: true });
+  });});
 
 describe('GatewayService.prepareRequest snapshot normalization', () => {
   const request = { model: 'test-model', messages: [{ role: 'user' as const, content: 'hello' }] };

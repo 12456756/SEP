@@ -1,4 +1,7 @@
-import { BadGatewayException, BadRequestException, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, HttpException, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
+import { localError, sanitizeError } from '../../common/errors/error-diagnostics';
+import { assertUpstreamPayload, fetchModelUpstream, UpstreamHttpException, upstreamHeaders } from '../../common/errors/upstream-http.exception';
+import { createSseErrorDiagnostics } from '../../common/errors/sse-error-diagnostics';
 import { EmployeeCopyDraftDtoSchema, type EmployeeCopyDraftDto } from '../../shared/employee-copy.dto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ModelRequestLifecycle } from '../conversation/model-request-lifecycle';
@@ -104,26 +107,22 @@ export class EmployeeCopyDraftService {
       lifecycle.assertActive();
       const baseURL = new URL(provider.baseURL);
       if (baseURL.pathname === '/') baseURL.pathname = '/v1';
-      response = await lifecycle.wait(fetch(`${baseURL.toString().replace(/\/+$/, '')}/chat/completions`, {
+      response = await lifecycle.wait(fetchModelUpstream(`${baseURL.toString().replace(/\/+$/, '')}/chat/completions`, {
         method: 'POST',
         signal: lifecycle.signal,
         headers: { Authorization: `Bearer ${provider.apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-      }));
-      if (!response.ok) {
-        this.logger.warn(`Employee copy draft upstream rejected kind=${input.logKind} model=${modelId} status=${response.status}`);
-        throw new BadGatewayException('文案模型暂时不可用，请稍后重试');
-      }
+      }, [provider.apiKey]));
       const draft = await this.readStream(response, lifecycle);
       if (!draft.trim()) throw new BadGatewayException('文案模型没有返回内容，请重试');
       if (draft.length > MAX_OUTPUT_CHARACTERS) throw new BadGatewayException('文案模型返回内容过长，请重试');
       return { draft: draft.trim(), modelId, modelSource: 'PLATFORM_DEFAULT' as const };
     } catch (error) {
       if (lifecycle.signal.aborted) throw lifecycle.signal.reason;
-      if (error instanceof BadGatewayException) throw error;
+      if (error instanceof HttpException) throw error;
       const errorType = error instanceof Error ? error.constructor.name : typeof error;
       this.logger.warn(`Employee copy draft failed kind=${input.logKind} model=${modelId} error=${errorType}`);
-      throw new BadGatewayException('文案生成暂时失败，请稍后重试或手动填写');
+      throw localError(error, 502, { origin: 'sep', stage: 'employee-copy-draft' }, [provider.apiKey]);
     } finally {
       lifecycle.dispose();
       if (response?.body && !response.body.locked) await response.body.cancel().catch(() => undefined);
@@ -133,22 +132,19 @@ export class EmployeeCopyDraftService {
   private async readStream(response: Response, lifecycle: ModelRequestLifecycle): Promise<string> {
     if (!response.body) throw new BadGatewayException('文案模型没有返回内容，请重试');
     const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
+    const parser = createSseErrorDiagnostics();
     let draft = '';
     const eventTypes = new Set<string>();
     let responseShape = 'unknown';
     try {
       while (true) {
         const { done, value } = await lifecycle.wait(reader.read());
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed.startsWith('data:')) continue;
-          const payload = trimmed.slice(5).trim();
+        const frames = done ? parser.finish() : parser.write(value);
+        if (parser.error() !== undefined) throw new UpstreamHttpException({ status: response.status,
+          body: sanitizeError(parser.error()) }, upstreamHeaders(response));
+        for (const frame of frames) {
+          const payload = frame.toString('utf8').split(/\r\n|\r|\n/).filter(line => line.startsWith('data:'))
+            .map(line => line.slice(5).replace(/^ /, '')).join('\n');
           if (!payload || payload === '[DONE]') continue;
           try {
             const event = JSON.parse(payload) as {
@@ -157,6 +153,7 @@ export class EmployeeCopyDraftService {
               choices?: Array<{ delta?: { content?: unknown } }>;
               response?: { output?: Array<{ content?: Array<{ type?: string; text?: unknown }> }> };
             };
+            assertUpstreamPayload(event, response);
             if (typeof event.type === 'string') eventTypes.add(event.type);
             if (event.type === 'response.output_text.delta' || event.type === 'response.completed') {
               responseShape = 'responses-api';
@@ -188,10 +185,11 @@ export class EmployeeCopyDraftService {
               throw new BadGatewayException('文案模型返回内容过长，请重试');
             }
           } catch (error) {
-            if (error instanceof BadGatewayException) throw error;
+            if (error instanceof HttpException) throw error;
             // Ignore non-JSON event lines; partial lines are retained in buffer.
           }
         }
+        if (done) break;
       }
       lifecycle.assertActive();
       if (!draft.trim()) {
@@ -200,6 +198,7 @@ export class EmployeeCopyDraftService {
       return draft;
     } finally {
       await reader.cancel().catch(() => undefined);
+      reader.releaseLock();
     }
   }
 

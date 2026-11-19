@@ -1,4 +1,4 @@
-import { Injectable, ForbiddenException, Logger, BadRequestException, BadGatewayException, HttpException } from '@nestjs/common';
+import { Injectable, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SettingService } from '../setting/setting.service';
@@ -8,40 +8,12 @@ import { ComputeCreditService } from '../compute-credit/compute-credit.service';
 import { createGatewayStreamLifecycle, createChatCompletionStreamObserver, timeoutValue } from './gateway-stream';
 import { readGatewayJson } from './gateway-response';
 import { GatewayModelPolicyService } from './gateway-model-policy.service';
-
-function parseRetryAfter(value: string | null): number | undefined {
-  if (value === null) return undefined;
-  const trimmed = value.trim();
-  if (/^\d+$/.test(trimmed)) {
-    const seconds = Number(trimmed);
-    return Number.isSafeInteger(seconds) ? seconds : undefined;
-  }
-
-  // Restrict Date.parse to HTTP-date formats; arbitrary strings can parse as dates.
-  const day = '(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)';
-  const month = '(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)';
-  const time = '\\d{2}:\\d{2}:\\d{2}';
-  const standard = new RegExp(`^${day}, (\\d{2}) ${month} \\d{4} ${time} GMT$`);
-  const obsolete = new RegExp(`^(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), (\\d{2})-${month}-\\d{2} ${time} GMT$`);
-  const asctime = new RegExp(`^${day} ${month} ( [1-9]|\\d{2}) ${time} \\d{4}$`);
-  const match = standard.exec(trimmed) || obsolete.exec(trimmed) || asctime.exec(trimmed);
-  if (!match) return undefined;
-  // asctime has no timezone suffix but HTTP dates are always UTC.
-  const timestamp = Date.parse(asctime.test(trimmed) ? `${trimmed} GMT` : trimmed);
-  if (!Number.isFinite(timestamp) || new Date(timestamp).getUTCDate() !== Number(match[1])) {
-    return undefined;
-  }
-  return Math.max(0, Math.ceil((timestamp - Date.now()) / 1000));
-}
-
-function sanitizeRequestId(value: string | null | undefined): string | undefined {
-  const safe = value?.replace(/[^a-zA-Z0-9._:-]/g, '').slice(0, 128);
-  return safe || undefined;
-}
+import { localError } from '../../common/errors/error-diagnostics';
+import { assertUpstreamPayload, upstreamException, redactUpstreamStream } from '../../common/errors/upstream-http.exception';
 
 @Injectable()
 export class GatewayService {
-  private readonly logger = new Logger(GatewayService.name);
+  private readonly responseSecrets = new WeakMap<Response, string>();
 
   constructor(
     private prisma: PrismaService,
@@ -187,61 +159,26 @@ export class GatewayService {
         signal,
       });
       response = stream.wrap(response);
-    } catch {
+    } catch (error) {
       stream.cleanup();
-      this.logger.warn({
-        message: 'gateway upstream request failed before stream',
-        requestId: sanitizeRequestId(requestId), model: dto.model,
-        code: stream.signal.reason?.getResponse?.()?.error?.code || 'UPSTREAM_UNAVAILABLE',
-      });
       if (stream.signal.aborted) throw stream.signal.reason;
-      const message = '无法连接 sub2api';
-      throw new BadGatewayException({
-        error: { message, type: 'api_error', code: 'UPSTREAM_UNAVAILABLE', param: null },
-      });
+      throw localError(error, 502, { origin: 'sep', stage: 'transport' }, [apiKey]);
     }
 
     if (!response.ok) {
-      // 不把 HTML 代理错误页或整个上游响应直接暴露给客户端。
-      const body = await readGatewayJson(response, timeoutValue(this.config, 'GATEWAY_ERROR_MAX_BYTES', 65536)).catch((error) => {
-        if (stream.signal.aborted) throw stream.signal.reason;
-        if (error?.getResponse?.()?.error?.code === 'UPSTREAM_RESPONSE_TOO_LARGE') throw error;
-        return null;
-      }) as { error?: Record<string, unknown> } | null;
-      const error = body?.error;
-      const isRateLimited = response.status === 429;
-      const retryAfterSeconds = isRateLimited
-        ? parseRetryAfter(response.headers.get('Retry-After')) : undefined;
-      if (isRateLimited) {
-        this.logger.warn({
-          message: 'sub2api rate limit',
-          status: response.status,
-          requestId: sanitizeRequestId(requestId),
-          upstreamRequestId: sanitizeRequestId(response.headers.get('x-request-id')),
-          ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
-        });
-      } else this.logger.warn({ message: 'sub2api request rejected', status: response.status,
-        requestId: sanitizeRequestId(requestId), model: dto.model,
-        upstreamRequestId: sanitizeRequestId(response.headers.get('x-request-id')) });
-      throw new HttpException({
-        error: {
-          message: typeof error?.message === 'string' && error.message
-            ? error.message.slice(0, 1000) : `sub2api 请求失败（HTTP ${response.status}）`,
-          type: typeof error?.type === 'string' ? error.type.slice(0, 128)
-            : isRateLimited ? 'rate_limit_error' : response.status >= 500 ? 'api_error' : 'invalid_request_error',
-          code: typeof error?.code === 'string' ? error.code.slice(0, 128)
-            : isRateLimited ? 'UPSTREAM_RATE_LIMIT_EXCEEDED' : 'UPSTREAM_ERROR',
-          param: typeof error?.param === 'string' ? error.param.slice(0, 256) : null,
-          ...(isRateLimited ? { source: 'upstream' } : {}),
-        },
-        ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
-      }, response.status);
+      throw await upstreamException(response, [apiKey], timeoutValue(this.config, 'GATEWAY_ERROR_MAX_BYTES', 262144));
     }
+    if (response.headers.get('content-type')?.split(';')[0].trim().toLowerCase() === 'text/event-stream') {
+      response = redactUpstreamStream(response, [apiKey]);
+    }
+    this.responseSecrets.set(response, apiKey);
     return response;
   }
 
-  readCompletion(response: Response) {
-    return readGatewayJson(response, timeoutValue(this.config, 'GATEWAY_JSON_MAX_BYTES', 8 * 1024 * 1024));
+  async readCompletion(response: Response) {
+    const value = await readGatewayJson(response, timeoutValue(this.config, 'GATEWAY_JSON_MAX_BYTES', 8 * 1024 * 1024), [this.responseSecrets.get(response) ?? '']);
+    assertUpstreamPayload(value, response, [this.responseSecrets.get(response) ?? '']);
+    return value;
   }
 
 }

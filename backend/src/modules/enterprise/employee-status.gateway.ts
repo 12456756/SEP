@@ -4,6 +4,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Server, WebSocket } from 'ws';
 import { EnterpriseService } from './enterprise.service';
 import { ConfigService } from '@nestjs/config';
+import { exceptionDetails } from '../../common/errors/error-diagnostics';
 
 interface Client extends WebSocket { userId?: string; authTimer?: NodeJS.Timeout }
 
@@ -56,9 +57,20 @@ export class EmployeeStatusGateway implements OnGatewayConnection, OnGatewayDisc
           const set = this.clients.get(userId) ?? new Set<Client>();
           set.add(client); this.clients.set(userId, set);
           await this.sendStatuses(client, userId);
-        } catch { client.close(1008, 'Invalid token'); }
+        } catch (error) {
+          if (!client.userId) client.close(1008, 'Invalid token');
+          else {
+            const diagnostic = exceptionDetails(error);
+            this.logger.error({ event: 'employee_status_failed', diagnostic });
+            if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify({ type: 'error', error: diagnostic }));
+            client.close(1011, 'Employee status query failed');
+          }
+        }
       });
-    } catch { client.close(1008, 'Invalid token'); }
+    } catch (error) {
+      this.logger.error({ event: 'employee_status_connection_failed', diagnostic: exceptionDetails(error) });
+      client.close(1011, 'Employee status connection failed');
+    }
   }
 
   handleDisconnect(client: Client) {
@@ -85,7 +97,11 @@ export class EmployeeStatusGateway implements OnGatewayConnection, OnGatewayDisc
             if (client.readyState === WebSocket.OPEN && this.clients.get(userId)?.has(client)) client.send(payload);
           }
         } catch (error) {
-          this.logger.debug(`status broadcast failed: ${(error as Error).message}`);
+          const diagnostic = exceptionDetails(error);
+          this.logger.warn({ event: 'employee_status_broadcast_failed', diagnostic });
+          for (const client of clients) if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({ type: 'error', error: diagnostic }));
+          }
         }
       }));
     } finally {

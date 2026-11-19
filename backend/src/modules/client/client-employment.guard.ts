@@ -75,15 +75,15 @@ export class ClientEmploymentGuard implements CanActivate {
       await this.sessions.assertActiveSession(payload.sid, payload.sub, 'DESKTOP');
       await this.sessions.assertEnterpriseActive(payload.enterpriseId);
     } catch (error) {
-      if (!(error instanceof UnauthorizedException)) throw error;
-      return this.reject(context, fingerprint);
+      if (error instanceof UnauthorizedException) return this.reject(context, fingerprint, error);
+      throw error;
     }
 
     req.clientEmployment = payload as ClientEmploymentClaims;
     return true;
   }
 
-  private async reject(context: ExecutionContext, fingerprint: string): Promise<never> {
+  private async reject(context: ExecutionContext, fingerprint: string, reason?: UnauthorizedException): Promise<never> {
     const http = context.switchToHttp();
     const req = http.getRequest<Request>();
     const rateLimit = await this.authRateLimit.consumeFailure(fingerprint, req.socket.remoteAddress ?? 'unknown');
@@ -97,6 +97,6 @@ export class ClientEmploymentGuard implements CanActivate {
         retryAfterSeconds: rateLimit.retryAfterSeconds,
       }, 429);
     }
-    throw new UnauthorizedException('Invalid or expired employment token; obtain a new employment token');
+    throw reason ?? new UnauthorizedException('Invalid or expired employment token; obtain a new employment token');
   }
 }

@@ -8,6 +8,8 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
+import { localError } from '../../common/errors/error-diagnostics';
+import { fetchUpstream, readUpstreamJson } from '../../common/errors/upstream-http.exception';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SubscriptionService } from '../subscription/subscription.service';
 import { SettingService } from '../setting/setting.service';
@@ -245,16 +247,12 @@ export class TaskPlanningService {
     let response: Response | undefined;
     try {
       lifecycle.assertActive();
-      response = await lifecycle.wait(fetch(`${baseURL.replace(/\/$/, '')}/chat/completions`, {
+      response = await lifecycle.wait(fetchUpstream(`${baseURL.replace(/\/$/, '')}/chat/completions`, {
         method: 'POST', signal: lifecycle.signal,
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-      }));
-      if (!response.ok) {
-        await lifecycle.wait(response.text());
-        throw new BadGatewayException('任务规划上游服务暂时不可用');
-      }
-      const payload = await lifecycle.wait(response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+      }, [apiKey]));
+      const payload = await lifecycle.wait(readUpstreamJson(response, [apiKey])) as { choices?: Array<{ message?: { content?: string } }> };
       lifecycle.assertActive();
       const text = payload.choices?.[0]?.message?.content;
       if (!text) throw new BadGatewayException('规划模型返回了空内容');
@@ -264,7 +262,7 @@ export class TaskPlanningService {
       if (lifecycle.signal.aborted) throw lifecycle.signal.reason;
       if (error instanceof HttpException) throw error;
       this.logger.error(`Task planning failed requestId=${requestId} chain=planner policyVersion=${policy.version} status=internal`);
-      throw new BadGatewayException('任务规划模型暂时不可用，请稍后重试');
+      throw localError(error, 502, { origin: 'sep', stage: 'task-planning' }, [apiKey]);
     } finally {
       lifecycle.dispose();
       if (response?.body && !response.body.locked) await response.body.cancel().catch(() => undefined);

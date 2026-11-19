@@ -280,7 +280,7 @@ describe('MediaByteCacheService', () => {
 
     it.each(['put', 'get'] as const)('sanitizes Redis connection failures during %s', async (operation) => {
       const secret = 'redis://user:private-password@private-host:6379/0';
-      const detail = new Error(`${secret} ${SCOPE} ${ID} ${BYTES.toString('hex')}`);
+      const detail = Object.assign(new Error(`WRONGPASS invalid username-password pair at ${secret}`), { code: 'WRONGPASS' });
       const logger = jest.spyOn(console, 'error').mockImplementation(() => undefined);
       const expected = metadata();
       if (operation === 'put') client.set.mockRejectedValueOnce(detail);
@@ -292,6 +292,7 @@ describe('MediaByteCacheService', () => {
       expect(error.getResponse()).toEqual({ message: '媒体存储暂不可用', error: {
         code: 'MEDIA_STORAGE_UNAVAILABLE', message: '媒体存储暂不可用',
         type: 'server_error', source: 'platform', param: null,
+        cause: { name: 'Error', code: 'WRONGPASS', message: 'WRONGPASS invalid username-password pair at [REDACTED]' },
       } });
       const serialized = JSON.stringify(error) + error.stack;
       for (const privateValue of [secret, SCOPE, ID, BYTES.toString('hex'), detail.message]) {

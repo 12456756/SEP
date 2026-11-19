@@ -36,6 +36,8 @@ import { waitForGatewayOperation } from './gateway-operation';
 import { GatewayAdmissionService, GatewayAdmissionLease } from './gateway-admission.service';
 import { GatewayLifecycleService } from '../../common/lifecycle/gateway-lifecycle.service';
 import { gatewayUpstreamError, validGatewayCompletion, validGatewayUsage } from './gateway-response';
+import { streamErrorDetails, upstreamException, upstreamHeaders } from '../../common/errors/upstream-http.exception';
+import { exceptionDetails } from '../../common/errors/error-diagnostics';
 
 @ApiTags('gateway')
 @Controller('gateway/v1')
@@ -156,10 +158,12 @@ export class GatewayController {
         });
       if (prepared.stream) {
         if (!upstreamRes.body || upstreamRes.headers.get('content-type')?.split(';')[0].trim().toLowerCase() !== 'text/event-stream') {
-          await upstreamRes.body?.cancel().catch(() => undefined);
-          throw gatewayUpstreamError('UPSTREAM_INVALID_CONTENT_TYPE', 'sub2api 未返回有效 SSE 响应');
+          throw await upstreamException(upstreamRes);
         }
-        // Forward bytes unchanged; parsing is only for accounting and diagnostics.
+        // Successful frames retain their bytes; upstream failure frames have already been redacted.
+        for (const [name, value] of Object.entries(upstreamHeaders(upstreamRes))) {
+          res.setHeader(name === 'x-request-id' ? 'X-Compute-Request-ID' : name, value);
+        }
         res.setHeader('Content-Type', 'text/event-stream');
         res.setHeader('Cache-Control', 'no-cache');
         res.setHeader('Connection', 'keep-alive');
@@ -171,6 +175,7 @@ export class GatewayController {
         let errorCode: string | undefined;
         let savedUsage: ChatCompletionUsage | null = null;
         let checkpointError: unknown;
+        const controller = this;
         const checkpoint = async (usage: ChatCompletionUsage | null) => {
           if (!usage || (savedUsage?.prompt_tokens === usage.prompt_tokens && savedUsage?.completion_tokens === usage.completion_tokens)) return;
           try { await saveUsage(usage); }
@@ -185,29 +190,39 @@ export class GatewayController {
             upstreamFailed = true;
           });
           await pipeline(
-            source,
-            async function* (chunks) {
-              for await (const chunk of chunks) {
-                if (chunk.byteLength > 0) {
-                  const receivedAt = Date.now();
-                  streamMetrics.firstByteLatencyMs ??= receivedAt - startedAt;
-                  streamMetrics.lastDataAt = receivedAt;
+            (async function* () {
+              try {
+                for await (const chunk of source) {
+                  if (chunk.byteLength > 0) {
+                    const receivedAt = Date.now();
+                    streamMetrics.firstByteLatencyMs ??= receivedAt - startedAt;
+                    streamMetrics.lastDataAt = receivedAt;
+                  }
+                  observer.write(chunk);
+                  await checkpoint(observer.snapshot().usage);
+                  streamMetrics.bytesForwarded += chunk.byteLength;
+                  yield chunk;
                 }
-                observer.write(chunk);
-                await checkpoint(observer.snapshot().usage);
-                streamMetrics.bytesForwarded += chunk.byteLength;
-                yield chunk;
-              }
-              const summary = observer.finish();
-              await checkpoint(summary.usage);
-              if (!summary.finishReason || summary.protocolError) {
+                const summary = observer.finish();
+                await checkpoint(summary.usage);
+                if (!summary.finishReason || summary.protocolError) {
+                  upstreamFailed = true;
+                  throw gatewayUpstreamError('UPSTREAM_INCOMPLETE_STREAM', 'sub2api 流未完整结束');
+                }
+                complete = true;
+              } catch (error) {
                 upstreamFailed = true;
-                throw gatewayUpstreamError('UPSTREAM_INCOMPLETE_STREAM', 'sub2api 流未完整结束');
+                const diagnostic = observer.snapshot().errorDiagnostic ?? streamErrorDetails(error, { requestId, executionId });
+                errorCode = String(streamErrorDetails(observer.snapshot().errorDiagnostic ?? error).code ?? 'UPSTREAM_STREAM_ERROR');
+                controller.logger.warn({ message: 'gateway stream interrupted', ...logContext, ...streamMetrics,
+                  durationMs: Date.now() - startedAt, clientDisconnected: client.signal.aborted, code: errorCode, diagnostic });
+                if (!client.signal.aborted && !res.destroyed && !observer.snapshot().errorDiagnostic) {
+                  yield Buffer.from(`\n\nevent: error\ndata: ${JSON.stringify({ error: diagnostic })}\n\n`);
+                }
               }
-            },
+            })(),
             res,
           );
-          complete = true;
         } catch (error) {
           errorCode = error?.getResponse?.()?.error?.code || error?.code || 'UPSTREAM_STREAM_ERROR';
           this.logger.warn({
@@ -217,6 +232,7 @@ export class GatewayController {
             durationMs: Date.now() - startedAt,
             clientDisconnected: client.signal.aborted,
             code: errorCode,
+            diagnostic: exceptionDetails(error),
           });
           // Headers are already sent: terminate abnormally, never fabricate a successful end.
           res.destroy();
@@ -253,7 +269,7 @@ export class GatewayController {
       client.abort();
       if (executionId) {
         const definitive = !forwarding || (error?.getStatus?.() < 500 && error?.getStatus?.() >= 400);
-        await waitForGatewayOperation(this.executions.fail(executionId, error?.getResponse?.()?.error?.code || 'EXECUTION_FAILED', definitive, usageUncertain))
+        await waitForGatewayOperation(this.executions.fail(executionId, String(streamErrorDetails(error).code ?? 'EXECUTION_FAILED'), definitive, usageUncertain))
           .catch(() => this.logger.error({ event: 'gateway_journal_update_failed', executionId, requestId }));
       }
       // A response may already be complete when settlement storage becomes unavailable.

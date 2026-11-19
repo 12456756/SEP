@@ -126,13 +126,14 @@ describe('EmployeeCopyDraftService', () => {
     await expect(service.generate(input)).rejects.toThrow('文案模型返回内容过长');
   });
 
-  it('maps relay errors to a user-safe upstream error', async () => {
+  it('preserves relay error status and original reason', async () => {
     fetchSpy.mockResolvedValue(new Response('private upstream details', { status: 503 }));
-    await expect(service.generate(input)).rejects.toThrow('文案模型暂时不可用');
+    await expect(service.generate(input)).rejects.toMatchObject({ status: 503, response: 'private upstream details' });
   });
 
-  it('maps transport failures without exposing upstream or credential details', async () => {
+  it('preserves transport failure causes', async () => {
     fetchSpy.mockRejectedValueOnce(new Error('private transport detail'));
-    await expect(service.generate(input)).rejects.toThrow('文案生成暂时失败');
+    await expect(service.generate(input)).rejects.toMatchObject({ status: 502, response: {
+      message: 'private transport detail', cause: { name: 'Error', message: 'private transport detail' } } });
   });
 });

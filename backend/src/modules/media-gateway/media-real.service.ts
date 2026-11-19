@@ -1,4 +1,4 @@
-import { HttpException, Injectable } from '@nestjs/common';
+import { HttpException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
 import { Decimal } from '@prisma/client/runtime/library';
@@ -20,12 +20,13 @@ import { MediaRealStore, RealRequestRecord, realMediaStorageUnavailable } from '
 import { ImageDispatchError, resolveSub2apiImageSpec, SUB2API_IMAGE_ADAPTER_VERSION, Sub2apiImageAdapter } from './sub2api-image.adapter';
 import { isSupportedImageModel } from './image-model-contract';
 import { mediaRealSemanticHash } from './media-real-semantics';
-import { MediaUpstreamException } from '../../common/errors/media-upstream.exception';
+import { MediaUpstreamException, mediaFailure, retainMediaFailure } from '../../common/errors/media-upstream.exception';
+import { exceptionDetails } from '../../common/errors/error-diagnostics';
 
 const REFERENCE_TTL = 15 * 60_000;
 const QUOTE_TTL = 60_000;
 const OUTPUT_TTL = 24 * 60 * 60_000;
-type MediaErrorDetails = { field?: string; stage?: 'image-authorization' | 'image-quote' | 'image-submit' | 'image-query' | 'image-content' | 'quote' | 'submit'; recovery?: string;
+type MediaErrorDetails = { cause?: unknown; field?: string; stage?: 'image-authorization' | 'image-quote' | 'image-submit' | 'image-query' | 'image-content' | 'quote' | 'submit'; recovery?: string;
   source?: 'request' | 'adapter' | 'platform'; reason?: string; submissionState?: 'not_submitted'; billingState?: 'not_reserved'; retryable?: boolean };
 const error = (status: number, code: MediaRealErrorCode, message: string, details: MediaErrorDetails = {}): never => {
   throw new HttpException({ error: { code, message, type: status >= 500 ? 'server_error' : 'invalid_request_error', source: 'platform', param: null, ...details } }, status);
@@ -64,7 +65,8 @@ export class MediaRealService {
     if (fields && Object.keys(fields as object).length) error(400, 'INVALID_REFERENCE', '参考上传不接受额外字段');
     if (!file || !Buffer.isBuffer(file.buffer) || file.size !== file.buffer.length || file.mimetype !== 'image/png') error(400, 'INVALID_REFERENCE', '需要 PNG 文件');
     let dimensions: { width: number; height: number };
-    try { dimensions = inspectMediaPng(file.buffer, IMAGE_REFERENCE_MAX_BYTES); } catch { error(400, 'INVALID_REFERENCE', 'PNG 参考图无效或超出限制'); }
+    try { dimensions = inspectMediaPng(file.buffer, IMAGE_REFERENCE_MAX_BYTES); }
+    catch (cause) { error(400, 'INVALID_REFERENCE', 'PNG 参考图无效或超出限制', { cause: exceptionDetails(cause) }); }
     const expiresAt = new Date(Date.now() + REFERENCE_TTL).toISOString();
     const reference = await this.store.saveReference(this.scope(claims), {
       mock: false, expiresAt, mimeType: 'image/png', byteLength: file.buffer.length, sha256: sha(file.buffer), ...dimensions,
@@ -221,13 +223,15 @@ export class MediaRealService {
       record = await this.saveExecution(record);
     } catch (failure) {
       if (failure instanceof ImageDispatchError && failure.upstreamError) record.receipt.upstreamError = failure.upstreamError;
+      else record.receipt.upstreamError = mediaFailure(failure);
       if (!dispatchStarted || failure instanceof ImageDispatchError && failure.definitelyRejected) {
         record.receipt.status = 'FAILED'; record.receipt.errorCode = !dispatchStarted ? 'CONFIG_CHANGED' : (failure as ImageDispatchError).safeCode;
         try {
           await this.billing.release(receiptId);
           record.receipt.billingStatus = 'RELEASED';
-        } catch {
+        } catch (releaseError) {
           record.receipt.billingStatus = 'RECONCILING';
+          record.receipt.upstreamError = retainMediaFailure(record.receipt.upstreamError, releaseError, 'release');
         }
         record.receipt.recovery = { canQuery: record.receipt.billingStatus === 'RECONCILING', canCancel: false, canDownload: false };
       } else {
@@ -280,11 +284,11 @@ export class MediaRealService {
     const member = await this.prisma.enterpriseMember.findFirst({
       where: { id: claims.memberId, enterpriseId: claims.enterpriseId, userId: claims.sub, user: { status: 'ACTIVE' }, enterprise: { status: 'ACTIVE' } },
       select: { departmentId: true },
-    }).catch(() => realMediaStorageUnavailable());
+    }).catch(cause => realMediaStorageUnavailable(cause));
     if (!member) error(403, 'MEDIA_FORBIDDEN', '当前成员无媒体访问权限');
     const subscription = await this.prisma.subscription.findFirst({ where: clientSubscriptionAccessWhere({
       enterpriseId: claims.enterpriseId, memberId: claims.memberId, departmentId: member.departmentId, role: 'MEMBER',
-    }, claims.subscriptionId), select: { id: true } }).catch(() => realMediaStorageUnavailable());
+    }, claims.subscriptionId), select: { id: true } }).catch(cause => realMediaStorageUnavailable(cause));
     if (!subscription) error(403, 'MEDIA_FORBIDDEN', '订阅已失效或授权已撤销');
   }
 
@@ -460,7 +464,8 @@ export class MediaRealService {
       return this.store.save(record);
     } catch (failure) {
       if (failure instanceof MediaUpstreamException) throw failure;
-      return record;
+      record.receipt.upstreamError = retainMediaFailure(record.receipt.upstreamError, failure, 'billing');
+      return this.store.save(record);
     }
   }
 
@@ -480,11 +485,13 @@ export class MediaRealService {
             record = await this.store.save(record);
           }
           await this.reconcile(record);
-        } catch {
+        } catch (error) {
+          Logger.warn({ event: 'image_reconciliation_failed', receiptId: record.receipt.receiptId, error: exceptionDetails(error) }, 'MediaRealService');
           // Leave the original request and frozen funds intact for the next bounded pass.
         }
       }
-    } catch {
+    } catch (error) {
+      Logger.warn({ event: 'image_reconciliation_scan_failed', error: exceptionDetails(error) }, 'MediaRealService');
       // Storage outages must not trigger a new execution or a speculative refund.
     } finally {
       this.reconciling = false;
@@ -492,7 +499,10 @@ export class MediaRealService {
   }
 
   private scope(claims: ClientEmploymentClaims) { return JSON.stringify([claims.enterpriseId, claims.sub, claims.memberId, claims.subscriptionId]); }
-  private parse<T>(schema: z.ZodType<T>, value: unknown): T { try { return schema.parse(value); } catch { error(400, 'INVALID_PARAMETER', '图片请求参数无效'); } }
+  private parse<T>(schema: z.ZodType<T>, value: unknown): T {
+    try { return schema.parse(value); }
+    catch (cause) { error(400, 'INVALID_PARAMETER', '图片请求参数无效', { cause: exceptionDetails(cause) }); }
+  }
 
   private async usdToCnyRate() {
     const raw = await this.setting.getEffectiveValue(SETTING_KEYS.USD_TO_CNY_RATE);

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Header, Param, Post, Query, Res, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Get, Header, Logger, Param, Post, Query, Res, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { SkipThrottle } from '@nestjs/throttler';
@@ -15,6 +15,7 @@ import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { MediaSpecValidationPipe } from './media-spec-validation.pipe';
 import { MediaVideoRealGuard } from './media-video-real.guard';
 import { MediaVideoRealService } from './media-video-real.service';
+import { exceptionDetails } from '../../common/errors/error-diagnostics';
 
 @ApiTags('media-video-real')
 @ApiBearerAuth()
@@ -36,6 +37,7 @@ import { MediaVideoRealService } from './media-video-real.service';
 @UseGuards(ClientEmploymentGuard, MediaVideoRealGuard)
 @Controller('gateway/v1/media/video-real')
 export class MediaVideoRealController {
+  private readonly logger = new Logger(MediaVideoRealController.name);
   constructor(private readonly media: MediaVideoRealService) {}
 
   @Get('profiles')
@@ -94,7 +96,10 @@ export class MediaVideoRealController {
     response.set({ 'Content-Type': output.mimeType, 'Content-Length': String(output.byteLength), 'X-SHA256': output.sha256,
       'X-SEP-Media-Mock': 'false', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
     try { await pipeline(stream, response); }
-    catch { stream.destroy(); response.destroy(); }
+    catch (error) {
+      this.logger.error({ event: 'video_download_failed', receiptId, outputId, diagnostic: exceptionDetails(error) });
+      stream.destroy(); response.destroy();
+    }
   }
 
   @Post('requests/:receiptId/cancel')

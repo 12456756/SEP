@@ -29,6 +29,8 @@ import {
   type GatewayAdmissionIdentity,
 } from '../gateway/gateway-admission.service';
 import { GatewayModelPolicyService } from '../gateway/gateway-model-policy.service';
+import { localError } from '../../common/errors/error-diagnostics';
+import { fetchModelUpstream } from '../../common/errors/upstream-http.exception';
 
 @Injectable()
 export class DigitalEmployeeRunner {
@@ -160,13 +162,13 @@ export class DigitalEmployeeRunner {
           );
           await lifecycle.wait(reservation);
           lifecycle.assertActive();
-          return fetch(url, {
+          return fetchModelUpstream(url, {
             ...init,
             signal: AbortSignal.any([
               lifecycle.signal,
               ...(init.signal ? [init.signal] : []),
             ]),
-          });
+          }, [apiKey]);
         },
       });
       const { text, steps } = await lifecycle.wait(
@@ -192,6 +194,8 @@ export class DigitalEmployeeRunner {
         employeeId: employee.id,
         employeeName: employee.name,
       };
+    } catch (error) {
+      throw localError(error, 502, { origin: 'sep', stage: 'digital-employee' }, [apiKey]);
     } finally {
       lifecycle?.dispose();
       await lease.release();

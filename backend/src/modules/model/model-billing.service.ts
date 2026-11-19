@@ -1,4 +1,6 @@
-import { Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { HttpException, Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { exceptionDetails, localError } from '../../common/errors/error-diagnostics';
+import { fetchUpstream, readUpstreamJson } from '../../common/errors/upstream-http.exception';
 import { z } from 'zod';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SettingService } from '../setting/setting.service';
@@ -25,29 +27,28 @@ export class ModelBillingService {
         this.settings.getEffectiveValue(SETTING_KEYS.SUB2API_BASE_URL),
         this.settings.getEffectiveValue(SETTING_KEYS.SUB2API_API_KEY),
       ]);
-      if (!baseUrl || !apiKey) throw new ServiceUnavailableException();
-      const response = await fetch(`${baseUrl.replace(/\/$/, '')}/sub2api/billing`, {
+      if (!baseUrl || !apiKey) throw new ServiceUnavailableException('sub2api billing connection address or API key is not configured');
+      const response = await fetchUpstream(`${baseUrl.replace(/\/$/, '')}/sub2api/billing`, {
         headers: { Authorization: `Bearer ${apiKey}` },
         signal: AbortSignal.timeout(5000),
-      });
-      if (!response.ok) throw new ServiceUnavailableException();
-      return KeyBillingSchema.parse(await response.json()).effective_rate_multiplier;
-    } catch {
-      // Never expose upstream responses or credentials, or assume an unknown rate is 1.
-      throw new ServiceUnavailableException({ message: '中转计费倍率暂不可用，请稍后重试',
-        error: { code: 'MODEL_BILLING_UNAVAILABLE', message: '中转计费倍率暂不可用，请稍后重试', source: 'platform', type: 'server_error' } });
+      }, [apiKey]);
+      return KeyBillingSchema.parse(await readUpstreamJson(response, [apiKey])).effective_rate_multiplier;
+    } catch (error) {
+      throw localError(error, 503, { code: 'MODEL_BILLING_UNAVAILABLE', origin: 'sep', stage: 'billing' });
     }
   }
 
   async describe(models: Array<{ isFree: boolean }>) {
     let multiplier: number | null = null;
+    let billingError: unknown;
     if (models.some(model => !model.isFree)) {
       try { multiplier = await this.upstreamMultiplier(); }
-      catch (error) { if (!(error instanceof ServiceUnavailableException)) throw error; }
+      catch (error) { if (!(error instanceof HttpException)) throw error; billingError = exceptionDetails(error); }
     }
     return models.map(model => ({
       isFree: model.isFree,
       billingMultiplier: model.isFree ? '0' : multiplier === null ? null : String(multiplier),
+      ...(!model.isFree && billingError !== undefined ? { billingError } : {}),
       discountLabel: model.isFree ? '活动免费' : multiplier === null ? '中转倍率暂不可用'
         : multiplier === 0 ? '中转免费' : '按中转倍率计费',
     }));

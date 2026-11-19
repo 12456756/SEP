@@ -1,9 +1,11 @@
 import { BadGatewayException } from '@nestjs/common';
 import type { ChatCompletionUsage } from 'shared';
+import { sanitizeError } from '../../common/errors/error-diagnostics';
 
-export function gatewayUpstreamError(code: string, message: string) {
+export function gatewayUpstreamError(code: string, message: string, diagnostic?: unknown) {
   return new BadGatewayException({
-    error: { code, message, type: 'api_error', source: 'upstream', param: null },
+    error: { code, message, type: 'api_error', source: 'upstream', param: null,
+      ...(diagnostic !== undefined ? { diagnostic: sanitizeError(diagnostic) } : {}) },
   });
 }
 
@@ -40,7 +42,7 @@ export function validGatewayCompletion(value: unknown): boolean {
   });
 }
 
-export async function readGatewayJson(response: Response, maxBytes: number): Promise<unknown> {
+export async function readGatewayJson(response: Response, maxBytes: number, secrets: readonly string[] = []): Promise<unknown> {
   if (!response.body) throw gatewayUpstreamError('UPSTREAM_INVALID_JSON', 'sub2api 响应为空');
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -55,11 +57,13 @@ export async function readGatewayJson(response: Response, maxBytes: number): Pro
     }
     const data = Buffer.concat(chunks, length).toString('utf8');
     try { return JSON.parse(data); }
-    catch { throw gatewayUpstreamError('UPSTREAM_INVALID_JSON', 'sub2api 返回了无效 JSON'); }
+    catch (error) { throw gatewayUpstreamError('UPSTREAM_INVALID_JSON', 'sub2api 返回了无效 JSON',
+      sanitizeError({ cause: error, body: data, upstreamStatus: response.status }, secrets)); }
   } catch (error) {
     await reader.cancel(error).catch(() => undefined);
     if (error instanceof BadGatewayException) throw error;
-    throw gatewayUpstreamError('UPSTREAM_BODY_ERROR', 'sub2api 响应读取失败');
+    throw gatewayUpstreamError('UPSTREAM_BODY_ERROR', 'sub2api 响应读取失败',
+      sanitizeError({ cause: error, body: Buffer.concat(chunks).toString('utf8'), upstreamStatus: response.status }, secrets));
   } finally {
     reader.releaseLock();
   }

@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { EmbeddingService } from './embedding.service';
@@ -11,6 +11,7 @@ import { KNOWLEDGE_LIMITS, type KnowledgeMemberSearchDto, type KnowledgeSearchRe
 import { isPublishedChunk, isVectorCompatibleChunk, publicationSelect, publishedChunkWhere, vectorChunkWhere } from './knowledge-publication';
 import type { EmbeddingProfile } from './embedding.service';
 import { TextChunker } from './text-chunker.util';
+import { exceptionDetails, localError } from '../../common/errors/error-diagnostics';
 
 export interface SearchResult {
   content: string;
@@ -40,7 +41,9 @@ export interface SearchResponse {
 }
 
 type Readiness = { hasReady: boolean; partial: boolean };
-class QueryEmbeddingUnavailable extends Error {}
+class QueryEmbeddingUnavailable extends Error {
+  constructor(readonly cause: unknown) { super('Query embedding unavailable'); }
+}
 
 type SearchStrategy = 'lexical' | 'vector' | 'hybrid' | 'auto';
 type SearchCandidate = SearchResult & { vectorProfile?: EmbeddingProfile; lexicalScore?: number };
@@ -195,10 +198,12 @@ export class KnowledgeSearchService {
     let actualStrategy: 'HYBRID' | 'LEXICAL' = 'HYBRID';
     let degraded = false;
     let degradationReason: 'QUERY_EMBEDDING_UNAVAILABLE' | null = null;
-      if (!(await this.embedding.isAvailable())) {
+    let diagnostic: ReturnType<typeof exceptionDetails> | undefined;
+      if (!(await this.embedding.isAvailable(error => { diagnostic = exceptionDetails(error); }))) {
         actualStrategy = 'LEXICAL';
         degraded = true;
         degradationReason = 'QUERY_EMBEDDING_UNAVAILABLE';
+        diagnostic ??= { message: 'Embedding availability check failed without an error reason' };
       }
       let candidates: SearchCandidate[];
       try {
@@ -207,6 +212,7 @@ export class KnowledgeSearchService {
           : await this.searchLexical(dto.query, viewer.enterpriseId, kbIds, dto.topK);
       } catch (error) {
         if (!(error instanceof QueryEmbeddingUnavailable)) throw error;
+        diagnostic = exceptionDetails(error.cause);
         actualStrategy = 'LEXICAL';
         degraded = true;
         degradationReason = 'QUERY_EMBEDDING_UNAVAILABLE';
@@ -218,13 +224,14 @@ export class KnowledgeSearchService {
         searchId: `search_${randomUUID()}`,
         status: results.length ? 'MATCHED' : 'NO_MATCH',
         actualStrategy, degraded, degradationReason,
+        ...(diagnostic !== undefined ? { diagnostic } : {}),
         durationMs: Date.now() - started, count: results.length,
         partial: readiness.partial, results,
       };
     } catch (error) {
       if (error instanceof ForbiddenException || error instanceof NotFoundException) throw error;
       this.logger.error('Member knowledge retrieval failed');
-      throw new ServiceUnavailableException({ code: 'KNOWLEDGE_SERVICE_UNAVAILABLE', message: '知识库检索暂时不可用' });
+      throw localError(error, 503, { code: 'KNOWLEDGE_SERVICE_UNAVAILABLE' });
     }
   }
 
@@ -324,7 +331,7 @@ export class KnowledgeSearchService {
     });
     } catch (error) {
       if (error instanceof ForbiddenException || error instanceof NotFoundException) throw error;
-      throw new ServiceUnavailableException({ code: 'KNOWLEDGE_SERVICE_UNAVAILABLE', message: '知识库来源暂时不可用' });
+      throw localError(error, 503, { code: 'KNOWLEDGE_SERVICE_UNAVAILABLE' });
     }
   }
 
@@ -372,10 +379,11 @@ export class KnowledgeSearchService {
     scoreThreshold: number,
   ): Promise<SearchCandidate[]> {
     // 检查服务可用性
-    const embeddingAvailable = await this.embedding.isAvailable();
+    let availabilityError: unknown;
+    const embeddingAvailable = await this.embedding.isAvailable(error => { availabilityError = error; });
     if (!embeddingAvailable) {
-      this.logger.warn('Embedding service unavailable, returning empty results');
-      throw new ServiceUnavailableException({ code: 'KNOWLEDGE_SERVICE_UNAVAILABLE', message: '向量检索暂时不可用' });
+      throw localError(availabilityError ?? { message: 'Embedding availability check failed without an error reason' }, 503,
+        { code: 'KNOWLEDGE_SERVICE_UNAVAILABLE' });
     }
 
     const profile = this.embedding.getProfile();
@@ -442,7 +450,7 @@ export class KnowledgeSearchService {
       (async () => {
         let embeddingResult: Awaited<ReturnType<EmbeddingService['embed']>>;
         try { embeddingResult = await this.embedding.embed(query); }
-        catch { throw new QueryEmbeddingUnavailable(); }
+        catch (error) { throw new QueryEmbeddingUnavailable(error); }
         return this.vector.search(
           embeddingResult.embedding,
           enterpriseId,

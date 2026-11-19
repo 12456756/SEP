@@ -1,13 +1,15 @@
 import { HttpException, Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { MediaUpstreamException, mediaFailure, readMediaUpstreamError, protectMediaCredential } from '../../common/errors/media-upstream.exception';
+import { MediaUpstreamException, mediaFailure, mediaDispatchFailure, readMediaUpstreamError, protectMediaCredential } from '../../common/errors/media-upstream.exception';
 import type { MediaUpstreamError } from 'shared';
 import { MediaJsonValueSchema, MediaVideoUsdSchema, VIDEO_OUTPUT_FORMAT, VIDEO_REFERENCE_MAX_BYTES } from 'shared';
 import { MediaVideoGatewayQuoteRequestSchema, MediaVideoGatewayQuoteRequestV3Schema,
   type MediaVideoGatewayQuoteRequest, type MediaVideoGatewayQuoteRequestV3 } from 'shared';
 import { SettingService } from '../setting/setting.service';
 import { inspectMediaPng } from './media-png';
+import { errorMessage, sanitizeError, hasBusinessError } from '../../common/errors/error-diagnostics';
+import { upstreamHeaders } from '../../common/errors/upstream-http.exception';
 
 export interface Sub2apiVideoConnection { base: string; key: string; fingerprint: string }
 const ModelIdSchema = z.string().min(1).max(160).regex(/^[^\s\p{Cc}\p{Cf}]+$/u);
@@ -28,6 +30,7 @@ const PricingSchema = z.object({
   amount_usd: MediaVideoUsdSchema.nullable(), pricing_version: z.string().min(1).max(128),
   effective_rate_multiplier: z.number().finite().nonnegative(),
   observed_at: z.string().datetime({ offset: true }), expires_at: z.string().datetime({ offset: true }),
+  diagnostic: z.string().optional(),
 }).strict();
 export type Sub2apiVideoPrice = z.infer<typeof PricingSchema>;
 const UsageSchema = z.object({
@@ -41,18 +44,22 @@ export type Sub2apiVideoTask = z.infer<typeof TaskSchema>;
 export type Sub2apiVideoInput = MediaVideoGatewayQuoteRequest | MediaVideoGatewayQuoteRequestV3;
 
 export class VideoDispatchError extends HttpException {
+  readonly upstreamError?: MediaUpstreamError;
   constructor(readonly requestId: string | null, readonly definitelyRejected: boolean,
-    readonly specUnsupported = false, readonly upstreamError?: MediaUpstreamError) {
+    readonly specUnsupported = false, upstreamError?: MediaUpstreamError) {
+    upstreamError = mediaDispatchFailure(upstreamError);
     super((upstreamError?.body ?? { error: {
       code: specUnsupported ? 'UPSTREAM_SPEC_UNSUPPORTED' : definitelyRejected ? 'UPSTREAM_FAILED' : 'SUBMISSION_UNKNOWN',
       message: specUnsupported ? '上游拒绝了请求规格，请查询原请求以确认账务状态' : '视频提交未完成，请查询原请求',
       ...(specUnsupported ? { source: 'upstream', stage: 'submit', reason: '上游明确报告规格参数不支持',
         retryable: false, submissionState: 'unknown', billingState: 'reconciling' } : {}),
-    } }) as string | Record<string, unknown>, upstreamError?.status ?? 502);
+    } }) as string | Record<string, unknown>, upstreamError?.status >= 400 ? upstreamError.status : 502);
+    this.upstreamError = upstreamError;
   }
 }
-function unavailable(code = 'PRICE_UNAVAILABLE'): never {
-  throw new HttpException({ error: { code, message: '视频上游合同暂不可核验' } }, 503);
+function unavailable(code = 'PRICE_UNAVAILABLE', diagnostic: unknown = 'Video upstream contract could not be verified'): never {
+  const details = sanitizeError(diagnostic);
+  throw new HttpException({ error: { code, message: errorMessage(details) ?? String(diagnostic), details, origin: 'sep' } }, 503);
 }
 function specError(code: 'MISSING_SPEC' | 'ADAPTER_FIELD_UNMAPPED', field: string, reason: string,
   stage: 'quote' | 'submit'): never {
@@ -76,7 +83,7 @@ export class Sub2apiVideoAdapter {
         !key?.trim() || /[^\x21-\x7e]/.test(key)) unavailable();
       base = url.href.replace(/\/+$/, '').replace(/\/v1$/, '') + '/v1';
       return { base, key, fingerprint: fingerprint(base, key) };
-    } catch { unavailable(); }
+    } catch (error) { if (error instanceof HttpException) throw error; unavailable('PRICE_UNAVAILABLE', error); }
   }
 
   async discover(connection: Sub2apiVideoConnection): Promise<Array<{ modelId: string; displayName: string }>> {
@@ -84,7 +91,7 @@ export class Sub2apiVideoAdapter {
     const parsed = z.object({ data: z.array(z.object({
       id: ModelIdSchema, display_name: z.string().trim().min(1).max(256).regex(/^[^\p{Cc}\p{Cf}]+$/u).optional(),
     })).max(2000) }).safeParse(result.value);
-    if (!parsed.success) unavailable();
+    if (!parsed.success) unavailable('PRICE_UNAVAILABLE', { message: 'Video model catalog validation failed', errors: parsed.error.issues });
     const models = new Map<string, { modelId: string; displayName: string }>();
     for (const model of parsed.data.data) if (!models.has(model.id)) {
       models.set(model.id, { modelId: model.id, displayName: (model.display_name ?? model.id).slice(0, 80) });
@@ -101,7 +108,7 @@ export class Sub2apiVideoAdapter {
         resolution: dimensions.resolution, duration_seconds: dimensions.durationSeconds }),
     });
     const parsed = PricingSchema.safeParse(result.value);
-    if (!parsed.success) unavailable();
+    if (!parsed.success) unavailable('PRICE_UNAVAILABLE', { message: 'Video quote response validation failed', errors: parsed.error.issues });
     const price = parsed.data;
     const now = Date.now();
     if (price.model !== modelId || price.operation !== input.operation || price.resolution !== dimensions.resolution ||
@@ -109,7 +116,9 @@ export class Sub2apiVideoAdapter {
       /public|fallback|default|unknown/i.test(price.pricing_source) ||
       Date.parse(price.observed_at) > now + 5000 || Date.parse(price.expires_at) <= now ||
       Date.parse(price.expires_at) > now + 120_000 || Date.parse(price.expires_at) <= Date.parse(price.observed_at) ||
-      Date.parse(price.expires_at) - Date.parse(price.observed_at) > 120_000) unavailable();
+      Date.parse(price.expires_at) - Date.parse(price.observed_at) > 120_000) unavailable('PRICE_UNAVAILABLE', {
+        message: price.diagnostic ?? 'Video quote is unavailable, expired or does not match the requested model/specification',
+        quote: price, expected: { modelId, operation: input.operation, ...dimensions } });
     return price;
   }
 
@@ -118,13 +127,13 @@ export class Sub2apiVideoAdapter {
     const result = await this.json(connection, `/sub2api/videos/usage?request_id=${encodeURIComponent(requestId)}`,
       { method: 'GET' }, 'BILLING_PENDING');
     const parsed = UsageSchema.safeParse(result.value);
-    if (!parsed.success) unavailable('BILLING_PENDING');
+    if (!parsed.success) unavailable('BILLING_PENDING', { message: 'Video usage response validation failed', errors: parsed.error.issues });
     const value = parsed.data;
     if (value.request_id !== requestId ||
       value.status === 'pending' && value.actual_cost_usd !== null ||
       value.status === 'settled' && (value.actual_cost_usd === null || value.model === null ||
         value.video_count === null || value.video_count < 1 || value.duration_seconds === null || value.resolution === null)) {
-      unavailable('BILLING_PENDING');
+      unavailable('BILLING_PENDING', { message: 'Video usage evidence does not match the original request or settlement state', usage: value });
     }
     return value;
   }
@@ -157,7 +166,9 @@ export class Sub2apiVideoAdapter {
       true, 'protocolVersion' in input);
     const task = TaskSchema.safeParse(result.value);
     if (!task.success || !result.requestId || task.data.model !== modelId ||
-      task.data.task_id !== undefined && task.data.task_id !== task.data.id) throw new VideoDispatchError(result.requestId, false);
+      task.data.task_id !== undefined && task.data.task_id !== task.data.id) throw new VideoDispatchError(result.requestId, false, false,
+        { status: 502, body: { error: { message: 'Video submission response has an invalid task identity, model or request ID',
+          origin: 'sep', stage: 'submit-validation', details: task.success ? sanitizeError(task.data) : sanitizeError(task.error.issues) } } });
     return { taskId: task.data.id, requestId: result.requestId, status: task.data.status,
       ...(task.data.error !== undefined ? { error: protectMediaCredential({ status: 200, body: task.data.error }, connection.key).body } : {}) };
   }
@@ -167,7 +178,9 @@ export class Sub2apiVideoAdapter {
     const result = await this.json(connection, `/videos/${encodeURIComponent(taskId)}`, { method: 'GET' }, 'UPSTREAM_FAILED');
     const task = TaskSchema.safeParse(result.value);
     if (!task.success || task.data.id !== taskId || task.data.model !== modelId ||
-      task.data.task_id !== undefined && task.data.task_id !== taskId) unavailable('UPSTREAM_FAILED');
+      task.data.task_id !== undefined && task.data.task_id !== taskId) unavailable('UPSTREAM_FAILED', {
+        message: 'Video query response does not match the original task/model or task schema',
+        details: task.success ? task.data : task.error.issues });
     return task.data.error === undefined ? task.data : { ...task.data,
       error: protectMediaCredential({ status: 200, body: task.data.error }, connection.key).body };
   }
@@ -318,6 +331,11 @@ export class Sub2apiVideoAdapter {
         }
       } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
       const value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)));
+      if (hasBusinessError(value) && !(value?.object === 'video' && ['failed', 'cancelled'].includes(value.status))) {
+        const failure = protectMediaCredential({ status: response.status, body: value, headers: upstreamHeaders(response) }, connection.key);
+        if (dispatch) throw new VideoDispatchError(requestId, false, false, failure);
+        throw new MediaUpstreamException(failure);
+      }
       return { value, requestId };
     } catch (error) {
       await response?.body?.cancel().catch(() => {});

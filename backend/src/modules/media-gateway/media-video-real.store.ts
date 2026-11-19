@@ -278,7 +278,7 @@ export class MediaVideoRealStore {
   private async safe<T>(action: () => Promise<T>): Promise<T> {
     try { return await action(); } catch (error) {
       if (error instanceof HttpException) throw error;
-      videoStorageUnavailable();
+      videoStorageUnavailable(error);
     }
   }
 }

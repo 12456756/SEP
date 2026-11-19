@@ -22,6 +22,8 @@ import { TaskEventRecorder } from './task-event-recorder';
 import { ModelRuntimePolicyService } from '../setting/model-runtime-policy.service';
 import { GatewayAdmissionService } from '../gateway/gateway-admission.service';
 import { GatewayModelPolicyService } from '../gateway/gateway-model-policy.service';
+import { exceptionDetails } from '../../common/errors/error-diagnostics';
+import { fetchUpstream, readUpstreamJson } from '../../common/errors/upstream-http.exception';
 
 /** 单步产出送进汇总模型时的截断长度。太长会把上下文吃满且对成稿帮助有限。 */
 const MAX_STEP_CHARS = 6000;
@@ -66,10 +68,12 @@ export class TaskDeliverableService {
 
     let deliverable: string;
     let degraded = false;
+    let diagnostic: ReturnType<typeof exceptionDetails> | undefined;
 
     try {
       deliverable = await this.summarize(run, produced);
     } catch (error) {
+      diagnostic = exceptionDetails(error);
       // 汇总失败不能让整个运行变成失败 —— 步骤产出都在，只是少了一层加工。
       // 退化成机械拼接并如实标注，前端会显示「未经汇总」。
       this.logger.warn(
@@ -93,6 +97,7 @@ export class TaskDeliverableService {
       type: 'deliverable',
       deliverable,
       degraded,
+      ...(diagnostic !== undefined ? { diagnostic } : {}),
       generatedAt: generatedAt.toISOString(),
     });
     await this.events.record({
@@ -103,6 +108,7 @@ export class TaskDeliverableService {
         : `最终交付物已生成（汇总了 ${produced.length} 位员工的产出）`,
       payload: {
         degraded,
+        ...(diagnostic !== undefined ? { diagnostic } : {}),
         chars: deliverable.length,
         stepCount: produced.length,
       },
@@ -211,7 +217,7 @@ export class TaskDeliverableService {
       );
       lifecycle.assertActive();
       response = await lifecycle.wait(
-        fetch(`${baseURL.replace(/\/$/, '')}/chat/completions`, {
+        fetchUpstream(`${baseURL.replace(/\/$/, '')}/chat/completions`, {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${apiKey}`,
@@ -219,16 +225,10 @@ export class TaskDeliverableService {
           },
           body: JSON.stringify(request),
           signal: lifecycle.signal,
-        }),
+        }, [apiKey]),
       );
-      if (!response.ok) {
-        const detail = await lifecycle.wait(response.text());
-        throw new BadGatewayException(
-          `relay ${response.status}: ${detail.slice(0, 240)}`,
-        );
-      }
 
-      const payload = (await lifecycle.wait(response.json())) as {
+      const payload = (await lifecycle.wait(readUpstreamJson(response, [apiKey]))) as {
         choices?: Array<{ message?: { content?: string } }>;
       };
       const text = payload.choices?.[0]?.message?.content?.trim();

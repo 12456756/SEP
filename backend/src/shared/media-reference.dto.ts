@@ -10,5 +10,6 @@ export const MediaJsonValueSchema: z.ZodType<MediaJsonValue> = z.lazy(() => z.un
 export const MediaUpstreamErrorSchema = z.object({
   status: z.number().int().min(200).max(599),
   body: MediaJsonValueSchema,
+  headers: z.record(z.string()).optional(),
 }).strict();
 export type MediaUpstreamError = z.infer<typeof MediaUpstreamErrorSchema>;

@@ -6,6 +6,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import type { ChatCompletionUsage, ModelRuntimePolicySnapshot } from 'shared';
 import { validGatewayUsage } from './gateway-response';
+import { hasBusinessError, sanitizeError } from '../../common/errors/error-diagnostics';
 
 export function timeoutValue(
   config: ConfigService,
@@ -173,9 +174,13 @@ export function createChatCompletionStreamObserver() {
   let finishReason: string | null = null;
   let done = false;
   let protocolError = false;
+  let errorDiagnostic: unknown;
+  let eventName = '';
   let finished = false;
 
   function dispatch(complete = true) {
+    const errorEvent = ['error', 'response.failed', 'response.error'].includes(eventName);
+    if (errorEvent) protocolError = true;
     if (!oversized && data.length) {
       const payload = data.join('\n');
       if (payload.trim() === '[DONE]') { if (complete) done = true; }
@@ -184,15 +189,17 @@ export function createChatCompletionStreamObserver() {
           const json = JSON.parse(payload);
           const candidate = validGatewayUsage(json.usage);
           if (candidate) usage = candidate;
-          if (json.error) protocolError = true;
+          if (hasBusinessError(json) || errorEvent) { protocolError = true; errorDiagnostic = sanitizeError(json); }
           const reason = json.choices?.[0]?.finish_reason;
           if (complete && typeof reason === 'string' && reason.trim()) finishReason = reason.slice(0, 100);
         } catch {
+          if (errorEvent) errorDiagnostic = sanitizeError({ message: payload, event: eventName });
           /* Non-JSON events remain untouched on the wire. */
         }
       }
     }
     data = [];
+    eventName = '';
     eventLength = 0;
     eventLines = 0;
     oversized = false;
@@ -210,6 +217,7 @@ export function createChatCompletionStreamObserver() {
       oversized = true;
       data = [];
     } else if (value.startsWith('data:')) data.push(value.slice(5).replace(/^ /, ''));
+    else if (value.startsWith('event:')) eventName = value.slice(6).trim();
   }
   function parse(final = false) {
     let match: RegExpExecArray | null;
@@ -239,14 +247,14 @@ export function createChatCompletionStreamObserver() {
       buffer += decoder.decode(chunk, { stream: true });
       parse();
     },
-    snapshot() { return { usage, finishReason, done, protocolError }; },
+    snapshot() { return { usage, finishReason, done, protocolError, errorDiagnostic }; },
     finish() {
       if (!finished) {
         buffer += decoder.decode();
         parse(true);
         finished = true;
       }
-      return { usage, finishReason, done, protocolError };
+      return { usage, finishReason, done, protocolError, errorDiagnostic };
     },
   };
 }

@@ -424,7 +424,7 @@ describe('DigitalEmployeeRunner execution context', () => {
           body: JSON.stringify(request),
         });
       options.prepareStep();
-      await expect(dispatch()).rejects.toBe(transient);
+      await expect(dispatch()).rejects.toMatchObject({ status: 502, response: { message: transient.message, cause: { name: 'Error', message: transient.message } } });
       await dispatch();
       options.prepareStep();
       await dispatch();
@@ -507,7 +507,7 @@ describe('DigitalEmployeeRunner execution context', () => {
     generateText.mockRejectedValueOnce(error);
     await expect(
       runner.run('employee-1', 'Hello', 'session-1', 'user-1'),
-    ).rejects.toBe(error);
+    ).rejects.toMatchObject({ status: 502, response: { message: error.message, cause: { name: 'Error', message: error.message } } });
     expect(release).toHaveBeenCalledTimes(1);
   });
 

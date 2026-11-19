@@ -2,6 +2,7 @@ import { HttpException, Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { MediaGatewayIdSchema, MediaGatewayReferenceSchema } from 'shared';
 import { RedisService } from '../../redis/redis.service';
+import { exceptionDetails } from '../../common/errors/error-diagnostics';
 
 export const REFERENCE_CACHE_TTL_SECONDS = 900;
 export const OUTPUT_CACHE_TTL_SECONDS = 86400;
@@ -14,10 +15,10 @@ const CACHE_POLICY = {
   output: { ttlSeconds: OUTPUT_CACHE_TTL_SECONDS, maxBytes: 25 * 1024 * 1024 },
 } as const;
 
-function fail(status: number, code: string, message: string): never {
+function fail(status: number, code: string, message: string, cause?: unknown): never {
   throw new HttpException({ message, error: {
     code, message, type: status >= 500 ? 'server_error' : 'invalid_request_error',
-    source: 'platform', param: null,
+    source: 'platform', param: null, ...(cause !== undefined ? { cause: exceptionDetails(cause) } : {}),
   } }, status);
 }
 
@@ -33,8 +34,8 @@ function expired(kind: CacheKind): never {
     : fail(410, 'RESULT_EXPIRED', '图片结果已过期或不可用');
 }
 
-function unavailable(): never {
-  return fail(503, 'MEDIA_STORAGE_UNAVAILABLE', '媒体存储暂不可用');
+function unavailable(cause: unknown): never {
+  return fail(503, 'MEDIA_STORAGE_UNAVAILABLE', '媒体存储暂不可用', cause);
 }
 
 @Injectable()
@@ -54,8 +55,8 @@ export class MediaByteCacheService {
     try {
       // NX also preserves the original expiry when a caller retries a write.
       await this.redis.redis.set(key, bytes, 'PX', remainingMs, 'NX');
-    } catch {
-      unavailable();
+    } catch (error) {
+      unavailable(error);
     }
   }
 
@@ -72,8 +73,8 @@ export class MediaByteCacheService {
     let bytes: Buffer | null;
     try {
       bytes = await this.redis.redis.getBuffer(key);
-    } catch {
-      unavailable();
+    } catch (error) {
+      unavailable(error);
     }
     if (Date.now() >= deadline || bytes === null) expired(kind);
     if (!Buffer.isBuffer(bytes) || bytes.length !== expected.byteLength ||
@@ -87,7 +88,7 @@ export class MediaByteCacheService {
 
   async remove(kind: CacheKind, scope: string, id: string): Promise<void> {
     const key = this.key(kind, scope, id);
-    try { await this.redis.redis.del(key); } catch { unavailable(); }
+    try { await this.redis.redis.del(key); } catch (error) { unavailable(error); }
   }
 
   private key(kind: CacheKind, scope: string, id: string): string {

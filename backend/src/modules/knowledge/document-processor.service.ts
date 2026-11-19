@@ -9,6 +9,7 @@ import { TextTokenizer } from './text-tokenizer.service';
 import { TextChunker } from './text-chunker.util';
 import { KnowledgePrivateStorage } from './knowledge-private-storage';
 import { knowledgeHistoryRetentionDays } from './knowledge-retention.service';
+import { exceptionDetails } from '../../common/errors/error-diagnostics';
 
 const LEASE_MS = 120_000;
 const MAX_ATTEMPTS = 3;
@@ -87,7 +88,7 @@ export class DocumentProcessorService {
         const batch = chunks.slice(offset, offset + batchSize);
         let vectors: Awaited<ReturnType<EmbeddingService['embedBatch']>>;
         try { vectors = await this.embedding.embedBatch(batch.map(chunk => chunk.content)); }
-        catch { throw new ProcessingFailure('EMBEDDING_UNAVAILABLE', '向量处理暂时不可用，系统将有限重试，旧版不受影响', true); }
+        catch (error) { throw new ProcessingFailure('EMBEDDING_UNAVAILABLE', JSON.stringify(exceptionDetails(error)), true); }
         if (vectors.length !== batch.length || JSON.stringify(profile) !== JSON.stringify(this.embedding.getProfile())) {
           throw new ProcessingFailure('EMBEDDING_PROFILE_MISMATCH', '向量结果或模型配置不兼容，请联系管理员', false);
         }
@@ -207,7 +208,7 @@ export class DocumentProcessorService {
   }
 
   private async fail(job: ClaimedJob, error: unknown) {
-    const failure = error instanceof ProcessingFailure ? error : new ProcessingFailure('PROCESSING_UNAVAILABLE', '后台处理暂时失败，请稍后重试', true);
+    const failure = error instanceof ProcessingFailure ? error : new ProcessingFailure('PROCESSING_UNAVAILABLE', JSON.stringify(exceptionDetails(error)), true);
     try {
       await this.guarded(job, async tx => {
         const retry = failure.retryable && job.attempts < MAX_ATTEMPTS;

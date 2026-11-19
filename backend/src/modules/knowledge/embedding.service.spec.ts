@@ -116,13 +116,13 @@ describe('EmbeddingService', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('does not leak upstream response bodies or transport errors', async () => {
-    const text = jest.fn(async () => 'SECRET_RESPONSE_BODY');
-    fetchMock.mockResolvedValue({ ok: false, status: 401, text });
-    await expect((await create()).service.embed('a')).rejects.toThrow('HTTP 401');
-    expect(text).not.toHaveBeenCalled();
-    fetchMock.mockRejectedValue(new Error('secret-key-in-url'));
-    await expect((await create()).service.embed('a')).rejects.toThrow(/^Sub2api embedding request failed$/);
+  it('retains upstream response reasons and transport causes after credential redaction', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ error: { code: 'INVALID_API_KEY', message: 'Invalid credential relay-test-key' } }), { status: 401 }));
+    await expect((await create()).service.embed('a')).rejects.toMatchObject({ status: 401,
+      response: { error: { code: 'INVALID_API_KEY', message: 'Invalid credential [REDACTED]' } } });
+    fetchMock.mockRejectedValue(Object.assign(new Error('connection refused'), { code: 'ECONNREFUSED' }));
+    await expect((await create()).service.embed('a')).rejects.toMatchObject({ status: 502,
+      response: { message: 'connection refused', cause: { code: 'ECONNREFUSED' } } });
   });
 
   it('uses the same vector validation and relay endpoint for health checks', async () => {
@@ -248,20 +248,28 @@ describe('EmbeddingService', () => {
     });
 
     it('does not embed or fall back when digest verification fails at the transport boundary', async () => {
-      fetchMock.mockResolvedValueOnce({ ok: false, status: 503 });
-      await expect((await local()).service.embed('a')).rejects.toThrow('Ollama model verification failed (HTTP 503)');
+      fetchMock.mockResolvedValueOnce(new Response('Ollama model index unavailable', { status: 503 }));
+      await expect((await local()).service.embed('a')).rejects.toMatchObject({ status: 503, response: 'Ollama model index unavailable' });
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      fetchMock.mockReset().mockRejectedValueOnce(new Error('secret-key-in-local-url'));
-      await expect((await local()).service.embed('a')).rejects.toThrow(/^Ollama embedding request failed$/);
+      fetchMock.mockReset().mockRejectedValueOnce(new Error('Ollama connection refused at http://127.0.0.1:11434'));
+      await expect((await local()).service.embed('a')).rejects.toMatchObject({ status: 502,
+        response: { message: 'Ollama connection refused at [REDACTED]' } });
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
-    it('does not leak native response bodies or fall back after an outage', async () => {
+    it('retains native response reasons without falling back after an outage', async () => {
       tags();
-      const text = jest.fn(async () => 'SECRET_BODY');
-      fetchMock.mockResolvedValueOnce({ ok: false, status: 500, text });
-      await expect((await local()).service.embed('a')).rejects.toThrow('Ollama embedding request failed (HTTP 500)');
-      expect(text).not.toHaveBeenCalled();
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'Model runner exited', detail: { code: 'RUNNER_EXITED' } }), { status: 500 }));
+      await expect((await local()).service.embed('a')).rejects.toMatchObject({ status: 500,
+        response: { error: 'Model runner exited', detail: { code: 'RUNNER_EXITED' } } });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('preserves a native business error even when Ollama responds with HTTP 200', async () => {
+      tags();
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'Model runner exited', code: 'RUNNER_EXITED' })));
+      await expect((await local()).service.embed('a')).rejects.toMatchObject({ status: 502,
+        upstreamError: { status: 200, body: { error: 'Model runner exited', code: 'RUNNER_EXITED' } } });
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 

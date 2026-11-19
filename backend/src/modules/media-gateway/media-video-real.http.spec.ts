@@ -144,7 +144,7 @@ describe('real video controller and guard HTTP', () => {
     const requestId = response.headers['x-request-id'];
     expect(requestId).toMatch(/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/);
     expect(response.body).toMatchObject({ requestId,
-      error: { code: 'INSUFFICIENT_FUNDS', source: 'upstream', requestId } });
+      error: { code: 'INSUFFICIENT_FUNDS', source: 'upstream', requestId: 'upstream-id' } });
     expect(requestId).not.toBe('upstream-id');
   });
 

@@ -45,6 +45,8 @@ describe('TaskDeliverableService model admission', () => {
   let release: jest.Mock;
   let upstream: jest.SpyInstance;
   let service: TaskDeliverableService;
+  let publish: jest.Mock;
+  let record: jest.Mock;
 
   beforeEach(() => {
     jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
@@ -82,6 +84,8 @@ describe('TaskDeliverableService model admission', () => {
           })[key],
       ),
     };
+    publish = jest.fn();
+    record = jest.fn().mockResolvedValue(undefined);
     service = new TaskDeliverableService(
       prisma,
       { get: jest.fn() } as never,
@@ -89,8 +93,8 @@ describe('TaskDeliverableService model admission', () => {
       {
         getPlannerModel: jest.fn().mockResolvedValue('planner-model'),
       } as never,
-      { publish: jest.fn() } as never,
-      { record: jest.fn().mockResolvedValue(undefined) } as never,
+      { publish } as never,
+      { record } as never,
       runtimePolicy,
       admission,
       new GatewayModelPolicyService({} as never, {} as never, {} as never),
@@ -161,7 +165,7 @@ describe('TaskDeliverableService model admission', () => {
       );
       expect(Logger.prototype.warn).toHaveBeenCalledTimes(1);
       expect(Logger.prototype.warn).toHaveBeenCalledWith(
-        `Deliverable summarization failed runId=run-1 chain=task-deliverable status=${stage === 'upstream-status' ? 502 : 'internal'}; falling back to concatenation`,
+        `Deliverable summarization failed runId=run-1 chain=task-deliverable status=${stage === 'upstream-status' ? 503 : 502}; falling back to concatenation`,
       );
       expect(
         JSON.stringify((Logger.prototype.log as jest.Mock).mock.calls),
@@ -187,6 +191,17 @@ describe('TaskDeliverableService model admission', () => {
     expect(admission.acquire).not.toHaveBeenCalled();
     expect(upstream).not.toHaveBeenCalled();
     expect(prisma.taskRun.update).not.toHaveBeenCalled();
+  });
+
+  it('sends and persists the original sanitized summary failure when falling back', async () => {
+    const diagnostic = { error: { code: 'MODEL_UNAVAILABLE', message: 'No model capacity Bearer [REDACTED]',
+      attempts: [{ upstream_status: 429, detail: 'Quota exhausted' }] } };
+    upstream.mockResolvedValueOnce(new Response(JSON.stringify({ error: { ...diagnostic.error,
+      message: 'No model capacity Bearer settings-key' } }), { status: 503 }));
+    await service.generate(run, steps);
+    expect(publish).toHaveBeenCalledWith(run.id, expect.objectContaining({ type: 'deliverable', degraded: true, diagnostic }));
+    expect(record).toHaveBeenCalledWith(expect.objectContaining({ payload: expect.objectContaining({ degraded: true, diagnostic }) }));
+    expect(JSON.stringify(publish.mock.calls) + JSON.stringify(record.mock.calls)).not.toContain('settings-key');
   });
 
   it.each(['no-enterprise', 'removed-member'])(

@@ -29,6 +29,8 @@ import { SettingService } from "../setting/setting.service";
 import { UploadService } from "../upload/upload.service";
 import { AttachmentContextService } from "./attachment-context.service";
 import { resolveSub2ApiProviderConfig } from "./sub2api-provider-config";
+import { sanitizeError } from '../../common/errors/error-diagnostics';
+import { fetchModelUpstream, streamErrorDetails } from '../../common/errors/upstream-http.exception';
 import { ModelRuntimePolicyService } from "../setting/model-runtime-policy.service";
 import { GatewayAdmissionService } from "../gateway/gateway-admission.service";
 import { GatewayModelPolicyService } from "../gateway/gateway-model-policy.service";
@@ -400,7 +402,7 @@ export class ConversationStreamService {
             lifecycle!.assertActive();
             assertOwnership();
             bumpIdle();
-            return fetch(url, options);
+            return fetchModelUpstream(url, options, [apiKey]);
           },
         });
 
@@ -475,11 +477,7 @@ export class ConversationStreamService {
               // 抛出无信息的 "No output generated"。这里把真实错误抛出，交给 catch 处理。
               case "error": {
                 const err = chunk.error ?? chunk;
-                throw err instanceof Error
-                  ? err
-                  : new Error(
-                      typeof err === "string" ? err : JSON.stringify(err),
-                    );
+                throw err;
               }
             }
           }
@@ -493,29 +491,24 @@ export class ConversationStreamService {
           // AI SDK 把 abort 包装成 AbortError，原话对用户毫无信息量，
           // 而这条消息决定了用户下一步该找谁（换模型 / 找运维看中转）。
           const timedOutSeconds = Math.round(policy.values.SUB2API_STREAM_IDLE_TIMEOUT_MS / 1000);
-          const structured = streamError instanceof HttpException ? streamError.getResponse() : undefined;
-          const details = structured && typeof structured === 'object' && 'error' in structured &&
-            structured.error && typeof structured.error === 'object' ? structured.error : structured;
+          const details = streamErrorDetails(streamError, { policyVersion: policy.version });
           yield {
             event: "error",
-            data: details && typeof details === 'object' ? { ...details, policyVersion: policy.version } : idleTimedOut
-              ? {
-                  message: `模型 ${modelId} 超过 ${timedOutSeconds} 秒没有返回任何内容，可能是中转未提供该模型的流式响应。请换一个模型或联系管理员。`,
+            data: idleTimedOut
+              ? { ...sanitizeError(details) as object,
+                  message: `模型 ${modelId} 的流在 ${timedOutSeconds} 秒内没有返回数据`,
                   code: "MODEL_STREAM_TIMEOUT",
                   phase: 'idle', policyVersion: policy.version,
                 }
-              : {
-                  message: "AI 回复生成失败，请稍后重试",
-                  code: "STREAM_CONSUMPTION_ERROR",
-                },
+              : sanitizeError(details),
           };
           // 保存错误消息到数据库
           await this.prisma.message.create({
             data: {
               sessionId,
               role: "ASSISTANT",
-              content: "❌ 对话生成失败,请稍后重试",
-              metadata: handledByMetadata,
+              content: String(details.message),
+              metadata: { ...handledByMetadata, error: sanitizeError(details) },
             },
           });
           break; // 中断循环
@@ -538,7 +531,7 @@ export class ConversationStreamService {
           yield {
             event: "error",
             data: {
-              message: `模型 ${modelId} 超过 ${timedOutSeconds} 秒没有返回任何内容，可能是中转未提供该模型的流式响应。请在右上角换一个模型，或联系管理员检查中转。`,
+              message: `模型 ${modelId} 的流在 ${timedOutSeconds} 秒内没有返回数据`,
               code: "MODEL_STREAM_TIMEOUT",
               phase: 'idle', policyVersion: policy.version,
             },
@@ -813,13 +806,11 @@ export class ConversationStreamService {
     } catch (err) {
       if (!lease) throw err;
       this.logger.error(`Stream error session=${sessionId} requestId=${requestId} policyVersion=${policy.version} status=${err instanceof HttpException ? err.getStatus() : 'internal'}`);
-      const response = err instanceof HttpException ? err.getResponse() : undefined;
-      const details = response && typeof response === 'object' && 'error' in response &&
-        response.error && typeof response.error === 'object' ? response.error : response;
+      const details = streamErrorDetails(err, { policyVersion: policy.version });
       yield {
         event: "error",
         data: {
-          message: err instanceof HttpException ? err.message : "对话处理失败，请稍后重试",
+          message: details.message,
           ...(details && typeof details === 'object' ? details : {}),
           policyVersion: policy.version,
         },

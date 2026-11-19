@@ -60,7 +60,7 @@ describe('ModelBillingService', () => {
     fetchMock.mockResolvedValue(new Response('{}', { status: 503 }));
 
     await expect(service.describe([{ isFree: false }])).resolves.toEqual([
-      { isFree: false, billingMultiplier: null, discountLabel: '中转倍率暂不可用' },
+      { isFree: false, billingMultiplier: null, discountLabel: '中转倍率暂不可用', billingError: {} },
     ]);
   });
 
@@ -70,7 +70,8 @@ describe('ModelBillingService', () => {
     { object: 'sub2api.key_billing', schema_version: 1, billing_scope: 'token', effective_rate_multiplier: -1 },
   ])('rejects malformed upstream billing response %#', async (payload) => {
     fetchMock.mockResolvedValue(new Response(JSON.stringify(payload)));
-    await expect(service.getSnapshot('model-a')).rejects.toBeInstanceOf(ServiceUnavailableException);
+    await expect(service.getSnapshot('model-a')).rejects.toMatchObject({ status: 503, response: {
+      code: 'MODEL_BILLING_UNAVAILABLE', cause: { name: 'ZodError', issues: expect.any(Array) } } });
   });
 
   it('free snapshots freeze zero multiplier and zero prices', async () => {

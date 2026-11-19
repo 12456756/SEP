@@ -219,7 +219,7 @@ describe('GatewayController raw SSE streaming', () => {
     if (failure === 'empty EOF') source.close();
     else source.error(new Error('synthetic read failure before data'));
     await outcome;
-    expect(res.bytes.byteLength).toBe(0);
+    expect(res.bytes.toString()).toContain('event: error');
     expect(warn).toHaveBeenCalledWith(expect.objectContaining({
       message: 'gateway stream interrupted', requestId, executionId: 'server-execution',
       upstreamRequestId: 'provider-request-123', headerLatencyMs: 50,
@@ -247,13 +247,14 @@ describe('GatewayController raw SSE streaming', () => {
     await expectSingleLedgerEntry();
   });
 
-  it('destroys incomplete EOF without synthesizing finish or DONE while retaining observed usage', async () => {
+  it('reports incomplete EOF as an error event without inventing finish or DONE', async () => {
     const raw = Buffer.from(`${content}${usageEvent}`);
     respondWithBytes(raw, true);
     const res = new StreamResponse();
     await invoke(res);
-    expect(res.bytes).toEqual(raw);
-    expect(res.writableFinished).toBe(false);
+    expect(res.bytes.subarray(0, raw.length)).toEqual(raw);
+    expect(res.bytes.toString()).toContain('event: error');
+    expect(res.writableFinished).toBe(true);
     expect(res.destroyed).toBe(true);
     expect(res.bytes.toString()).not.toContain('[DONE]');
     expect(res.bytes.toString()).not.toContain('"finish_reason":"stop"');
@@ -275,8 +276,9 @@ describe('GatewayController raw SSE streaming', () => {
     respondWithBytes(raw, true);
     const res = new StreamResponse();
     await invoke(res);
-    expect(res.bytes).toEqual(raw);
-    expect(res.writableFinished).toBe(false);
+    expect(res.bytes.subarray(0, raw.length)).toEqual(raw);
+    expect(res.bytes.toString()).toContain('event: error');
+    expect(res.writableFinished).toBe(true);
     expect(res.destroyed).toBe(true);
     expect(executions.finish).toHaveBeenCalledWith('server-execution', {
       finishReason: null, done: true, errorCode: 'UPSTREAM_INCOMPLETE_STREAM',
@@ -315,7 +317,7 @@ describe('GatewayController raw SSE streaming', () => {
     await expectSingleLedgerEntry();
   });
 
-  it('destroys the response on upstream read failure instead of a successful end and logs requestId', async () => {
+  it('reports an upstream read failure as an error event and logs requestId', async () => {
     let source!: ReadableStreamDefaultController<Uint8Array>;
     forward.mockResolvedValue(new Response(new ReadableStream<Uint8Array>({
       start(value) { source = value; },
@@ -331,9 +333,11 @@ describe('GatewayController raw SSE streaming', () => {
     source.error(new Error('synthetic upstream read failure'));
     await outcome;
     await turn();
-    expect(res.writableFinished).toBe(false);
+    expect(res.writableFinished).toBe(true);
     expect(res.destroyed).toBe(true);
-    expect(end).not.toHaveBeenCalled();
+    expect(end).toHaveBeenCalled();
+    expect(res.bytes.toString()).toContain('synthetic upstream read failure');
+    expect(res.bytes.toString()).toContain('event: error');
     expect(JSON.stringify([...warn.mock.calls, ...error.mock.calls])).toContain(requestId);
     expect(res.bytes.toString()).not.toContain('[DONE]');
     expect(warn).toHaveBeenCalledWith(expect.objectContaining({
@@ -434,24 +438,24 @@ describe('GatewayController raw SSE streaming', () => {
   });
 
   it('rejects JSON mislabeled as a successful stream before flushing headers', async () => {
-    const cancel = jest.fn();
-    forward.mockResolvedValue(new Response(new ReadableStream({ cancel }), { headers: { 'Content-Type': 'application/json' } }));
+    const body = { error: { code: 'stream_not_supported', message: 'Streaming is unavailable for this model' } };
+    forward.mockResolvedValue(new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } }));
     const res = new StreamResponse();
-    await expect(invoke(res)).rejects.toMatchObject({ response: { error: { code: 'UPSTREAM_INVALID_CONTENT_TYPE' } } });
+    await expect(invoke(res)).rejects.toMatchObject({ response: body, upstreamError: { status: 200 } });
     expect(res.headersSent).toBe(false);
-    expect(cancel).toHaveBeenCalledTimes(1);
-    expect(executions.fail).toHaveBeenCalledWith('server-execution', 'UPSTREAM_INVALID_CONTENT_TYPE', false, false);
+    expect(executions.fail).toHaveBeenCalledWith('server-execution', 'stream_not_supported', false, false);
     expect(release).toHaveBeenCalledTimes(1);
   });
 
-  it('does not end successfully when durable usage checkpointing fails', async () => {
+  it('reports durable usage checkpoint failure without a successful completion event', async () => {
     executions.saveUsage.mockRejectedValue(new Error('storage failure'));
     respondWithBytes(Buffer.from(`${finish}${usageEvent}\n\ndata:[DONE]\n\n`));
     const res = new StreamResponse();
     await invoke(res);
-    expect(res.writableFinished).toBe(false);
+    expect(res.writableFinished).toBe(true);
     expect(res.destroyed).toBe(true);
-    expect(res.bytes.byteLength).toBe(0);
+    expect(res.bytes.toString()).toContain('storage failure');
+    expect(res.bytes.toString()).not.toContain('[DONE]');
     expect(warn).toHaveBeenCalledWith(expect.objectContaining({
       message: 'gateway stream interrupted', requestId,
       firstByteLatencyMs: expect.any(Number), lastDataAt: expect.any(Number), bytesForwarded: 0,
@@ -465,7 +469,8 @@ describe('GatewayController raw SSE streaming', () => {
     respondWithBytes(Buffer.from('data:{"choices":[{"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7}}'));
     const res = new StreamResponse();
     await invoke(res);
-    expect(res.writableFinished).toBe(false);
+    expect(res.writableFinished).toBe(true);
+    expect(res.bytes.toString()).toContain('UPSTREAM_INCOMPLETE_STREAM');
     expect(res.destroyed).toBe(true);
     expect(executions.saveUsage).toHaveBeenCalledWith('server-execution', usage);
     expect(executions.finish).toHaveBeenCalledWith('server-execution', expect.objectContaining({

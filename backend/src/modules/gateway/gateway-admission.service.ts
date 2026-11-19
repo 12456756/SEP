@@ -2,6 +2,7 @@ import { BadRequestException, HttpException, Injectable, Logger, ServiceUnavaila
 import { createHash, randomUUID } from 'node:crypto';
 import type { ChatCompletionRequest, ModelRuntimePolicySnapshot } from 'shared';
 import { RedisService } from '../../redis/redis.service';
+import { exceptionDetails } from '../../common/errors/error-diagnostics';
 
 export const GATEWAY_ADMISSION_LEASE_MS = 720_000;
 const WINDOW_MS = 60_000;
@@ -170,10 +171,10 @@ export class GatewayAdmissionService {
       if (typeof result !== 'number' || !Number.isInteger(result) || result < 0 || result > 2) {
         throw new ServiceUnavailableException();
       }
-    } catch {
+    } catch (error) {
       // Cleanup must not mask the upstream outcome; bounded leases recover after outages.
       this.logger.error(JSON.stringify({ event: 'gateway_admission_release_failed', executionId: leaseId,
-        policyVersion: snapshot.version }));
+        policyVersion: snapshot.version, diagnostic: exceptionDetails(error) }));
     }
   }
 
@@ -182,7 +183,7 @@ export class GatewayAdmissionService {
       const admission = script === GATEWAY_ADMISSION_SCRIPT;
       const limits = admission ? args.slice(0, 4) : args.slice(0, 2);
       if (!limits.every(value => typeof value === 'number' && Number.isSafeInteger(value) && value > 0)) {
-        throw new ServiceUnavailableException();
+        throw new ServiceUnavailableException('Gateway admission limits must be positive safe integers');
       }
       const result = await this.redisService.redis.eval(script, keys.length, ...keys, ...args);
       if (!Array.isArray(result) || result.length !== 5 || !result.every(Number.isSafeInteger) ||
@@ -191,10 +192,10 @@ export class GatewayAdmissionService {
             ? result[2] !== 0 || result[3] !== GATEWAY_ADMISSION_LEASE_MS
             : result[2] < Number(args[1]) || result[2] > Number(args[0]) || result[3] > WINDOW_MS)
             : admission ? result[1] < 1 || result[1] > 4 : result[1] !== 5)) {
-        throw new ServiceUnavailableException();
+        throw new ServiceUnavailableException({ message: 'Gateway admission returned an invalid Redis result', details: result });
       }
       return result;
-    } catch { throw this.unavailable(snapshot); }
+    } catch (error) { throw this.unavailable(snapshot, error); }
   }
 
   private assertAllowed(result: number[], limits: number[], snapshot: ModelRuntimePolicySnapshot): void {
@@ -212,9 +213,10 @@ export class GatewayAdmissionService {
       code: 'PLATFORM_ADMISSION_REJECTED', source: 'platform', param: null, ...rateLimit, rateLimit }, retryAfterSeconds }, 429);
   }
 
-  private unavailable(snapshot: ModelRuntimePolicySnapshot): ServiceUnavailableException {
+  private unavailable(snapshot: ModelRuntimePolicySnapshot, error?: unknown): ServiceUnavailableException {
     this.logger.error(JSON.stringify({ event: 'gateway_admission_unavailable', policyVersion: snapshot.version }));
     return new ServiceUnavailableException({ error: { message: '模型准入服务暂不可用，请稍后重试',
-      type: 'server_error', code: 'PLATFORM_ADMISSION_UNAVAILABLE', source: 'platform', policyVersion: snapshot.version } });
+      type: 'server_error', code: 'PLATFORM_ADMISSION_UNAVAILABLE', source: 'platform', policyVersion: snapshot.version,
+      ...(error !== undefined ? { cause: exceptionDetails(error) } : {}) } });
   }
 }

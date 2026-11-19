@@ -429,7 +429,7 @@ describe('ConversationController SSE lifecycle', () => {
     await invoke();
     expect(response.write.mock.calls.map(([chunk]) => chunk)).toEqual([
       frame(text),
-      `event: error\ndata: ${JSON.stringify(details.error)}\n\n`,
+      `event: error\ndata: ${JSON.stringify({ ...details, ...details.error })}\n\n`,
     ]);
     expect(Logger.prototype.error).toHaveBeenCalledWith(
       'SSE error session=session-1 status=429',
@@ -438,7 +438,7 @@ describe('ConversationController SSE lifecycle', () => {
     expect(response.listenerCount('close')).toBe(0);
   });
 
-  it('keeps unexpected upstream exception details out of SSE and error logs', async () => {
+  it('retains an unexpected failure reason in SSE', async () => {
     const secret = 'test-only-upstream-private-detail';
     streamConversation.mockImplementation(async function* () {
       yield text;
@@ -451,9 +451,9 @@ describe('ConversationController SSE lifecycle', () => {
     expect(response.write.mock.calls[0][0]).toBe(frame(text));
     const errorFrame = response.write.mock.calls[1][0];
     expect(errorFrame).toMatch(/^event: error\ndata: /);
-    expect(errorFrame).not.toContain(secret);
+    expect(errorFrame).toContain(secret);
     expect(JSON.parse(errorFrame.split('\ndata: ')[1].trim())).toEqual({
-      message: expect.any(String),
+      name: 'Error', message: secret,
     });
     expect(Logger.prototype.error).toHaveBeenCalledTimes(1);
     expect(Logger.prototype.error).toHaveBeenCalledWith(

@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { z } from 'zod';
 import { VIDEO_REFERENCE_MAX_BYTES } from 'shared';
 import { inspectMediaPng } from './media-png';
+import { exceptionDetails } from '../../common/errors/error-diagnostics';
 
 const run = promisify(execFile);
 export const VIDEO_CACHE_MAX_BYTES = 256 * 1024 * 1024;
@@ -30,8 +31,9 @@ const MetadataSchema = z.object({
   }
 });
 type Metadata = z.infer<typeof MetadataSchema>;
-const fail = (code: string, status = 503): never => {
-  throw new HttpException({ error: { code, message: '视频文件暂不可用，请查询原任务，不要重新生成' } }, status);
+const fail = (code: string, status = 503, cause?: unknown): never => {
+  throw new HttpException({ error: { code, message: '视频文件暂不可用，请查询原任务，不要重新生成',
+    ...(cause !== undefined ? { cause: exceptionDetails(cause) } : {}) } }, status);
 };
 
 /** Private persistent volume, never served as a public upload directory. */
@@ -41,7 +43,7 @@ export class VideoFileCacheService {
 
   async assertAvailable(): Promise<void> {
     try { await run(process.env.MEDIA_VIDEO_FFPROBE_PATH || 'ffprobe', ['-version'], { timeout: 5000, maxBuffer: 64 * 1024 }); }
-    catch { fail('VIDEO_INSPECTOR_UNAVAILABLE'); }
+    catch (error) { fail('VIDEO_INSPECTOR_UNAVAILABLE', 503, error); }
     await this.directory();
   }
 
@@ -59,7 +61,7 @@ export class VideoFileCacheService {
       return { sha256: metadata.sha256, byteLength: bytes.length, ...dimensions };
     } catch (error) {
       if (error instanceof HttpException) throw error;
-      fail('MEDIA_STORAGE_UNAVAILABLE');
+      fail('MEDIA_STORAGE_UNAVAILABLE', 503, error);
     } finally { if (stage) await rm(stage, { recursive: true, force: true }); }
   }
 
@@ -107,7 +109,7 @@ export class VideoFileCacheService {
         hasAudio: stored.hasAudio!, mimeType: 'video/mp4' as const, sha256: stored.sha256, byteLength: stored.byteLength };
     } catch (error) {
       if (error instanceof HttpException) throw error;
-      fail('OUTPUT_FAILED', 502);
+      fail('OUTPUT_FAILED', 502, error);
     } finally {
       if (!response.body?.locked) await response.body?.cancel().catch(() => {});
       if (stage) await rm(stage, { force: true, recursive: true });
@@ -164,8 +166,8 @@ export class VideoFileCacheService {
       return { metadata, stream };
     } catch (error) {
       if (error instanceof HttpException) throw error;
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') fail('RESULT_EXPIRED', 410);
-      fail('MEDIA_STORAGE_UNAVAILABLE');
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') fail('RESULT_EXPIRED', 410, error);
+      fail('MEDIA_STORAGE_UNAVAILABLE', 503, error);
     } finally { await handle?.close().catch(() => {}); }
   }
 
@@ -185,7 +187,10 @@ export class VideoFileCacheService {
         durationSeconds: Number(value.format?.duration), frameRate: numerator / denominator, hasAudio });
       if (videos.length !== 1 || !value.format?.format_name?.split(',').includes('mp4')) fail('OUTPUT_FAILED', 502);
       return { width: metadata.width, height: metadata.height, durationSeconds: metadata.durationSeconds!, frameRate: metadata.frameRate!, hasAudio };
-    } catch { fail('OUTPUT_FAILED', 502); }
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      fail('OUTPUT_FAILED', 502, error);
+    }
   }
 
   private async read(kind: 'reference' | 'output', scope: string, id: string, expected?: Expected) {
@@ -200,8 +205,8 @@ export class VideoFileCacheService {
       return bytes;
     } catch (error) {
       if (error instanceof HttpException) throw error;
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') fail(kind === 'reference' ? 'REFERENCE_EXPIRED' : 'RESULT_EXPIRED', 410);
-      fail('MEDIA_STORAGE_UNAVAILABLE');
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') fail(kind === 'reference' ? 'REFERENCE_EXPIRED' : 'RESULT_EXPIRED', 410, error);
+      fail('MEDIA_STORAGE_UNAVAILABLE', 503, error);
     }
   }
 
@@ -283,7 +288,10 @@ export class VideoFileCacheService {
         const info = await lstat(current);
         if (!info.isDirectory() || info.isSymbolicLink()) fail('MEDIA_STORAGE_UNAVAILABLE');
       }
-    } catch { fail('MEDIA_STORAGE_UNAVAILABLE'); }
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      fail('MEDIA_STORAGE_UNAVAILABLE', 503, error);
+    }
   }
 
   private async path(kind: 'reference' | 'output', scope: string, id: string) {

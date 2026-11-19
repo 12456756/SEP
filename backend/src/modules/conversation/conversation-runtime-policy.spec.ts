@@ -213,10 +213,10 @@ describe('Web model runtime policy lifecycle', () => {
     expect(prisma.message.create).toHaveBeenCalledTimes(1);
   });
 
-  it('cleans up a synchronously failing SDK without exposing request data', async () => {
-    (streamText as jest.Mock).mockReset().mockImplementation(() => { throw new Error('secret request body'); });
+  it('cleans up a synchronously failing SDK and retains the reason while removing request data', async () => {
+    (streamText as jest.Mock).mockReset().mockImplementation(() => { throw Object.assign(new Error('SDK initialization failed'), { requestBody: 'secret request body', code: 'SDK_INIT_FAILED' }); });
     const events = await collect();
-    expect(events.at(-1)?.data).toMatchObject({ code: 'STREAM_CONSUMPTION_ERROR' });
+    expect(events.at(-1)?.data).toMatchObject({ code: 'SDK_INIT_FAILED', message: 'SDK initialization failed' });
     expect(JSON.stringify(events)).not.toContain('secret request body');
     expect(release).toHaveBeenCalledTimes(1);
     expect(stopRenewal).toHaveBeenCalledTimes(1);
