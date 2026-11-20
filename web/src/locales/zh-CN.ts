@@ -14,7 +14,7 @@
 /** 硅基员工（原「数字员工」） */
 export const employee = {
   entity: '硅基员工',
-  market: '硅基人才市场',
+  market: '元机AI人才市场',
   mine: '我的员工',
   /** 企业与某个硅基员工的雇佣关系（后端 Subscription），展示层就叫「硅基员工」 */
   unit: '硅基员工',
@@ -115,7 +115,7 @@ export const messages = {
   onboardConfirm: '确定让该硅基员工上岗工作吗？',
   /** 特意点出技能保留 —— 这是「员工走了，能力留在企业」的核心卖点 */
   dismissConfirm: '解聘后该硅基员工将从企业移除，已沉淀的技能与知识保留。确定解聘？',
-  emptyEmployees: '您还未招聘硅基员工，前往「硅基人才市场」挑选合适人选',
+  emptyEmployees: '您还未招聘硅基员工，前往「元机AI人才市场」挑选合适人选',
   emptyUnits: '尚未配置硅基员工，招聘后可授权给各部门的碳基员工使用',
   unaffiliatedHint: '您当前未归属任何企业，请等待企业邀请或创建企业',
   memberLeftNotice: (name: string) => `${name} 已解除与贵司的归属关系`,

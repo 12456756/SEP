@@ -224,7 +224,7 @@ export function Hero() {
                 href="/marketplace"
                 className="group inline-flex items-center gap-2 rounded-glass-pill bg-gbrand px-6 py-3 text-sm font-semibold text-white shadow-glass-md transition-all hover:bg-gbrand-hover hover:shadow-glass-lg"
               >
-                浏览硅基人才市场
+                浏览元机AI人才市场
                 <ArrowRight
                   className="h-4 w-4 transition-transform group-hover:translate-x-1"
                   aria-hidden

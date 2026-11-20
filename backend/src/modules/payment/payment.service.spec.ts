@@ -48,6 +48,26 @@ describe("PaymentService", () => {
   });
 
   describe("payOrderWithBalance", () => {
+    it('fulfills a zero order in the transaction without accessing the wallet or Alipay', async () => {
+      prisma.order.findUnique.mockResolvedValue({
+        id: 'order-free', orderNo: 'FREE1', enterpriseId: 'ent-1', createdBy: 'user-1',
+        status: 'PENDING', totalAmount: new Decimal(0),
+      });
+      const result = await service.payOrderWithBalance('order-free', 'ent-1');
+      expect(walletService.consume).not.toHaveBeenCalled();
+      expect(alipayProvider.pagePayment).not.toHaveBeenCalled();
+      expect(orderService.fulfillInTransaction).toHaveBeenCalledWith(prisma, 'order-free', 'FREE:FREE1', 'BALANCE');
+      expect(result.status).toBe('PAID');
+    });
+
+    it('rejects negative order totals without charging or fulfilling', async () => {
+      prisma.order.findUnique.mockResolvedValue({
+        id: 'order-1', enterpriseId: 'ent-1', createdBy: 'user-1', status: 'PENDING', totalAmount: new Decimal(-1),
+      });
+      await expect(service.payOrderWithBalance('order-1', 'ent-1')).rejects.toThrow(BadRequestException);
+      expect(walletService.consume).not.toHaveBeenCalled();
+      expect(orderService.fulfillInTransaction).not.toHaveBeenCalled();
+    });
     it("等待企业锁期间已支付的订单不重复扣款", async () => {
       prisma.order.findUnique.mockResolvedValueOnce({ id: 'order-1', enterpriseId: 'ent-1', createdBy: 'user-1', status: 'PENDING' })
         .mockResolvedValueOnce({ id: 'order-1', enterpriseId: 'ent-1', status: 'PAID' });
@@ -117,6 +137,13 @@ describe("PaymentService", () => {
       ).rejects.toThrow(BadRequestException);
       expect(walletService.consume).not.toHaveBeenCalled();
     });
+  });
+
+  it('does not send a zero order to Alipay', async () => {
+    prisma.order.findUnique.mockResolvedValue({ id: 'order-free', status: 'PENDING', totalAmount: new Decimal(0) });
+    await expect(service.createAlipayPayment('order-free')).rejects.toThrow('免费订单无需支付宝支付，请直接确认开通');
+    expect(service.initializeAlipay).not.toHaveBeenCalled();
+    expect(alipayProvider.pagePayment).not.toHaveBeenCalled();
   });
 
   describe("personal recharge closure protection", () => {

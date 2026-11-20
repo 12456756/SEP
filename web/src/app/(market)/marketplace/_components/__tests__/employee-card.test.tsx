@@ -147,6 +147,14 @@ describe('EmployeeCard', () => {
     expect(screen.getByText('免费')).toBeInTheDocument();
   });
 
+  it('disables purchasing an unpriced employee instead of displaying free', () => {
+    render(<EmployeeCard emp={{ ...mockEmployee, annualPriceCNY: null }} subscribed={false} loggedIn isAdmin subscribing={false} onSubscribe={vi.fn()} onClick={vi.fn()} onAddToCart={vi.fn()} />);
+    expect(screen.getByText('暂未定价')).toBeInTheDocument();
+    expect(screen.queryByText('免费')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '订阅' })).toBeDisabled();
+    expect(screen.getByTitle('加入购物车')).toBeDisabled();
+  });
+
   it('should show subscription count', () => {
     const onSubscribe = vi.fn();
     const onClick = vi.fn();

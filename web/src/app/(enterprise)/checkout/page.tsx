@@ -38,6 +38,10 @@ export default function CheckoutPage() {
 
   // 获取选中的商品ID列表
   const selectedItemIds = searchParams.get("items")?.split(",").filter(Boolean);
+  const checkoutItems = cart?.items.filter((item) => !selectedItemIds?.length || selectedItemIds.includes(item.id)) ?? [];
+  const totalAmount = checkoutItems.reduce((sum, item) => sum + item.subtotal, 0);
+  const totalIncludedCompute = checkoutItems.reduce((sum, item) => sum + item.includedComputeCNY, 0);
+  const isFree = checkoutItems.length > 0 && totalAmount === 0;
 
   useEffect(() => {
     // 如果购物车为空，重定向回购物车页
@@ -61,9 +65,9 @@ export default function CheckoutPage() {
       );
       toast.success(`订单创建成功：${orderResult.orderNo}`);
 
-      if (paymentMethod === "balance") {
+      if (orderResult.totalAmount === 0 || paymentMethod === "balance") {
         await payWithBalance.mutateAsync(orderResult.id);
-        toast.success("支付成功！");
+        toast.success(orderResult.totalAmount === 0 ? "免费雇佣成功！" : "支付成功！");
         router.push(`/payment/result?orderId=${orderResult.id}&status=success`);
       } else {
         // 2. 发起支付宝支付
@@ -113,7 +117,7 @@ export default function CheckoutPage() {
             确认订单
           </h1>
           <p className="mt-1 text-sm text-gtext-secondary">
-            请确认订单信息，然后选择支付方式
+            {isFree ? "请确认免费雇佣的员工" : "请确认订单信息，然后选择支付方式"}
           </p>
         </div>
       </div>
@@ -125,11 +129,11 @@ export default function CheckoutPage() {
           <Card className="glass-card">
             <CardHeader className="border-b border-glassline">
               <h2 className="text-lg font-semibold text-gtext-primary">
-                订单商品 ({cart.itemCount})
+                订单商品 ({checkoutItems.length})
               </h2>
             </CardHeader>
             <CardContent className="divide-y divide-glassline p-0">
-              {cart.items.map((item) => (
+              {checkoutItems.map((item) => (
                 <div key={item.id} className="flex gap-4 p-5">
                   <Avatar
                     name={item.employeeName}
@@ -161,7 +165,7 @@ export default function CheckoutPage() {
           </Card>
 
           {/* 支付方式 */}
-          <Card className="glass-card">
+          {!isFree && <Card className="glass-card">
             <CardHeader className="border-b border-glassline">
               <h2 className="text-lg font-semibold text-gtext-primary">
                 支付方式
@@ -183,7 +187,7 @@ export default function CheckoutPage() {
                 </Badge>
               </div>
             </CardContent>
-          </Card>
+          </Card>}
         </div>
 
         {/* 订单汇总 */}
@@ -199,19 +203,19 @@ export default function CheckoutPage() {
                 <div className="flex justify-between text-sm">
                   <span className="text-gtext-secondary">商品总数</span>
                   <span className="font-medium text-gtext-primary">
-                    {cart.itemCount}
+                    {checkoutItems.length}
                   </span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-gtext-secondary">商品金额</span>
                   <span className="font-medium text-gtext-primary">
-                    ¥{cart.totalAmount.toLocaleString()}
+                    ¥{totalAmount.toLocaleString()}
                   </span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-gtext-secondary">赠送算力</span>
                   <span className="font-medium text-success">
-                    ¥{cart.totalIncludedCompute.toLocaleString()}
+                    ¥{totalIncludedCompute.toLocaleString()}
                   </span>
                 </div>
               </div>
@@ -222,13 +226,13 @@ export default function CheckoutPage() {
                     应付总额
                   </span>
                   <span className="text-2xl font-bold text-gbrand-text">
-                    ¥{cart.totalAmount.toLocaleString()}
+                    ¥{totalAmount.toLocaleString()}
                   </span>
                 </div>
               </div>
 
               {/* 支付方式选择 */}
-              <div className="space-y-3 border-t border-glassline pt-4">
+              {!isFree && <div className="space-y-3 border-t border-glassline pt-4">
                 <h3 className="text-sm font-medium text-gtext-primary">
                   选择支付方式
                 </h3>
@@ -295,7 +299,7 @@ export default function CheckoutPage() {
                     </div>
                   </button>
                 </div>
-              </div>
+              </div>}
 
               <Button
                 variant="primary"
@@ -316,13 +320,13 @@ export default function CheckoutPage() {
                     ) : (
                       <CreditCard className="mr-2 h-4 w-4" />
                     )}
-                    立即支付
+                    {isFree ? "免费雇佣" : "立即支付"}
                   </>
                 )}
               </Button>
 
               <p className="text-center text-xs text-gtext-muted">
-                点击「立即支付」即表示同意服务条款
+                点击「{isFree ? "免费雇佣" : "立即支付"}」即表示同意服务条款
               </p>
             </CardContent>
           </Card>

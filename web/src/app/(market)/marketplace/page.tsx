@@ -308,7 +308,7 @@ export default function MarketplacePage() {
       {/* ── page header ──────────────────────────────────────────────── */}
       <header className="space-y-4 text-center sm:space-y-5 sm:pt-4">
         <h1 className="text-3xl font-bold tracking-tight sm:text-4xl">
-          <span className="gradient-text-glass inline-block">硅基人才市场</span>
+          <span className="gradient-text-glass inline-block">元机AI人才市场</span>
         </h1>
         <p className="mx-auto max-w-xl text-[15px] text-gtext-secondary">
           按职能、能力类型和预算挑选硅基员工，雇佣后即可授权给部门与成员。

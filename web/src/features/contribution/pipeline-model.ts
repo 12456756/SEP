@@ -67,7 +67,7 @@ export interface PipelineContext {
 const ACTOR_SYSTEM: StageActor = { kind: 'system', label: '系统' };
 const ACTOR_ENTERPRISE_ADMIN: StageActor = { kind: 'enterprise-admin', label: '企业管理员' };
 const ACTOR_PLATFORM_OPS: StageActor = { kind: 'platform-ops', label: '平台运营' };
-const ACTOR_MARKET: StageActor = { kind: 'market', label: '硅基人才市场' };
+const ACTOR_MARKET: StageActor = { kind: 'market', label: '元机AI人才市场' };
 
 export const STAGE_SHORT_LABEL: Record<StageKey, string> = {
   draft: '草稿',
@@ -246,7 +246,7 @@ function marketStage(item: ContributionCapability): PipelineStage {
   const listed = item.platformReviewStatus === 'APPROVED';
   return {
     key: 'market',
-    title: '上架硅基人才市场',
+    title: '上架元机AI人才市场',
     state: listed ? 'done' : 'waiting',
     actor: ACTOR_MARKET,
     fact: listed ? '市场用户可以发现并使用这项能力' : '通过平台审核后所有企业可以雇佣',

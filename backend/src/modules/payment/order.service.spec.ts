@@ -88,6 +88,26 @@ describe("OrderService", () => {
   });
 
   describe("createFromCart", () => {
+    it.each([[0, 0], [0, 120]])('keeps free items in a cart with annual prices %s and %s', async (first, second) => {
+      prisma.cartItem.findMany.mockResolvedValue([first, second].map((price, index) => ({
+        employeeId: `emp-${index}`, periodMonths: 12,
+        employee: { id: `emp-${index}`, name: `Employee ${index}`, status: 'APPROVED', annualPriceCNY: new Decimal(price), includedComputeCNY: new Decimal(0) },
+      })));
+      await service.createFromCart('ent-1', 'user-1');
+      const { data } = prisma.order.create.mock.calls[0][0];
+      expect(data.totalAmount.toNumber()).toBe(first + second);
+      expect(data.items.create[0].unitPrice.toNumber()).toBe(0);
+      expect(data.items.create).toHaveLength(2);
+    });
+
+    it.each([null, new Decimal(-1)])('rejects unpriced or negative cart items: %s', async (annualPriceCNY) => {
+      prisma.cartItem.findMany.mockResolvedValue([{
+        employeeId: 'emp-1', periodMonths: 12,
+        employee: { name: 'Employee', status: 'APPROVED', annualPriceCNY },
+      }]);
+      await expect(service.createFromCart('ent-1', 'user-1')).rejects.toThrow('未设置有效价格');
+      expect(prisma.order.create).not.toHaveBeenCalled();
+    });
     it("购物车为空应拒绝", async () => {
       prisma.cartItem.findMany.mockResolvedValue([]);
 
@@ -227,6 +247,41 @@ describe("OrderService", () => {
     });
   });
 
+  describe('free order fulfillment', () => {
+    it('does not extend or grant credits again when another free order already activated the employee', async () => {
+      const order = {
+        id: 'order-free', orderNo: 'FREE1', enterpriseId: 'ent-1', createdBy: 'user-1', status: 'PENDING',
+        items: [{ id: 'item-free', employeeId: 'emp-1', employeeName: 'Free', unitPrice: new Decimal(0), periodMonths: 12, includedComputeCNY: new Decimal(10) }],
+      };
+      prisma.order.findUnique.mockResolvedValue(order);
+      prisma.order.update.mockResolvedValue({ ...order, status: 'PAID' });
+      prisma.subscription.findUnique.mockResolvedValue({ id: 'existing', status: 'ACTIVE' });
+      prisma.orderItem = { update: jest.fn() };
+      prisma.cartItem.deleteMany.mockResolvedValue({ count: 0 });
+      await expect(service.fulfill('order-free', 'FREE:FREE1', 'BALANCE')).rejects.toThrow('已订阅该免费员工，无需重复开通');
+      expect(prisma.subscription.create).not.toHaveBeenCalled();
+      expect(prisma.subscription.update).not.toHaveBeenCalled();
+      expect(creditService.grantSubscriptionCredit).not.toHaveBeenCalled();
+      expect(prisma.orderItem.update).not.toHaveBeenCalled();
+    });
+
+    it('moves the unique order association when reactivating a terminated free subscription', async () => {
+      const order = {
+        id: 'new-free-order', orderNo: 'FREE2', enterpriseId: 'ent-1', createdBy: 'user-1', status: 'PENDING',
+        items: [{ id: 'new-free-item', employeeId: 'emp-1', employeeName: 'Free', unitPrice: new Decimal(0), periodMonths: 12, includedComputeCNY: new Decimal(0) }],
+      };
+      prisma.order.findUnique.mockResolvedValue(order);
+      prisma.subscription.findUnique.mockResolvedValue({ id: 'existing', status: 'TERMINATED' });
+      prisma.subscription.update.mockResolvedValue({ id: 'existing' });
+      prisma.digitalEmployee.findUnique.mockResolvedValue({ id: 'emp-1', version: '1.0.0' });
+      prisma.orderItem = { update: jest.fn(), updateMany: jest.fn() };
+      prisma.cartItem.deleteMany.mockResolvedValue({ count: 0 });
+      await service.fulfill('new-free-order', 'FREE:FREE2', 'BALANCE');
+      expect(prisma.orderItem.updateMany).toHaveBeenCalledWith({ where: { fulfilledSubscriptionId: 'existing' }, data: { fulfilledSubscriptionId: null } });
+      expect(prisma.orderItem.update).toHaveBeenCalledWith({ where: { id: 'new-free-item' }, data: { fulfilledSubscriptionId: 'existing' } });
+    });
+  });
+
   describe("createDirect", () => {
     const approvedEmployee = {
       id: "emp-1",
@@ -237,6 +292,24 @@ describe("OrderService", () => {
       includedComputeCNY: new Decimal(1000),
       status: "APPROVED",
     };
+
+    it('allows an explicitly zero-priced employee and keeps a zero order snapshot', async () => {
+      prisma.digitalEmployee.findUnique.mockResolvedValue({ ...approvedEmployee, annualPriceCNY: new Decimal(0) });
+      prisma.subscription.findUnique.mockResolvedValue(null);
+      prisma.order.create.mockResolvedValue({ id: 'free-order' });
+      await service.createDirect('ent-1', 'user-1', { employeeId: 'emp-1', periodMonths: 12 });
+      expect(prisma.order.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ totalAmount: new Decimal(0), items: { create: [expect.objectContaining({ unitPrice: new Decimal(0) })] } }),
+      }));
+    });
+
+    it.each([null, new Decimal(-1)])('rejects an unset or negative annual price: %s', async (annualPriceCNY) => {
+      prisma.digitalEmployee.findUnique.mockResolvedValue({ ...approvedEmployee, annualPriceCNY });
+      prisma.subscription.findUnique.mockResolvedValue(null);
+      await expect(service.createDirect('ent-1', 'user-1', { employeeId: 'emp-1', periodMonths: 12 }))
+        .rejects.toThrow('员工未设置有效价格，无法订阅');
+      expect(prisma.order.create).not.toHaveBeenCalled();
+    });
 
     it("应创建不依赖购物车的直接订单并按周期折算金额", async () => {
       prisma.digitalEmployee.findUnique.mockResolvedValue(approvedEmployee);

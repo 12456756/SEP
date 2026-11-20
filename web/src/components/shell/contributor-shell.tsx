@@ -94,7 +94,7 @@ export function ContributorShell({ children }: { children: React.ReactNode }) {
           <div className="my-3 border-t border-glassline" />
           <NavItem
             href="/marketplace"
-            label="硅基人才市场"
+            label="元机AI人才市场"
             icon={Store}
             collapsed={collapsed}
           />

@@ -17,7 +17,7 @@ export function WalletBalanceCard() {
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Wallet className="h-5 w-5" />
-            钱包总余额
+            钱包
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -54,12 +54,18 @@ export function WalletBalanceCard() {
 
   if (!balance) return null;
 
+  const totalBalance = Number(balance.balance);
+  const computeBalance = Number(balance.computeReservedCNY);
+  const ownBalance = Number(balance.spendableCNY);
+  const computePercent = totalBalance > 0 ? Math.min(100, Math.max(0, computeBalance / totalBalance * 100)) : 0;
+  const ownPercent = totalBalance > 0 ? 100 - computePercent : 0;
+
   return (
     <Card className="shadow-md">
-      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-4">
+      <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3 space-y-0 pb-4">
         <CardTitle className="flex items-center gap-2.5 text-xl">
           <Wallet className="h-6 w-6 text-primary" />
-          钱包总余额
+          钱包
         </CardTitle>
         <Button
           onClick={() => router.push('/payment/recharge')}
@@ -73,10 +79,42 @@ export function WalletBalanceCard() {
       <CardContent className="space-y-6">
         {/* 主余额显示 */}
         <div className="rounded-lg bg-gradient-to-br from-primary/5 via-primary/3 to-transparent border border-primary/10 p-6">
-          <p className="text-sm font-medium text-fg-muted mb-2">可用余额</p>
-          <p className="text-4xl font-bold text-foreground tabular-nums">
-            ¥{Number(balance.balance).toFixed(2)}
+          <p className="text-sm font-medium text-fg-muted mb-2">总余额 = 算力余额 + 可用余额</p>
+          <p className="break-words text-3xl font-bold text-foreground tabular-nums sm:text-4xl">
+            ¥{totalBalance.toFixed(2)}
           </p>
+          <div className="mt-5 space-y-3">
+            <div
+              role="img"
+              aria-label={`余额构成：算力余额 ¥${computeBalance.toFixed(2)}，占 ${computePercent.toFixed(1)}%；可用余额 ¥${ownBalance.toFixed(2)}，占 ${ownPercent.toFixed(1)}%`}
+              className="flex h-2.5 w-full overflow-hidden rounded-full bg-muted"
+            >
+              <span className="h-full shrink-0 bg-blue-600" style={{ width: `${computePercent}%` }} />
+              <span className="h-full shrink-0 bg-amber-400" style={{ width: `${ownPercent}%` }} />
+            </div>
+            <dl className="flex flex-wrap justify-between gap-x-6 gap-y-3 text-sm">
+              <div className="min-w-0">
+                <dt className="flex items-center gap-2 text-fg-muted">
+                  <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-blue-600" />
+                  算力余额
+                </dt>
+                <dd className="mt-1 pl-4 font-semibold text-foreground tabular-nums">
+                  ¥{computeBalance.toFixed(2)}
+                  <span className="ml-2 text-xs font-normal text-fg-muted">{computePercent.toFixed(1)}%</span>
+                </dd>
+              </div>
+              <div className="min-w-0">
+                <dt className="flex items-center gap-2 text-fg-muted">
+                  <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-amber-400" />
+                  可用余额
+                </dt>
+                <dd className="mt-1 pl-4 font-semibold text-foreground tabular-nums">
+                  ¥{ownBalance.toFixed(2)}
+                  <span className="ml-2 text-xs font-normal text-fg-muted">{ownPercent.toFixed(1)}%</span>
+                </dd>
+              </div>
+            </dl>
+          </div>
           {Number(balance.frozenAmount) > 0 && (
             <p className="text-xs text-fg-muted mt-2 flex items-center gap-1">
               <span className="inline-block h-1.5 w-1.5 rounded-full bg-warning"></span>

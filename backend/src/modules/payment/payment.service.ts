@@ -95,6 +95,13 @@ export class PaymentService {
       throw new BadRequestException(`订单状态为 ${order.status}，无法支付`);
     }
 
+    if (order.totalAmount.isZero()) {
+      throw new BadRequestException('免费订单无需支付宝支付，请直接确认开通');
+    }
+    if (!order.totalAmount.isFinite() || order.totalAmount.lessThan(0)) {
+      throw new BadRequestException('订单金额无效');
+    }
+
     // 确保支付宝 SDK 已初始化
     await this.prisma.$transaction(async (tx) => {
       await assertActiveUserInTx(tx, order.createdBy);
@@ -142,19 +149,25 @@ export class PaymentService {
       if (!current || current.status !== 'PENDING') {
         throw new BadRequestException('订单当前不可支付');
       }
-      await this.walletService.consume(
-        enterpriseId,
-        order.totalAmount.toNumber(),
-        "subscription",
-        order.id,
-        `余额支付订单 ${order.orderNo}`,
-        tx,
-      );
+      if (!order.totalAmount.isFinite() || order.totalAmount.lessThan(0)) {
+        throw new BadRequestException('订单金额无效');
+      }
+      const isFree = order.totalAmount.isZero();
+      if (!isFree) {
+        await this.walletService.consume(
+          enterpriseId,
+          order.totalAmount.toNumber(),
+          "subscription",
+          order.id,
+          `余额支付订单 ${order.orderNo}`,
+          tx,
+        );
+      }
 
       return this.orderService.fulfillInTransaction(
         tx,
         order.id,
-        `BALANCE:${order.orderNo}`,
+        `${isFree ? 'FREE' : 'BALANCE'}:${order.orderNo}`,
         "BALANCE",
       );
     });

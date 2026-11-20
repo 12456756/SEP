@@ -43,6 +43,7 @@ export function EmployeeCard({
   const capTypes = Array.from(new Set(emp.bindings?.map((b) => b.capability.type) ?? []));
   const visibleTypes = capTypes.slice(0, 3);
   const extra = capTypes.length - visibleTypes.length;
+  const hasPrice = emp.annualPriceCNY != null && Number.isFinite(Number(emp.annualPriceCNY)) && Number(emp.annualPriceCNY) >= 0;
 
   return (
     <article
@@ -128,7 +129,9 @@ export function EmployeeCard({
       {/* ── price + subscribe ───────────────────────────────────────── */}
       <div className="flex items-end justify-between gap-3">
         <div>
-          {emp.annualPriceCNY && Number(emp.annualPriceCNY) > 0 ? (
+          {!hasPrice ? (
+            <span className="text-[13px] text-gtext-muted">暂未定价</span>
+          ) : Number(emp.annualPriceCNY) > 0 ? (
             <span className="text-[15px] font-semibold text-gtext-primary">
               ¥{Number(emp.annualPriceCNY).toLocaleString()}
               <span className="text-[12px] font-normal text-gtext-muted">/年</span>
@@ -157,7 +160,7 @@ export function EmployeeCard({
                     variant="glass"
                     size="sm"
                     className="shrink-0"
-                    disabled={addingToCart}
+                    disabled={addingToCart || !hasPrice}
                     onClick={(e) => { e.stopPropagation(); onAddToCart(); }}
                     title="加入购物车"
                   >
@@ -168,7 +171,7 @@ export function EmployeeCard({
                   variant="glass-primary"
                   size="sm"
                   className="shrink-0"
-                  disabled={subscribing}
+                  disabled={subscribing || !hasPrice}
                   onClick={(e) => { e.stopPropagation(); onSubscribe(); }}
                 >
                   订阅

@@ -22,6 +22,7 @@ import { WalletService } from '../wallet/wallet.service';
 import { SubscriptionFulfillmentService } from '../subscription-fulfillment/subscription-fulfillment.service';
 import { ComputeCreditService } from '../compute-credit/compute-credit.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { assertActiveEnterpriseInTx } from '../../common/enterprise-write-lock';
 
 /** 允许的状态流转。EXPIRED 是终态。 */
 const ALLOWED_TRANSITIONS: Record<
@@ -107,7 +108,7 @@ export class SubscriptionService {
     }
 
     // 检查是否设置了年费
-    if (!employee.annualPriceCNY || employee.annualPriceCNY.toNumber() <= 0) {
+    if (employee.annualPriceCNY == null || !Number.isFinite(employee.annualPriceCNY.toNumber()) || employee.annualPriceCNY.toNumber() < 0) {
       throw new BadRequestException('Employee does not have a valid annual price');
     }
 
@@ -138,6 +139,14 @@ export class SubscriptionService {
     // 履约与扣款必须同一个事务：订阅建成但扣款失败 = 白送一年，
     // 扣款成功但订阅没建 = 企业付了钱拿不到员工。
     const subscriptionId = await this.prisma.$transaction(async (tx) => {
+      if (amount === 0) {
+        await assertActiveEnterpriseInTx(tx, ctx.enterpriseId);
+        const current = await tx.subscription.findUnique({
+          where: { enterpriseId_employeeId: { enterpriseId: ctx.enterpriseId, employeeId: dto.employeeId } },
+          select: { status: true },
+        });
+        if (current?.status === 'ACTIVE') throw new ConflictException('Already subscribed to this employee');
+      }
       const result = await this.fulfillment.fulfill(tx, {
         enterpriseId: ctx.enterpriseId,
         employeeId: dto.employeeId,
@@ -152,18 +161,20 @@ export class SubscriptionService {
       });
 
       // 复活订阅也要重新付费
-      const transaction = await this.walletService.consume(
-        ctx.enterpriseId,
-        amount,
-        'subscription',
-        result.subscriptionId,
-        `${isRenewal ? '重新订阅' : '订阅'}【${employee.name}】`,
-        tx,
-      );
+      const transaction = amount > 0
+        ? await this.walletService.consume(
+            ctx.enterpriseId,
+            amount,
+            'subscription',
+            result.subscriptionId,
+            `${isRenewal ? '重新订阅' : '订阅'}【${employee.name}】`,
+            tx,
+          )
+        : null;
 
       await tx.subscription.update({
         where: { id: result.subscriptionId },
-        data: { walletTransactionId: transaction.id },
+        data: { walletTransactionId: transaction?.id ?? null },
       });
 
       return result.subscriptionId;
@@ -447,17 +458,12 @@ export class SubscriptionService {
       let refundAmount = 0;
       let refundTransactionId: string | null = null;
 
-      if (
-        isWithinTrial &&
-        (sub.purchaseAmountCNY || paidTransaction?.amount || employee.annualPriceCNY)
-      ) {
+      const paidAmount = sub.purchaseAmountCNY?.toNumber()
+        ?? (paidTransaction ? Math.abs(paidTransaction.amount.toNumber()) : employee.annualPriceCNY?.toNumber() ?? 0);
+      if (isWithinTrial && paidAmount > 0) {
         // 试用期内全额退**订阅费**。未用完的赠送算力不折现、不退回（见开发计划）：
         // 赠送额度不是企业付过的钱，退它等于凭空发钱。
-        refundAmount = sub.purchaseAmountCNY
-          ? sub.purchaseAmountCNY.toNumber()
-          : paidTransaction
-            ? Math.abs(paidTransaction.amount.toNumber())
-            : employee.annualPriceCNY!.toNumber();
+        refundAmount = paidAmount;
         const refundTransaction = await this.walletService.refund(
           ctx.enterpriseId,
           refundAmount,

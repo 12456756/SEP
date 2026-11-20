@@ -63,10 +63,10 @@ export function NewSessionDialog({
           ) : subs.length === 0 ? (
             <EmptyState
               title="你还没有可对话的硅基员工"
-              description="先去硅基人才市场雇佣一位硅基员工，再回来开始对话。"
+              description="先去元机AI人才市场雇佣一位硅基员工，再回来开始对话。"
               action={
                 <Link href="/marketplace">
-                  <Button size="sm">前往硅基人才市场</Button>
+                  <Button size="sm">前往元机AI人才市场</Button>
                 </Link>
               }
             />

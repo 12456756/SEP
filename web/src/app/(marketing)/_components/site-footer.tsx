@@ -5,7 +5,7 @@ const COLUMNS = [
   {
     title: "产品",
     links: [
-      { label: "硅基人才市场", href: "/marketplace" },
+      { label: "元机AI人才市场", href: "/marketplace" },
       { label: "功能特性", href: "#features" },
       { label: "定价方案", href: "#pricing" },
       { label: "常见问题", href: "#faq" },

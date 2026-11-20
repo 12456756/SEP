@@ -93,14 +93,14 @@ export function PaymentModal({
   onClose,
 }: PaymentModalProps) {
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('balance');
-  const isFree = !emp.price || emp.price === 0;
-  const canConfirm = true;
+  const canConfirm = emp.price != null && Number.isFinite(Number(emp.price)) && Number(emp.price) >= 0;
+  const isFree = canConfirm && Number(emp.price) === 0;
 
   if (!open) return null;
 
   function handleConfirm() {
     if (!canConfirm || subscribing) return;
-    onConfirm(paymentMethod);
+    onConfirm(isFree ? 'balance' : paymentMethod);
   }
 
   return (
@@ -164,7 +164,9 @@ export function PaymentModal({
                     <p className="mt-0.5 text-xs text-gtext-muted">硅基员工</p>
                   </div>
                   <div className="text-right">
-                    {isFree ? (
+                    {!canConfirm ? (
+                      <span className="text-sm text-gtext-muted">暂未定价</span>
+                    ) : isFree ? (
                       <span className="text-base font-semibold text-emerald-400">
                         免费
                       </span>
@@ -181,7 +183,7 @@ export function PaymentModal({
               </div>
 
               {/* payment method */}
-              {!isFree && (
+              {canConfirm && !isFree && (
                 <div>
                   <p className="mb-3 text-sm font-medium text-gtext-primary">
                     支付方式
@@ -256,6 +258,8 @@ export function PaymentModal({
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                       处理中...
                     </>
+                  ) : !canConfirm ? (
+                    '暂不可订阅'
                   ) : isFree ? (
                     '免费雇佣'
                   ) : paymentMethod === 'alipay' ? (

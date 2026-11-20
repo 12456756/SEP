@@ -73,7 +73,7 @@ test.describe.serial('企业端核心流程', () => {
     await page.goto('/marketplace');
 
     // 验证页面加载
-    await expect(page.getByRole('heading', { name: '硅基人才市场' })).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('heading', { name: '元机AI人才市场' })).toBeVisible({ timeout: 5000 });
 
     // 验证至少有一个员工卡片
     const employeeCards = page.locator('article:has(button:has-text("订阅"))');

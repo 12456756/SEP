@@ -113,6 +113,7 @@ function DrawerContent({
   const capTypes = Array.from(new Set(emp.bindings?.map((b) => b.capability.type) ?? []));
   // 列表接口已带履历；缺失时兜底零值
   const track = emp.stats ?? { totalExecutions: 0, successRate: null };
+  const hasPrice = emp.annualPriceCNY != null && Number.isFinite(Number(emp.annualPriceCNY)) && Number(emp.annualPriceCNY) >= 0;
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -266,10 +267,12 @@ function DrawerContent({
       <div className="shrink-0 border-t border-glassline p-5 space-y-3">
         {/* price */}
         <div className="flex items-baseline justify-between">
-          {emp.price && emp.price > 0 ? (
+          {!hasPrice ? (
+            <span className="text-sm text-gtext-muted">暂未定价</span>
+          ) : Number(emp.annualPriceCNY) > 0 ? (
             <span className="text-xl font-bold text-gtext-primary">
-              ¥{emp.price}
-              <span className="text-[13px] font-normal text-gtext-muted">/月</span>
+              ¥{Number(emp.annualPriceCNY).toLocaleString()}
+              <span className="text-[13px] font-normal text-gtext-muted">/年</span>
             </span>
           ) : (
             <span className="text-base font-semibold text-emerald-400">免费</span>
@@ -298,7 +301,7 @@ function DrawerContent({
               variant="glass-primary"
               size="sm"
               className="w-full"
-              disabled={subscribing}
+              disabled={subscribing || !hasPrice}
               onClick={onSubscribe}
             >
               立即订阅

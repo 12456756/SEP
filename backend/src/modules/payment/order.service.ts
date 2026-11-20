@@ -78,7 +78,10 @@ export class OrderService {
     let totalAmount = new Decimal(0);
     const orderItems = await Promise.all(
       cartItems.map(async (cartItem) => {
-        const unitPrice = cartItem.employee.annualPriceCNY || new Decimal(0);
+        const unitPrice = cartItem.employee.annualPriceCNY;
+        if (unitPrice == null || !unitPrice.isFinite() || unitPrice.lessThan(0)) {
+          throw new BadRequestException(`员工「${cartItem.employee.name}」未设置有效价格，无法订阅`);
+        }
         const periodFactor = new Decimal(cartItem.periodMonths).div(12);
         const subtotal = unitPrice.mul(periodFactor);
         totalAmount = totalAmount.add(subtotal);
@@ -175,8 +178,8 @@ export class OrderService {
       throw new BadRequestException("已订阅该硅基员工，无法重复下单");
     }
 
-    const unitPrice = employee.annualPriceCNY ?? new Decimal(0);
-    if (unitPrice.lessThanOrEqualTo(0)) {
+    const unitPrice = employee.annualPriceCNY;
+    if (unitPrice == null || !unitPrice.isFinite() || unitPrice.lessThan(0)) {
       throw new BadRequestException("员工未设置有效价格，无法订阅");
     }
     const totalAmount = unitPrice.mul(new Decimal(input.periodMonths).div(12));
@@ -475,6 +478,17 @@ export class OrderService {
       const endDate = new Date(now);
       endDate.setMonth(endDate.getMonth() + item.periodMonths);
 
+      // Multiple pending free orders must not grant the same active subscription twice.
+      const existingFreeSubscription = order.orderType !== 'BUNDLE' && item.unitPrice?.isZero()
+        ? await tx.subscription.findUnique({
+            where: { enterpriseId_employeeId: { enterpriseId: order.enterpriseId, employeeId: item.employeeId } },
+            select: { id: true, status: true },
+          })
+        : null;
+      if (existingFreeSubscription?.status === 'ACTIVE') {
+        throw new BadRequestException('已订阅该免费员工，无需重复开通');
+      }
+
       // 赠送金额用**下单时的快照**，不是当前员工配置：订单已经成交，
       // 运营事后改默认值不该改变已付款订单的赠送金额。
       const result = await this.fulfillment.fulfill(tx, {
@@ -494,6 +508,12 @@ export class OrderService {
       });
       // 历史测试替身可能没有 orderItem delegate；真实 Prisma 事务始终具备它。
       if (tx.orderItem) {
+        if (existingFreeSubscription) {
+          await tx.orderItem.updateMany({
+            where: { fulfilledSubscriptionId: existingFreeSubscription.id },
+            data: { fulfilledSubscriptionId: null },
+          });
+        }
         await tx.orderItem.update({
           where: { id: item.id },
           data: { fulfilledSubscriptionId: result.subscriptionId },

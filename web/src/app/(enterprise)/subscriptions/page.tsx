@@ -244,10 +244,10 @@ export default function SubscriptionsPage() {
             <EmptyState
               icon={<Store className="h-8 w-8" />}
               title="还没有雇佣关系"
-              description="前往硅基人才市场招聘你的第一位硅基员工，雇佣后在这里把 TA 授权给部门或成员。"
+              description="前往元机AI人才市场招聘你的第一位硅基员工，雇佣后在这里把 TA 授权给部门或成员。"
               action={
                 <Link href="/marketplace">
-                  <Button size="sm">前往硅基人才市场</Button>
+                  <Button size="sm">前往元机AI人才市场</Button>
                 </Link>
               }
             />
@@ -287,7 +287,7 @@ export default function SubscriptionsPage() {
                     </Button>
                   ) : topTab === 'employments' ? (
                     <Link href="/marketplace">
-                      <Button size="sm">前往硅基人才市场</Button>
+                      <Button size="sm">前往元机AI人才市场</Button>
                     </Link>
                   ) : undefined}
                 />

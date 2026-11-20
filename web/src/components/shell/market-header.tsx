@@ -25,7 +25,7 @@ export function MarketHeader() {
           <Link href="/marketplace" className="flex items-center gap-2.5">
             <ThemeLogo priority />
             <span className="text-sm font-semibold text-gtext-primary">
-              硅基人才市场
+              元机AI人才市场
             </span>
           </Link>
 

@@ -182,6 +182,7 @@ export default function EmployeeDetailPage() {
   }
 
   const grad = avatarGradient(emp.position ?? "", emp.industry ?? "");
+  const hasPrice = emp.annualPriceCNY != null && Number.isFinite(Number(emp.annualPriceCNY)) && Number(emp.annualPriceCNY) >= 0;
 
   return (
     <div className="mx-auto max-w-4xl space-y-5">
@@ -266,6 +267,7 @@ export default function EmployeeDetailPage() {
                 variant="glass-primary"
                 size="sm"
                 onClick={() => setRequestModalOpen(true)}
+                disabled={!subscribed && !hasPrice}
               >
                 申请使用
               </Button>
@@ -285,11 +287,13 @@ export default function EmployeeDetailPage() {
             </Link>
           )}
 
-          {typeof emp.price === "number" && emp.price > 0 ? (
+          {!hasPrice ? (
+            <span className="text-[13px] text-gtext-muted">暂未定价</span>
+          ) : Number(emp.annualPriceCNY) > 0 ? (
             <span className="text-[15px] font-semibold text-gtext-primary">
-              ¥{emp.price}
+              ¥{Number(emp.annualPriceCNY).toLocaleString()}
               <span className="text-[12px] font-normal text-gtext-muted">
-                /月
+                /年
               </span>
             </span>
           ) : (

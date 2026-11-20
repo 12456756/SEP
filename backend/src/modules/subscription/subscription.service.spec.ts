@@ -218,6 +218,46 @@ describe('SubscriptionService', () => {
   });
 
   describe('业务规则', () => {
+    it('creates a free subscription and admin grant without a wallet transaction', async () => {
+      prisma.digitalEmployee.findUnique.mockResolvedValue({
+        id: 'emp-1', status: 'APPROVED', name: 'Free Employee', version: '1.0.0', annualPriceCNY: new Decimal(0),
+      });
+      prisma.subscription.findUnique.mockResolvedValue(null);
+      await svc.subscribe('user-acme-boss', { employeeId: 'emp-1' } as never);
+      expect(walletSvc.consume).not.toHaveBeenCalled();
+      expect(prisma.subscription.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ purchaseAmountCNY: 0, status: 'ACTIVE' }),
+      }));
+      expect(prisma.employeeGrant.create).toHaveBeenCalled();
+      expect(creditSvc.grantSubscriptionCredit).toHaveBeenCalled();
+      expect(prisma.subscription.update).toHaveBeenCalledWith({ where: { id: 'sub-new' }, data: { walletTransactionId: null } });
+    });
+
+    it('rechecks active free subscriptions after taking the enterprise lock', async () => {
+      prisma.digitalEmployee.findUnique.mockResolvedValue({ id: 'emp-1', status: 'APPROVED', annualPriceCNY: new Decimal(0) });
+      prisma.subscription.findUnique.mockResolvedValueOnce(null).mockResolvedValue({ id: 'existing', status: 'ACTIVE' });
+      await expect(svc.subscribe('user-acme-boss', { employeeId: 'emp-1' } as never)).rejects.toThrow('Already subscribed');
+      expect(prisma.subscription.create).not.toHaveBeenCalled();
+      expect(creditSvc.grantSubscriptionCredit).not.toHaveBeenCalled();
+    });
+
+    it.each([null, new Decimal(-1)])('rejects an unset or negative subscription price: %s', async (annualPriceCNY) => {
+      prisma.digitalEmployee.findUnique.mockResolvedValue({ id: 'emp-1', status: 'APPROVED', annualPriceCNY });
+      await expect(svc.subscribe('user-acme-boss', { employeeId: 'emp-1' } as never)).rejects.toThrow('valid annual price');
+      expect(walletSvc.consume).not.toHaveBeenCalled();
+    });
+
+    it('terminates a free subscription without refunding even after its listed price increases', async () => {
+      prisma.subscription.findUnique.mockResolvedValue({
+        id: 'sub-free', enterpriseId: ACME.enterpriseId, employeeId: 'emp-1', status: 'ACTIVE',
+        startDate: new Date(), purchaseAmountCNY: new Decimal(0), walletTransactionId: null,
+      });
+      prisma.digitalEmployee.findUnique.mockResolvedValue({ name: 'Now Paid Employee', annualPriceCNY: new Decimal(5000) });
+      const result = await svc.terminate('sub-free', 'user-acme-boss');
+      expect(result.refunded).toBe(false);
+      expect(walletSvc.refund).not.toHaveBeenCalled();
+      expect(creditSvc.expireSubscriptionCredit).toHaveBeenCalled();
+    });
     it('未上架模板不可订阅', async () => {
       prisma.digitalEmployee.findUnique.mockResolvedValue({
         id: 'emp-draft',
