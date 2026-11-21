@@ -17,9 +17,11 @@ set -euo pipefail
 name=${0##*/}
 printf '%s %s\n' "$name" "$*" >> "$CALLS"
 if [[ "$name" == ssh ]]; then cat >> "$CALLS"; fi
+if [[ "$name" == timeout ]]; then [[ "${MOCK_UPLOAD_FAIL:-false}" != true ]]; fi
+if [[ "$name" == node ]]; then printf 'https://example.invalid/mock-only-artifact'; fi
 MOCK
 chmod +x "$TEMP/bin/mock"
-for name in ssh scp; do ln -s mock "$TEMP/bin/$name"; done
+for name in ssh scp timeout node; do ln -s mock "$TEMP/bin/$name"; done
 export PATH="$TEMP/bin:$PATH"
 export GITHUB_SHA=9309ea6b09659538d06fdfae5f5edac3b047b4fb GITHUB_REPOSITORY=12456756/SEP GITHUB_REF=refs/heads/main
 export SERVER_HOST=121.37.128.126 SERVER_PORT=22 SERVER_USER=root SERVER_SSH_KEY=mock-only
@@ -37,6 +39,12 @@ grep -Fq '/www/sep-embedding/releases/' "$CALLS"
 grep -Fq 'sha256sum --check --status' "$CALLS"
 ! grep -Fq '/www/sep/deploy' "$CALLS"
 echo 'PASS: install only transfers a checksummed model service bundle'
+: > "$CALLS"
+MOCK_UPLOAD_FAIL=true RUNTIME_ARTIFACT_ID=123 GITHUB_TOKEN=mock-only EMBEDDING_ACTION=install bash "$SOURCE/upload.sh"
+grep -Fq 'runtime-artifact.zip' "$CALLS"
+grep -Fq 'Unexpected runtime artifact contents' "$CALLS"
+grep -Fq 'image_checksum' "$CALLS"
+echo 'PASS: slow runtime upload falls back to the same authenticated Actions artifact and checksum verification'
 for input in wrong-operation wrong-repository wrong-branch wrong-server; do
   : > "$CALLS"
   case "$input" in

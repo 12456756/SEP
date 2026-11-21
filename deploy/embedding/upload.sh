@@ -55,7 +55,32 @@ IMAGE_CHECKSUM=$(sha256sum "$IMAGE_ARCHIVE" | awk '{print $1}')
 REMOTE="/www/sep-embedding/releases/$GITHUB_SHA"
 ssh "${OPTIONS[@]}" "$SERVER_USER@$SERVER_HOST" install -d -m 700 "$REMOTE"
 scp "${OPTIONS[@]}" "$TEMP/config.tar.gz" "$SERVER_USER@$SERVER_HOST:$REMOTE/config.tar.gz"
-timeout --signal=TERM --kill-after=15s 1200s scp "${OPTIONS[@]}" "$IMAGE_ARCHIVE" "$SERVER_USER@$SERVER_HOST:$REMOTE/model-images.tar.gz"
+if ! timeout --signal=TERM --kill-after=15s 180s scp "${OPTIONS[@]}" "$IMAGE_ARCHIVE" "$SERVER_USER@$SERVER_HOST:$REMOTE/model-images.tar.gz"; then
+  echo 'Runtime upload exceeded 180 seconds; switching to server download of the same Actions artifact.'
+  [[ "${RUNTIME_ARTIFACT_ID:-}" =~ ^[1-9][0-9]*$ && -n "${GITHUB_TOKEN:-}" ]] || { echo 'Actions artifact metadata is missing' >&2; exit 1; }
+  DOWNLOAD_URL=$(node -e '
+    fetch(`https://api.github.com/repos/12456756/SEP/actions/artifacts/${process.env.RUNTIME_ARTIFACT_ID}/zip`, {
+      redirect:"manual",headers:{Authorization:`Bearer ${process.env.GITHUB_TOKEN}`,Accept:"application/vnd.github+json"},signal:AbortSignal.timeout(15000)
+    }).then(r=>{if(r.status!==302)throw Error(`Artifact download HTTP ${r.status}`);const u=r.headers.get("location");if(!u?.startsWith("https://"))throw Error("Invalid artifact URL");process.stdout.write(u);}).catch(e=>{console.error(e.message);process.exitCode=1});
+  ')
+  echo "::add-mask::$DOWNLOAD_URL"
+  ssh "${OPTIONS[@]}" "$SERVER_USER@$SERVER_HOST" bash -s -- "$DOWNLOAD_URL" "$REMOTE" <<'DOWNLOAD'
+set -Eeuo pipefail
+umask 077
+url=$1 destination=$2
+curl --fail --location --retry 3 --connect-timeout 15 --max-time 600 "$url" -o "$destination/runtime-artifact.zip"
+python3 - "$destination/runtime-artifact.zip" "$destination/model-images.tar.gz" <<'PY'
+import shutil
+import sys
+import zipfile
+with zipfile.ZipFile(sys.argv[1]) as archive:
+    if archive.namelist() != ['sep-embedding-images.tar.gz']:
+        raise SystemExit('Unexpected runtime artifact contents')
+    with archive.open('sep-embedding-images.tar.gz') as source, open(sys.argv[2], 'wb') as target:
+        shutil.copyfileobj(source, target)
+PY
+DOWNLOAD
+fi
 ssh "${OPTIONS[@]}" "$SERVER_USER@$SERVER_HOST" bash -s -- "$GITHUB_SHA" "$CHECKSUM" "$IMAGE_CHECKSUM" "$ACTION" <<'REMOTE_SCRIPT'
 set -Eeuo pipefail
 umask 077

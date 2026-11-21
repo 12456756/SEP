@@ -10,6 +10,8 @@ No port is published. Initial limits are 4 CPUs, 8 GiB memory, one loaded model 
 
 The server's virtual CPU does not expose AVX/AVX2; the stock 0.40.16 inference runner raised SIGILL during isolated validation. `Dockerfile.cpu` retains the official Ollama server binary but rebuilds its pinned official llama.cpp-compatible runner for baseline x86-64 without AVX/FMA/F16C. The runtime is CPU-only and includes OpenBLAS. Both upstream source commits, build flags and the resulting image ID are recorded. Model weights and digest remain unchanged; deployment tests the resulting runner before production attachment.
 
+The runtime archive is retained as an Actions artifact for one day. SCP is bounded to 180 seconds; on failure, Actions obtains a short-lived artifact download URL and the server downloads the identical archive, verifies the ZIP entry and original SHA256 before importing images. The GitHub token stays on the runner; signed URLs are masked. Temporary artifact retention does not replace the server's persistent image/model evidence.
+
 If the candidate fails after network attachment, the installation script removes only its production network connection. It never restores an old database, rewrites model profiles, restarts application containers or prunes Docker. Keep `/www/sep-embedding/backups` evidence and model data for investigation.
 
 The deployment does not automatically retry customer documents or rebuild historical indexes. Use the platform's normal authorized retry workflow after the model service passes validation.

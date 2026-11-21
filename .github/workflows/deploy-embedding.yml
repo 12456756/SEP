@@ -47,6 +47,16 @@ jobs:
       - name: Fetch official runtime images outside the server mirror
         if: inputs.operation == 'install'
         run: bash deploy/embedding/prepare-image-bundle.sh
+      - name: Store temporary runtime bundle for server download fallback
+        if: inputs.operation == 'install'
+        id: runtime-bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: embedding-runtime-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sep-embedding-images.tar.gz
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
       - name: Require successful Quality Gates for this exact commit
         if: inputs.operation == 'install'
         timeout-minutes: 25
@@ -55,6 +65,8 @@ jobs:
         run: node deploy/embedding/quality-guard.cjs
       - name: Manage isolated model service
         env:
+          RUNTIME_ARTIFACT_ID: ${{ steps.runtime-bundle.outputs.artifact-id }}
+          GITHUB_TOKEN: ${{ github.token }}
           EMBEDDING_ACTION: ${{ inputs.operation }}
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
