@@ -26,7 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     rm -rf /var/lib/apt/lists/*
 COPY --from=official /usr/bin/ollama /usr/bin/ollama
 COPY --from=builder /src/dist/lib/ollama /usr/lib/ollama
-ENV OLLAMA_HOST=0.0.0.0:11434 OLLAMA_VULKAN=0 OLLAMA_NO_CLOUD=1 OPENBLAS_NUM_THREADS=4
+ENV OLLAMA_HOST=0.0.0.0:11434 OLLAMA_VULKAN=0 OLLAMA_NO_CLOUD=1 OPENBLAS_NUM_THREADS=4 OPENBLAS_CORETYPE=NEHALEM
 LABEL org.opencontainers.image.source="https://github.com/12456756/SEP" \
     sep.ollama.source="d63b702609c4300a2ca07be2bdb0adb9834725e5" \
     sep.llama.source="6c01da6278ab6c69ed67d9124806b50d2b299ba7" \
