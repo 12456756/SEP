@@ -35,12 +35,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Require successful Quality Gates for this exact commit
-        if: inputs.operation == 'install'
-        timeout-minutes: 25
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: node deploy/embedding/quality-guard.cjs
       - name: Validate independent deployment scripts and probes
         run: |
           bash -n deploy/embedding/manage.sh
@@ -53,6 +47,12 @@ jobs:
       - name: Fetch official runtime images outside the server mirror
         if: inputs.operation == 'install'
         run: bash deploy/embedding/prepare-image-bundle.sh
+      - name: Require successful Quality Gates for this exact commit
+        if: inputs.operation == 'install'
+        timeout-minutes: 25
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node deploy/embedding/quality-guard.cjs
       - name: Manage isolated model service
         env:
           EMBEDDING_ACTION: ${{ inputs.operation }}

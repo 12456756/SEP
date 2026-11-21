@@ -1,9 +1,9 @@
-ARG OLLAMA_BASE_IMAGE
+ARG OLLAMA_BASE_IMAGE=ollama/ollama:0.40.16
 FROM ${OLLAMA_BASE_IMAGE} AS official
 
 FROM ubuntu:24.04 AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl git g++ cmake ninja-build libopenblas-dev && \
+    ca-certificates curl git g++ cmake ninja-build pkg-config libopenblas-dev && \
     rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 RUN curl --fail --location --retry 3 https://codeload.github.com/ollama/ollama/tar.gz/d63b702609c4300a2ca07be2bdb0adb9834725e5 | tar -xz --strip-components=1 && \
