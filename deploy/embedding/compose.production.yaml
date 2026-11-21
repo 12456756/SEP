@@ -1,0 +1,5 @@
+services:
+  ollama:
+    networks:
+      sep:
+        aliases: [sep-ollama]

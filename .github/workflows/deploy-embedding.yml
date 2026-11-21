@@ -1,0 +1,58 @@
+name: Manage Embedding Service
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Independent model service operation (status is read-only)
+        required: true
+        type: choice
+        default: status
+        options: [status, install, verify, stop]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: sep-embedding-deploy
+  cancel-in-progress: false
+
+jobs:
+  model-service:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - name: Require production repository and branch
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REF: ${{ github.ref }}
+        run: test "$REPOSITORY" = 12456756/SEP && test "$REF" = refs/heads/main
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Require successful Quality Gates for this exact commit
+        if: inputs.operation == 'install'
+        timeout-minutes: 25
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node deploy/embedding/quality-guard.cjs
+      - name: Validate independent deployment scripts and probes
+        run: |
+          bash -n deploy/embedding/manage.sh
+          bash -n deploy/embedding/upload.sh
+          bash deploy/embedding/test-upload.sh
+          node --test deploy/embedding/verify-embedding.test.cjs deploy/embedding/quality-guard.test.cjs
+          OLLAMA_IMAGE=ollama/ollama@sha256:$(printf '%064d' 0) PROBE_NODE_IMAGE=node@sha256:$(printf '%064d' 0) docker compose -f deploy/embedding/compose.yaml -f deploy/embedding/compose.production.yaml config -q
+      - name: Manage isolated model service
+        env:
+          EMBEDDING_ACTION: ${{ inputs.operation }}
+          SERVER_HOST: ${{ secrets.SERVER_HOST }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_PORT: ${{ secrets.SERVER_PORT || 22 }}
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: bash deploy/embedding/upload.sh

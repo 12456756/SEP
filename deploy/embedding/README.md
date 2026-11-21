@@ -1,0 +1,24 @@
+# Independent Knowledge Embedding Service
+
+SEP application deployment never invokes this directory. This service has its own Compose project (`sep-embedding`), workflow (`Manage Embedding Service`), concurrency group, lock and data root (`/www/sep-embedding`). It shares only the existing private `sep-migration-net` network with SEP.
+
+The workflow is manual. Choose `install` for the initial recovery. It validates the existing backend profile/tokenizer and database structure without changing them, prepares pinned images, pulls the fixed BGE-M3 model, checks the manifest and weight SHA256, runs isolated inference tests and only then attaches the service to the application network. Backend/frontend container identities and startup times must remain unchanged.
+
+Choose `status` for read-only container information; it uploads no files. `verify` uses the installed probe for a small synthetic request. `stop` stops only Ollama and preserves all data. Successful installations are not reconfigured or upgraded by running `install` again. A partially completed install may resume only with identical deployment files and the ownership marker. Software/model upgrades require a separately reviewed procedure.
+
+No port is published. Initial limits are 4 CPUs, 8 GiB memory, one loaded model and one parallel request. Container health checks API availability, while the probe checks the exact model, finite nonzero 1024-dimensional output, batching, oversized input rejection and cold loading. These checks do not establish production throughput or complete knowledge-base authorization acceptance.
+
+If the candidate fails after network attachment, the installation script removes only its production network connection. It never restores an old database, rewrites model profiles, restarts application containers or prunes Docker. Keep `/www/sep-embedding/backups` evidence and model data for investigation.
+
+The deployment does not automatically retry customer documents or rebuild historical indexes. Use the platform's normal authorized retry workflow after the model service passes validation.
+
+Local checks (no production connection):
+
+```bash
+node --test deploy/embedding/verify-embedding.test.cjs
+bash -n deploy/embedding/manage.sh
+bash -n deploy/embedding/upload.sh
+bash deploy/embedding/test-upload.sh
+```
+
+Configuration and logs may be stored in the server evidence directory. Do not publish production environment files or user document content in Actions artifacts.

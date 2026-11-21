@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+SOURCE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+TEMP=$(mktemp -d)
+trap 'rm -rf "$TEMP"' EXIT
+mkdir -p "$TEMP/bin"
+export CALLS="$TEMP/calls"
+cat > "$TEMP/bin/mock" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+name=${0##*/}
+printf '%s %s\n' "$name" "$*" >> "$CALLS"
+if [[ "$name" == ssh ]]; then cat >> "$CALLS"; fi
+MOCK
+chmod +x "$TEMP/bin/mock"
+for name in ssh scp; do ln -s mock "$TEMP/bin/$name"; done
+export PATH="$TEMP/bin:$PATH"
+export GITHUB_SHA=9309ea6b09659538d06fdfae5f5edac3b047b4fb GITHUB_REPOSITORY=12456756/SEP GITHUB_REF=refs/heads/main
+export SERVER_HOST=121.37.128.126 SERVER_PORT=22 SERVER_USER=root SERVER_SSH_KEY=mock-only
+for action in status verify stop; do
+  : > "$CALLS"
+  EMBEDDING_ACTION="$action" bash "$SOURCE/upload.sh"
+  ! grep -q '^scp ' "$CALLS"
+  ! grep -q 'install -d\|tar -x\|docker pull' "$CALLS"
+done
+echo 'PASS: status/verify/stop do not upload or overwrite independent deployment files'
+: > "$CALLS"
+EMBEDDING_ACTION=install bash "$SOURCE/upload.sh"
+grep -q '^scp ' "$CALLS"
+grep -Fq '/www/sep-embedding/releases/' "$CALLS"
+grep -Fq 'sha256sum --check --status' "$CALLS"
+! grep -Fq '/www/sep/deploy' "$CALLS"
+echo 'PASS: install only transfers a checksummed model service bundle'
+for input in wrong-operation wrong-repository wrong-branch wrong-server; do
+  : > "$CALLS"
+  case "$input" in
+    wrong-operation) if EMBEDDING_ACTION=bad bash "$SOURCE/upload.sh"; then exit 1; fi ;;
+    wrong-repository) if GITHUB_REPOSITORY=other/repo bash "$SOURCE/upload.sh"; then exit 1; fi ;;
+    wrong-branch) if GITHUB_REF=refs/heads/test bash "$SOURCE/upload.sh"; then exit 1; fi ;;
+    wrong-server) if SERVER_HOST=127.0.0.1 bash "$SOURCE/upload.sh"; then exit 1; fi ;;
+  esac
+  [[ ! -s "$CALLS" ]]
+done
+echo 'PASS: invalid operations and targets fail before network activity'
