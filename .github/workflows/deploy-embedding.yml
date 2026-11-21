@@ -45,9 +45,14 @@ jobs:
         run: |
           bash -n deploy/embedding/manage.sh
           bash -n deploy/embedding/upload.sh
+          bash -n deploy/embedding/prepare-image-bundle.sh
           bash deploy/embedding/test-upload.sh
+          bash deploy/embedding/test-image-bundle.sh
           node --test deploy/embedding/verify-embedding.test.cjs deploy/embedding/quality-guard.test.cjs
           OLLAMA_IMAGE=ollama/ollama@sha256:$(printf '%064d' 0) PROBE_NODE_IMAGE=node@sha256:$(printf '%064d' 0) docker compose -f deploy/embedding/compose.yaml -f deploy/embedding/compose.production.yaml config -q
+      - name: Fetch official runtime images outside the server mirror
+        if: inputs.operation == 'install'
+        run: bash deploy/embedding/prepare-image-bundle.sh
       - name: Manage isolated model service
         env:
           EMBEDDING_ACTION: ${{ inputs.operation }}

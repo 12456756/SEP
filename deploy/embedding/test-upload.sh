@@ -3,6 +3,12 @@ set -Eeuo pipefail
 SOURCE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 TEMP=$(mktemp -d)
 trap 'rm -rf "$TEMP"' EXIT
+mkdir -p "$TEMP/deploy/embedding" "$TEMP/deploy/standalone"
+cp "$SOURCE/upload.sh" "$SOURCE/compose.yaml" "$SOURCE/compose.production.yaml" "$SOURCE/manage.sh" "$SOURCE/verify-embedding.cjs" "$TEMP/deploy/embedding/"
+printf 'mock non-secret image pins\n' > "$TEMP/deploy/embedding/.env"
+printf 'mock archive bytes\n' > "$TEMP/images.tar.gz"
+export IMAGE_ARCHIVE="$TEMP/images.tar.gz"
+SOURCE="$TEMP/deploy/embedding"
 mkdir -p "$TEMP/bin"
 export CALLS="$TEMP/calls"
 cat > "$TEMP/bin/mock" <<'MOCK'

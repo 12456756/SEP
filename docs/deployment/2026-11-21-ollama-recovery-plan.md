@@ -2,6 +2,8 @@
 
 日期：2026-11-21。状态：方案，尚未部署。适用服务器：`121.37.128.126`。
 
+实施调整（2026-11-21）：首次恢复经 Quality Gates 后在服务器拉取镜像时，既有 Docker 镜像加速站连续出现 TLS handshake timeout，尚未启动 Ollama。因此实际实现改为 Actions 从官方 Docker Hub 获取已核实的稳定版 `ollama/ollama:0.40.16` 与 Node 22，记录 registry digest / image ID，导出后通过校验的归档传输。服务器导入并核对 image ID，Compose 使用包含完整 image ID 的独立本地标签，加 `--pull never`，不再经服务器镜像站下载软件镜像，也不覆盖其他服务使用的通用标签。BGE-M3 仍由服务器从官方模型仓库下载，模型摘要和别名保持不变。下文第 5 节保留最初直接拉取方案用于对照，执行以 `deploy/embedding/prepare-image-bundle.sh`、`upload.sh` 和 `manage.sh` 的实现为准；不得直接照用旧候选版本进行重装。
+
 部署原则：模型服务与 SEP 应用独立管理。首次恢复后保持长期运行；SEP 日常发布只更新应用，不触发 Ollama 安装、模型下载、服务重建或模型升级。只有明确的模型服务维护任务才运行独立工作流。
 
 ## 1. 目标与历史依据

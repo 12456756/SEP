@@ -47,18 +47,23 @@ SEP_EMBEDDING_SHA="$sha" bash /www/sep-embedding/deploy/manage.sh "$action"
 EXISTING
   exit 0
 fi
-tar -czf "$TEMP/config.tar.gz" -C "$SOURCE" compose.yaml compose.production.yaml manage.sh verify-embedding.cjs
+IMAGE_ARCHIVE=${IMAGE_ARCHIVE:?Actions must prepare the official runtime image archive}
+[[ -s "$IMAGE_ARCHIVE" && -s "$SOURCE/.env" ]]
+tar -czf "$TEMP/config.tar.gz" -C "$SOURCE" .env compose.yaml compose.production.yaml manage.sh verify-embedding.cjs
 CHECKSUM=$(sha256sum "$TEMP/config.tar.gz" | awk '{print $1}')
+IMAGE_CHECKSUM=$(sha256sum "$IMAGE_ARCHIVE" | awk '{print $1}')
 REMOTE="/www/sep-embedding/releases/$GITHUB_SHA"
 ssh "${OPTIONS[@]}" "$SERVER_USER@$SERVER_HOST" install -d -m 700 "$REMOTE"
 scp "${OPTIONS[@]}" "$TEMP/config.tar.gz" "$SERVER_USER@$SERVER_HOST:$REMOTE/config.tar.gz"
-ssh "${OPTIONS[@]}" "$SERVER_USER@$SERVER_HOST" bash -s -- "$GITHUB_SHA" "$CHECKSUM" "$ACTION" <<'REMOTE_SCRIPT'
+timeout --signal=TERM --kill-after=15s 1200s scp "${OPTIONS[@]}" "$IMAGE_ARCHIVE" "$SERVER_USER@$SERVER_HOST:$REMOTE/model-images.tar.gz"
+ssh "${OPTIONS[@]}" "$SERVER_USER@$SERVER_HOST" bash -s -- "$GITHUB_SHA" "$CHECKSUM" "$IMAGE_CHECKSUM" "$ACTION" <<'REMOTE_SCRIPT'
 set -Eeuo pipefail
 umask 077
-sha=$1 checksum=$2 action=$3
+sha=$1 checksum=$2 image_checksum=$3 action=$4
 release="/www/sep-embedding/releases/$sha"
 printf '%s  %s\n' "$checksum" "$release/config.tar.gz" | sha256sum --check --status
+printf '%s  %s\n' "$image_checksum" "$release/model-images.tar.gz" | sha256sum --check --status
 install -d -m 700 "$release/source"
 tar -xzf "$release/config.tar.gz" -C "$release/source"
-SEP_EMBEDDING_SHA="$sha" bash "$release/source/manage.sh" "$action"
+SEP_EMBEDDING_SHA="$sha" SEP_EMBEDDING_RELEASE_DIR="$release" bash "$release/source/manage.sh" "$action"
 REMOTE_SCRIPT

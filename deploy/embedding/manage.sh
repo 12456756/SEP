@@ -8,6 +8,7 @@ DEPLOY=$ROOT/deploy
 STATE=$ROOT/state
 ACTION=${1:-status}
 RELEASE_SHA=${SEP_EMBEDDING_SHA:-}
+RELEASE_DIR=${SEP_EMBEDDING_RELEASE_DIR:-}
 PHASE=preflight
 CONNECTING=false
 FINISHED=false
@@ -98,26 +99,34 @@ fi
 [[ "$(cat "$STATE/owner")" == sep-embedding-v1 ]] || fail 'Unexpected storage owner marker'
 install -d -m 700 "$DEPLOY" "$ROOT/data"
 for file in compose.yaml compose.production.yaml verify-embedding.cjs manage.sh; do
-  if [[ -f "$DEPLOY/$file" ]]; then cmp "$SOURCE/$file" "$DEPLOY/$file" || fail "Existing installation configuration differs: $file";
-  else install -m 600 "$SOURCE/$file" "$DEPLOY/$file"; fi
+  if [[ -f "$DEPLOY/$file" ]]; then install -m 600 "$DEPLOY/$file" "$BACKUP/previous-$file"; fi
+  install -m 600 "$SOURCE/$file" "$DEPLOY/$file"
 done
 
 phase prepare-immutable-images
-if [[ ! -f "$DEPLOY/.env" ]]; then
-  timeout --signal=TERM --kill-after=15s 900s docker pull ollama/ollama:0.33.1
-  timeout --signal=TERM --kill-after=15s 600s docker pull node:22-bookworm-slim
-  OLLAMA_PIN=$(docker image inspect ollama/ollama:0.33.1 --format '{{index .RepoDigests 0}}')
-  NODE_PIN=$(docker image inspect node:22-bookworm-slim --format '{{index .RepoDigests 0}}')
-  [[ "$OLLAMA_PIN" =~ ^ollama/ollama@sha256:[a-f0-9]{64}$ && "$NODE_PIN" =~ ^node@sha256:[a-f0-9]{64}$ ]] || fail 'Cannot determine immutable image digests'
-  printf 'OLLAMA_IMAGE=%s\nPROBE_NODE_IMAGE=%s\n' "$OLLAMA_PIN" "$NODE_PIN" > "$DEPLOY/.env.tmp"
-  mv "$DEPLOY/.env.tmp" "$DEPLOY/.env"
-fi
-grep -Eq '^OLLAMA_IMAGE=ollama/ollama@sha256:[a-f0-9]{64}$' "$DEPLOY/.env"
-grep -Eq '^PROBE_NODE_IMAGE=node@sha256:[a-f0-9]{64}$' "$DEPLOY/.env"
+[[ "$RELEASE_DIR" == "$ROOT/releases/$RELEASE_SHA" ]] || fail 'Unexpected image archive directory'
+[[ -s "$SOURCE/.env" && -s "$RELEASE_DIR/model-images.tar.gz" ]] || fail 'Verified runtime bundle missing'
+for key in OLLAMA_IMAGE_ID PROBE_NODE_IMAGE_ID; do
+  grep -Eq "^$key=sha256:[a-f0-9]{64}$" "$SOURCE/.env" || fail 'Invalid image ID'
+done
+grep -Eq '^OLLAMA_IMAGE=sep-embedding/ollama:0\.40\.16-[a-f0-9]{64}$' "$SOURCE/.env"
+grep -Eq '^PROBE_NODE_IMAGE=sep-embedding/probe:22-[a-f0-9]{64}$' "$SOURCE/.env"
+grep -Eq '^OLLAMA_SOURCE_DIGEST=ollama/ollama@sha256:[a-f0-9]{64}$' "$SOURCE/.env"
+grep -Eq '^PROBE_NODE_SOURCE_DIGEST=node@sha256:[a-f0-9]{64}$' "$SOURCE/.env"
+OLLAMA_ID=$(awk -F= '$1=="OLLAMA_IMAGE_ID"{print $2}' "$SOURCE/.env")
+NODE_ID=$(awk -F= '$1=="PROBE_NODE_IMAGE_ID"{print $2}' "$SOURCE/.env")
+OLLAMA_IMAGE=$(awk -F= '$1=="OLLAMA_IMAGE"{print $2}' "$SOURCE/.env")
+NODE_IMAGE=$(awk -F= '$1=="PROBE_NODE_IMAGE"{print $2}' "$SOURCE/.env")
+[[ "$OLLAMA_IMAGE" == "sep-embedding/ollama:0.40.16-${OLLAMA_ID#sha256:}" && "$NODE_IMAGE" == "sep-embedding/probe:22-${NODE_ID#sha256:}" ]] || fail 'Image tag does not match its content ID'
+docker load --input "$RELEASE_DIR/model-images.tar.gz"
+[[ "$(docker image inspect "$OLLAMA_IMAGE" --format '{{.Id}}')" == "$OLLAMA_ID" ]] || fail 'Ollama image ID mismatch'
+[[ "$(docker image inspect "$NODE_IMAGE" --format '{{.Id}}')" == "$NODE_ID" ]] || fail 'Probe image ID mismatch'
+install -m 600 "$SOURCE/.env" "$BACKUP/registry-images.env"
+printf 'OLLAMA_IMAGE=%s\nPROBE_NODE_IMAGE=%s\n' "$OLLAMA_IMAGE" "$NODE_IMAGE" > "$DEPLOY/.env"
 stage_compose config -q
 production_compose config -q
 phase start-isolated-service
-stage_compose up -d --no-deps ollama
+stage_compose up -d --pull never --no-deps ollama
 for attempt in $(seq 1 60); do
   [[ "$(docker inspect sep-ollama --format '{{.State.Health.Status}}')" != healthy ]] || break
   sleep 3
@@ -127,17 +136,17 @@ done
 
 phase download-and-verify-model
 timeout --signal=TERM --kill-after=15s 1800s docker exec sep-ollama ollama pull bge-m3:567m-fp16
-stage_compose run --rm -T --no-deps probe - source < "$SOURCE/verify-embedding.cjs"
+stage_compose run --rm --pull never -T --no-deps probe - source < "$SOURCE/verify-embedding.cjs"
 printf '%s  %s\n' "$WEIGHT" "$ROOT/data/models/blobs/sha256-$WEIGHT" | sha256sum --check
 docker exec sep-ollama ollama cp bge-m3:567m-fp16 "$MODEL"
 phase isolated-inference-validation
-stage_compose run --rm -T --no-deps probe - full < "$SOURCE/verify-embedding.cjs" | tee "$BACKUP/isolated-verification.jsonl"
+stage_compose run --rm --pull never -T --no-deps probe - full < "$SOURCE/verify-embedding.cjs" | tee "$BACKUP/isolated-verification.jsonl"
 [[ "$(docker inspect sep-ollama --format '{{.State.OOMKilled}} {{.RestartCount}}')" == 'false 0' ]] || fail 'Model service restarted or ran out of memory'
 
 phase attach-production-network
 [[ "$(cat /www/sep/.deploy/active-release)" == "$APP_SHA" ]] || fail 'Application release changed during preparation; retry later'
 CONNECTING=true
-production_compose up -d --no-deps ollama
+production_compose up -d --pull never --no-deps ollama
 for attempt in $(seq 1 60); do
   [[ "$(docker inspect sep-ollama --format '{{.State.Health.Status}}')" != healthy ]] || break
   sleep 3
