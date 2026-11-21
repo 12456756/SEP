@@ -8,6 +8,8 @@ Choose `status` for read-only container information; it uploads no files. `verif
 
 No port is published. Initial limits are 4 CPUs, 8 GiB memory, one loaded model and one parallel request. Container health checks API availability, while the probe checks the exact model, finite nonzero 1024-dimensional output, batching, oversized input rejection and cold loading. These checks do not establish production throughput or complete knowledge-base authorization acceptance.
 
+The server's virtual CPU does not expose AVX/AVX2; the stock 0.40.16 inference runner raised SIGILL during isolated validation. `Dockerfile.cpu` retains the official Ollama server binary but rebuilds its pinned official llama.cpp-compatible runner for baseline x86-64 without AVX/FMA/F16C. The runtime is CPU-only and includes OpenBLAS. Both upstream source commits, build flags and the resulting image ID are recorded. Model weights and digest remain unchanged; deployment tests the resulting runner before production attachment.
+
 If the candidate fails after network attachment, the installation script removes only its production network connection. It never restores an old database, rewrites model profiles, restarts application containers or prunes Docker. Keep `/www/sep-embedding/backups` evidence and model data for investigation.
 
 The deployment does not automatically retry customer documents or rebuild historical indexes. Use the platform's normal authorized retry workflow after the model service passes validation.

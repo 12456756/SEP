@@ -70,6 +70,7 @@ if [[ "$ACTION" == verify || -f "$STATE/active-release" ]]; then
 fi
 
 phase validate-baseline
+info "CPU flags: $(awk -F: '/^flags/ {print $2; exit}' /proc/cpuinfo)"
 docker network inspect sep-migration-net >/dev/null
 for name in sep-green-backend sep-green-web sep-postgres sep-redis; do
   [[ "$(docker inspect "$name" --format '{{.State.Health.Status}}')" == healthy ]] || fail "Unhealthy baseline container: $name"
@@ -109,7 +110,7 @@ phase prepare-immutable-images
 for key in OLLAMA_IMAGE_ID PROBE_NODE_IMAGE_ID; do
   grep -Eq "^$key=sha256:[a-f0-9]{64}$" "$SOURCE/.env" || fail 'Invalid image ID'
 done
-grep -Eq '^OLLAMA_IMAGE=sep-embedding/ollama:0\.40\.16-[a-f0-9]{64}$' "$SOURCE/.env"
+grep -Eq '^OLLAMA_IMAGE=sep-embedding/ollama-cpu:0\.40\.16-[a-f0-9]{64}$' "$SOURCE/.env"
 grep -Eq '^PROBE_NODE_IMAGE=sep-embedding/probe:22-[a-f0-9]{64}$' "$SOURCE/.env"
 grep -Eq '^OLLAMA_SOURCE_DIGEST=ollama/ollama@sha256:[a-f0-9]{64}$' "$SOURCE/.env"
 grep -Eq '^PROBE_NODE_SOURCE_DIGEST=node@sha256:[a-f0-9]{64}$' "$SOURCE/.env"
@@ -117,7 +118,7 @@ OLLAMA_ID=$(awk -F= '$1=="OLLAMA_IMAGE_ID"{print $2}' "$SOURCE/.env")
 NODE_ID=$(awk -F= '$1=="PROBE_NODE_IMAGE_ID"{print $2}' "$SOURCE/.env")
 OLLAMA_IMAGE=$(awk -F= '$1=="OLLAMA_IMAGE"{print $2}' "$SOURCE/.env")
 NODE_IMAGE=$(awk -F= '$1=="PROBE_NODE_IMAGE"{print $2}' "$SOURCE/.env")
-[[ "$OLLAMA_IMAGE" == "sep-embedding/ollama:0.40.16-${OLLAMA_ID#sha256:}" && "$NODE_IMAGE" == "sep-embedding/probe:22-${NODE_ID#sha256:}" ]] || fail 'Image tag does not match its content ID'
+[[ "$OLLAMA_IMAGE" == "sep-embedding/ollama-cpu:0.40.16-${OLLAMA_ID#sha256:}" && "$NODE_IMAGE" == "sep-embedding/probe:22-${NODE_ID#sha256:}" ]] || fail 'Image tag does not match its content ID'
 docker load --input "$RELEASE_DIR/model-images.tar.gz"
 [[ "$(docker image inspect "$OLLAMA_IMAGE" --format '{{.Id}}')" == "$OLLAMA_ID" ]] || fail 'Ollama image ID mismatch'
 [[ "$(docker image inspect "$NODE_IMAGE" --format '{{.Id}}')" == "$NODE_ID" ]] || fail 'Probe image ID mismatch'

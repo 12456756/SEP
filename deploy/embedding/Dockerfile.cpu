@@ -1,0 +1,35 @@
+ARG OLLAMA_BASE_IMAGE
+FROM ${OLLAMA_BASE_IMAGE} AS official
+
+FROM ubuntu:24.04 AS builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl git g++ cmake ninja-build libopenblas-dev && \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+RUN curl --fail --location --retry 3 https://codeload.github.com/ollama/ollama/tar.gz/d63b702609c4300a2ca07be2bdb0adb9834725e5 | tar -xz --strip-components=1 && \
+    mkdir /llama-cpp && \
+    curl --fail --location --retry 3 https://codeload.github.com/ggml-org/llama.cpp/tar.gz/6c01da6278ab6c69ed67d9124806b50d2b299ba7 | tar -xz --strip-components=1 -C /llama-cpp
+RUN cmake -S llama/server --preset cpu -G Ninja \
+    -DFETCHCONTENT_SOURCE_DIR_LLAMA_CPP=/llama-cpp \
+    -DGGML_CPU_ALL_VARIANTS=OFF -DGGML_NATIVE=OFF \
+    -DGGML_AVX=OFF -DGGML_AVX2=OFF -DGGML_AVX512=OFF \
+    -DGGML_FMA=OFF -DGGML_F16C=OFF -DGGML_BMI2=OFF \
+    -DGGML_SSE42=OFF -DGGML_AVX_VNNI=OFF \
+    -DGGML_BLAS=ON -DGGML_BLAS_VENDOR=OpenBLAS \
+    -DCMAKE_C_FLAGS='-march=x86-64 -mtune=generic' \
+    -DCMAKE_CXX_FLAGS='-march=x86-64 -mtune=generic' && \
+    cmake --build build/llama-server-cpu --target llama-server llama-quantize --parallel 2 && \
+    cmake --install build/llama-server-cpu --component llama-server --strip
+
+FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libstdc++6 libopenblas0-pthread && \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=official /usr/bin/ollama /usr/bin/ollama
+COPY --from=builder /src/dist/lib/ollama /usr/lib/ollama
+ENV OLLAMA_HOST=0.0.0.0:11434 OLLAMA_VULKAN=0 OLLAMA_NO_CLOUD=1 OPENBLAS_NUM_THREADS=4
+LABEL org.opencontainers.image.source="https://github.com/12456756/SEP" \
+    sep.ollama.source="d63b702609c4300a2ca07be2bdb0adb9834725e5" \
+    sep.llama.source="6c01da6278ab6c69ed67d9124806b50d2b299ba7" \
+    sep.cpu.baseline="x86-64-no-avx"
+ENTRYPOINT ["/usr/bin/ollama"]
+CMD ["serve"]

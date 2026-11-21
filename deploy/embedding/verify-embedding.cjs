@@ -61,7 +61,10 @@ async function verify({ mode = 'full', fetch = globalThis.fetch, log = console.l
   }
   async function check(input) {
     const { response, elapsedMs } = await request(input);
-    assert.ok(response.ok, `Embedding returned HTTP ${response.status}`);
+    if (!response.ok) {
+      const detail = (await response.text()).slice(0,2000);
+      throw new Error(`Embedding returned HTTP ${response.status}: ${detail}`);
+    }
     const count = Array.isArray(input) ? input.length : 1;
     validateEmbeddings(await response.json(), count);
     log(JSON.stringify({ check: 'embedding', count, dimension: 1024, elapsedMs, status: 'passed' }));
