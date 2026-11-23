@@ -108,11 +108,13 @@ describe('EnterpriseShell 导航角色过滤', () => {
     expect(screen.getByText('示')).toBeInTheDocument();
   });
 
-  it('没有企业 Logo 时不使用平台图片', () => {
+  it.each([null, '', '   '])('企业 Logo 为 %s 时使用平台 Logo 并保留企业名称', (logo) => {
     setRole('MEMBER');
+    enterpriseInfo.logo = logo;
     const { container } = renderShell();
-    expect(screen.getByText('示')).toBeInTheDocument();
-    expect(container.querySelector('img[src="/logo-light.png"]')).toBeNull();
+    expect(screen.queryByText('示')).not.toBeInTheDocument();
+    expect(container.querySelector('img[src="/yuanji-A-icon.svg"]')).toHaveAttribute('width', '32');
+    expect(screen.getByText('示例科技')).toBeInTheDocument();
   });
 
   it('企业管理员能看到「组织」组的部门与碳基员工', () => {

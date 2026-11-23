@@ -27,6 +27,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { Avatar } from '@/components/ui/avatar';
+import { ThemeLogo } from '@/components/ui/theme-logo';
 import { Button } from '@/components/ui/button';
 import { StatusDot } from '@/components/ui/status-dot';
 import { AuroraBackground } from '@/components/ui/aurora-background';
@@ -247,7 +248,11 @@ export function EnterpriseShell({ children }: { children: React.ReactNode }) {
         {/* Logo 区域 - 固定 64px 高度，与顶栏对齐 */}
         <div className="flex h-16 shrink-0 items-center justify-between border-b border-glassline px-5">
           <div className="flex items-center gap-2 overflow-hidden">
-            <Avatar name={enterpriseInfo?.name ?? enterprise?.name} src={enterpriseInfo?.logo} className="h-8 w-8 shrink-0 rounded-md object-contain" />
+            {enterpriseInfo?.logo?.trim() ? (
+              <Avatar name={enterpriseInfo?.name ?? enterprise?.name} src={enterpriseInfo.logo} className="h-8 w-8 shrink-0 rounded-md object-contain" />
+            ) : (
+              <ThemeLogo width={32} height={32} className="rounded-md" />
+            )}
             {/* 显示企业名而非平台名；数据尚未加载时保持留白，避免伪装成平台 Logo 文案 */}
             {!collapsed && enterprise?.name && (
               <p className="min-w-0 flex-1 truncate text-sm font-semibold text-gtext-primary">

@@ -6,6 +6,7 @@ import { useEnterpriseInfo, useUploadEnterpriseLogo } from '@/features/enterpris
 import { useEnterpriseSetting } from '@/features/enterprise-settings/use-enterprise-settings';
 import { useAuthStore } from '@/lib/auth-store';
 import { Avatar } from '@/components/ui/avatar';
+import { ThemeLogo } from '@/components/ui/theme-logo';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { CenteredSpinner } from '@/components/ui/feedback';
@@ -57,7 +58,11 @@ export default function OrganizationPage() {
         </CardHeader>
         <CardContent>
           <div className="flex flex-wrap items-center gap-5">
-            <Avatar name={enterprise?.name} src={enterprise?.logo} className="h-20 w-20 shrink-0 rounded-xl border border-border bg-background object-contain text-2xl" />
+            {enterprise?.logo?.trim() ? (
+              <Avatar name={enterprise.name} src={enterprise.logo} className="h-20 w-20 shrink-0 rounded-xl border border-border bg-background object-contain text-2xl" />
+            ) : (
+              <ThemeLogo width={80} height={80} className="rounded-xl border border-border bg-background" />
+            )}
             <div className="space-y-2">
               {isAdmin ? (
                 <>

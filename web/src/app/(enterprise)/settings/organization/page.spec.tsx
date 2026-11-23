@@ -28,6 +28,14 @@ beforeEach(() => {
 });
 
 describe('企业 Logo 设置', () => {
+  it.each([null, '', '   '])('企业 Logo 为 %s 时展示平台 Logo，仍可上传企业 Logo', async (logo) => {
+    mocks.get.mockResolvedValue({ ...enterprise, logo });
+    const { container } = setup();
+    await screen.findByLabelText('选择企业 Logo');
+    expect(container.querySelector('img[src="/yuanji-A-icon.svg"]')).toHaveAttribute('width', '80');
+    expect(screen.queryByText('示')).not.toBeInTheDocument();
+  });
+
   it('上传完成后刷新共享企业数据，无需刷新页面', async () => {
     mocks.upload.mockImplementation(async () => {
       mocks.get.mockResolvedValue({ ...enterprise, logo: '/api/enterprise/logo/images/new.png' });
