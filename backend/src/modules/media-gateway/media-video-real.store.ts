@@ -1,7 +1,7 @@
 import { HttpException, Injectable } from '@nestjs/common';
 import { Prisma, type MediaGatewayRequest } from '@prisma/client';
 import { z } from 'zod';
-import { MAX_MEDIA_REFERENCE_COUNT, MediaReferenceCountSchema } from 'shared';
+import { MAX_MEDIA_REFERENCE_COUNT, MediaReferenceCountSchema, MediaVideoInputReferenceSchema, MediaVideoOperationSchema, VIDEO_INPUT_MAX_COUNT } from 'shared';
 import { MediaVideoParametersSchema, MediaConfigVersionV3Schema, MediaProfileIdV3Schema, MediaVideoSpecV3Schema, MediaVideoAuthorizationSchema,
   MediaVideoRealQuoteBaseSchema, MediaVideoRealQuoteV3Schema, MediaVideoRealQuoteSchema, MediaVideoRealReceiptSchema, MediaVideoRealReferenceSchema } from 'shared';
 import type { MediaVideoRealQuote, MediaVideoRealReceipt, MediaVideoRealReference } from 'shared';
@@ -22,9 +22,13 @@ const LegacyFrozenSchema = z.object({
 }).strict();
 const V3FrozenSchema = z.object({
   maxReferenceCount: MediaReferenceCountSchema.optional(),
+  maxVideoReferenceCount: z.number().int().min(1).max(VIDEO_INPUT_MAX_COUNT).optional(),
+  videoReferences: z.array(MediaVideoInputReferenceSchema.extend({
+    upstreamReferenceId: z.string().regex(/^vref_[a-f0-9]{32}$/),
+  }).strict()).max(VIDEO_INPUT_MAX_COUNT).optional(),
   adapter: z.literal(VIDEO_REAL_ADAPTER), protocolVersion: z.literal(3), semanticHashVersion: z.literal(3),
   specRevision: z.number().int().positive(), profileId: MediaProfileIdV3Schema, configVersion: MediaConfigVersionV3Schema,
-  modelId: z.string().trim().min(1).max(160), operation: z.enum(['text-to-video', 'image-to-video']),
+  modelId: z.string().trim().min(1).max(160), operation: MediaVideoOperationSchema,
   requestedSpec: MediaVideoSpecV3Schema, effectiveSpec: MediaVideoSpecV3Schema,
   parameterSources: z.record(z.string(), z.union([
     z.enum(['user', 'model', 'upstream']),
@@ -44,6 +48,12 @@ const QuoteSchema = z.object({
 const ReferenceSchema = z.object({
   adapter: z.literal(VIDEO_REAL_ADAPTER), value: MediaVideoRealReferenceSchema.omit({ referenceId: true }),
 }).strict();
+const VIDEO_INPUT_ADAPTER = 'sub2api-video-reference-v1';
+const VideoInputMetadataSchema = z.object({
+  adapter: z.literal(VIDEO_INPUT_ADAPTER), value: MediaVideoInputReferenceSchema.omit({ referenceId: true }),
+  upstreamReferenceId: z.string().regex(/^vref_[a-f0-9]{32}$/), connectionFingerprint: hash,
+}).strict();
+export type VideoInputMetadata = z.infer<typeof VideoInputMetadataSchema>;
 const DispatchSchema = z.object({
   quoteId: id,
   upstreamTaskId: z.string().regex(/^[A-Za-z0-9_.-]{1,256}$/).nullable(),
@@ -74,6 +84,24 @@ const retryable = (e: unknown, code: string) => e instanceof Prisma.PrismaClient
 @Injectable()
 export class MediaVideoRealStore {
   constructor(private readonly prisma: PrismaService) {}
+
+  async saveVideoReference(scope: string, input: Omit<VideoInputMetadata, 'adapter'>) {
+    return this.safe(async () => {
+      const metadata = VideoInputMetadataSchema.parse({ ...input, adapter: VIDEO_INPUT_ADAPTER });
+      const row = await this.prisma.mediaGatewayReference.create({ data: { scope, metadata, expiresAt: new Date(metadata.value.expiresAt) } });
+      return MediaVideoInputReferenceSchema.parse({ ...metadata.value, referenceId: row.id });
+    });
+  }
+
+  async findVideoReference(scope: string, referenceId: string) {
+    return this.safe(async () => {
+      const row = await this.prisma.mediaGatewayReference.findUnique({ where: { id: referenceId } });
+      if (!row || row.scope !== scope || (row.metadata as { adapter?: string })?.adapter !== VIDEO_INPUT_ADAPTER) return null;
+      const metadata = VideoInputMetadataSchema.parse(row.metadata);
+      if (row.expiresAt.getTime() !== Date.parse(metadata.value.expiresAt)) videoStorageUnavailable();
+      return { ...metadata, value: MediaVideoInputReferenceSchema.parse({ ...metadata.value, referenceId: row.id }) };
+    });
+  }
 
   async saveReference(scope: string, value: Omit<MediaVideoRealReference, 'referenceId'>): Promise<MediaVideoRealReference> {
     return this.safe(async () => {
@@ -249,14 +277,25 @@ export class MediaVideoRealStore {
   }
 
   private validReferenceCount(configuration: VideoRealFrozenConfiguration, count: number): boolean {
+    if (configuration.operation === 'video-to-video') return 'protocolVersion' in configuration
+      && count >= 1 && count <= (configuration.maxVideoReferenceCount ?? 0) && count === configuration.videoReferences?.length;
     if (configuration.operation !== 'image-to-video') return count === 0;
     const maximum = 'protocolVersion' in configuration ? configuration.maxReferenceCount ?? 1 : 1;
     return count >= 1 && count <= maximum;
   }
 
+  private validVideoReferences(configuration: VideoRealFrozenConfiguration, ids: string[], hashes: string[]): boolean {
+    if (!('protocolVersion' in configuration)) return true;
+    const references = configuration.videoReferences ?? [];
+    if (configuration.operation !== 'video-to-video') return references.length === 0;
+    return new Set(ids).size === ids.length && references.every((reference, index) => reference.referenceId === ids[index]
+      && reference.sha256 === hashes[index] && reference.profileId === configuration.profileId && reference.configVersion === configuration.configVersion);
+  }
+
   private quoteMetadata(value: unknown): VideoRealQuoteMetadata {
     const meta = QuoteSchema.parse(value);
     if (meta.referenceIds.length !== meta.referenceHashes.length || !this.validReferenceCount(meta.configuration, meta.referenceIds.length) ||
+      !this.validVideoReferences(meta.configuration, meta.referenceIds, meta.referenceHashes) ||
       meta.value.amountCny !== meta.configuration.amountCny || meta.value.amountUsd !== meta.configuration.amountUsd ||
       meta.value.pricingVersion !== meta.configuration.pricingVersion || meta.value.usdToCnyRate !== meta.configuration.usdToCnyRate) videoStorageUnavailable();
     return meta;
@@ -268,6 +307,7 @@ export class MediaVideoRealStore {
     if (receipt.status !== row.status || receipt.clientRequestId !== row.clientRequestId || receipt.profileId !== configuration.profileId ||
       receipt.configVersion !== configuration.configVersion || receipt.operation !== configuration.operation ||
       receipt.amountCny !== configuration.amountCny || row.count !== 1 || !this.validReferenceCount(configuration, row.referenceIds.length) ||
+      !this.validVideoReferences(configuration, row.referenceIds, row.referenceHashes) ||
       row.referenceHashes.length !== row.referenceIds.length || row.revision < 0) videoStorageUnavailable();
     hash.parse(row.semanticSha256); z.array(id).parse(row.referenceIds); z.array(hash).parse(row.referenceHashes);
     return { enterpriseId: row.enterpriseId, clientRequestId: row.clientRequestId, scope: row.scope,

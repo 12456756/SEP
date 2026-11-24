@@ -6,6 +6,10 @@ export const IMAGE_REFERENCE_MAX_COUNT = MAX_MEDIA_REFERENCE_COUNT;
 export const IMAGE_REFERENCE_DEFAULT_COUNT = 4;
 export const IMAGE_REFERENCE_MAX_BYTES = 5 * 1024 * 1024;
 export const VIDEO_REFERENCE_MAX_BYTES = 10 * 1024 * 1024;
+export const VIDEO_INPUT_MAX_BYTES = 90 * 1024 * 1024;
+export const VIDEO_INPUT_REQUEST_MAX_BYTES = 92 * 1024 * 1024;
+export const VIDEO_INPUT_MAX_COUNT = 10;
+export const VIDEO_INPUT_MIME_TYPES = ['video/mp4', 'video/quicktime'] as const;
 export const VIDEO_OUTPUT_FORMAT = 'video/mp4';
 
 export function effectiveImageLimits(capabilities: { maxOutputs?: number; supportsReferenceImage?: boolean; maxReferenceCount?: number }) {
@@ -18,8 +22,8 @@ export function effectiveImageLimits(capabilities: { maxOutputs?: number; suppor
 
 const FieldSchema = z.string().regex(/^[a-zA-Z][a-zA-Z0-9]*$/).max(80);
 const ValueSchema = z.union([z.string().min(1).max(160), z.number().finite(), z.boolean()]);
-export const MediaRuntimeOperationSchema = z.enum(['generate', 'edit', 'text-to-video', 'image-to-video']);
-const OperationsSchema = z.array(MediaRuntimeOperationSchema).min(1).max(4);
+export const MediaRuntimeOperationSchema = z.enum(['generate', 'edit', 'text-to-video', 'image-to-video', 'video-to-video']);
+const OperationsSchema = z.array(MediaRuntimeOperationSchema).min(1).max(5);
 
 export const MediaParameterSchema = z.object({
   label: z.string().min(1).max(80), type: z.enum(['string', 'integer', 'number', 'boolean']),

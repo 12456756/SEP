@@ -1,9 +1,10 @@
 import { HttpException, Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
+import { openAsBlob } from 'node:fs';
 import { z } from 'zod';
 import { MediaUpstreamException, mediaFailure, mediaDispatchFailure, readMediaUpstreamError, protectMediaCredential } from '../../common/errors/media-upstream.exception';
 import type { MediaUpstreamError } from 'shared';
-import { MediaJsonValueSchema, MediaVideoUsdSchema, VIDEO_OUTPUT_FORMAT, VIDEO_REFERENCE_MAX_BYTES } from 'shared';
+import { MediaJsonValueSchema, MediaVideoUsdSchema, MediaVideoOperationSchema, VIDEO_INPUT_MAX_COUNT, VIDEO_INPUT_MAX_BYTES, VIDEO_INPUT_MIME_TYPES, VIDEO_OUTPUT_FORMAT, VIDEO_REFERENCE_MAX_BYTES } from 'shared';
 import { MediaVideoGatewayQuoteRequestSchema, MediaVideoGatewayQuoteRequestV3Schema,
   type MediaVideoGatewayQuoteRequest, type MediaVideoGatewayQuoteRequestV3 } from 'shared';
 import { SettingService } from '../setting/setting.service';
@@ -23,7 +24,7 @@ const TaskSchema = z.object({
 });
 const PricingSchema = z.object({
   object: z.literal('sub2api.video_pricing'), schema_version: z.literal(1), currency: z.literal('USD'),
-  model: ModelIdSchema, operation: z.enum(['text-to-video', 'image-to-video']),
+  model: ModelIdSchema, operation: MediaVideoOperationSchema,
   resolution: z.string().min(1).max(128), duration_seconds: z.number().int().positive().safe(),
   billing_mode: z.enum(['video', 'per_request']), pricing_status: z.enum(['quoted', 'unavailable']),
   pricing_source: z.string().trim().min(1).max(128), pricing_authority: z.literal('sub2api_customer_billing'),
@@ -139,18 +140,24 @@ export class Sub2apiVideoAdapter {
   }
 
   async submit(connection: Sub2apiVideoConnection, input: Sub2apiVideoInput, modelId: string,
-    references: Buffer[], clientRequestId: string, pricingVersion: string): Promise<{ taskId: string; requestId: string; status: Sub2apiVideoTask['status']; error?: Sub2apiVideoTask['error'] }> {
+    references: Buffer[], clientRequestId: string, pricingVersion: string, videoReferenceIds: string[] = []): Promise<{ taskId: string; requestId: string; status: Sub2apiVideoTask['status']; error?: Sub2apiVideoTask['error'] }> {
     this.assertInput(input, modelId);
     if (!/^[a-zA-Z0-9_-]{1,128}$/.test(clientRequestId)) unavailable('INVALID_REQUEST');
     if (references.length !== input.referenceIds.length) unavailable('INVALID_REFERENCE');
+    if (input.operation === 'video-to-video') {
+      if (!('protocolVersion' in input) || references.length || !videoReferenceIds.length
+        || videoReferenceIds.length !== input.videoReferenceIds?.length || videoReferenceIds.length > VIDEO_INPUT_MAX_COUNT
+        || videoReferenceIds.some(id => !/^vref_[a-f0-9]{32}$/.test(id))) unavailable('INVALID_REFERENCE');
+    } else if (videoReferenceIds.length) unavailable('INVALID_REFERENCE');
     if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(pricingVersion ?? '')) unavailable('PRICE_UNAVAILABLE');
     const fields = this.submitFields(input, modelId);
     let body: BodyInit;
     const headers: Record<string, string> = { 'X-Client-Request-ID': clientRequestId, 'Idempotency-Key': clientRequestId,
       'X-Video-Pricing-Version': pricingVersion, 'X-Video-Operation': input.operation };
-    if (input.operation === 'text-to-video') {
+    if (input.operation === 'text-to-video' || input.operation === 'video-to-video') {
       headers['Content-Type'] = 'application/json';
-      body = JSON.stringify(fields);
+      body = JSON.stringify({ ...fields, ...(input.operation === 'video-to-video' ? { metadata: { content:
+        videoReferenceIds.map(reference_id => ({ type: 'video_url', video_url: { reference_id }, role: 'reference_video' })) } } : {}) });
     } else {
       const form = new FormData();
       for (const [index, bytes] of references.entries()) {
@@ -170,6 +177,33 @@ export class Sub2apiVideoAdapter {
           origin: 'sep', stage: 'submit-validation', details: task.success ? sanitizeError(task.data) : sanitizeError(task.error.issues) } } });
     return { taskId: task.data.id, requestId: result.requestId, status: task.data.status,
       ...(task.data.error !== undefined ? { error: protectMediaCredential({ status: 200, body: task.data.error }, connection.key).body } : {}) };
+  }
+
+  async uploadReference(connection: Sub2apiVideoConnection, file: { path: string; mimeType: string; byteLength: number }, signal?: AbortSignal) {
+    const body = new FormData();
+    let blob: Blob;
+    try { blob = await openAsBlob(file.path, { type: file.mimeType }); }
+    catch (error) {
+      throw new HttpException({ error: { code: 'MEDIA_STORAGE_UNAVAILABLE', message: '无法读取待转交的参考视频',
+        origin: 'sep', stage: 'upload', details: sanitizeError(error, [connection.key]) } }, 503);
+    }
+    if (blob.size !== file.byteLength || blob.size < 1 || blob.size > VIDEO_INPUT_MAX_BYTES) {
+      throw new HttpException({ error: { code: 'INVALID_REFERENCE', message: '参考视频大小发生变化', origin: 'sep', stage: 'inspect' } }, 400);
+    }
+    body.append('file', blob, file.mimeType === 'video/quicktime' ? 'reference.mov' : 'reference.mp4');
+    const result = await this.json(connection, '/videos/references', { method: 'POST', body, signal }, 'INVALID_VIDEO_REFERENCE', 64 * 1024, false, false, true);
+    const parsed = z.object({
+      reference_id: z.string().regex(/^vref_[a-f0-9]{32}$/), content_type: z.enum(VIDEO_INPUT_MIME_TYPES),
+      size_bytes: z.number().int().positive().max(VIDEO_INPUT_MAX_BYTES), expires_at: z.string().datetime({ offset: true }),
+    }).strict().safeParse(result.value);
+    if (result.status !== 201 || !parsed.success || parsed.data.content_type !== file.mimeType
+      || parsed.data.size_bytes !== file.byteLength || Date.parse(parsed.data.expires_at) <= Date.now()
+      || Date.parse(parsed.data.expires_at) > Date.now() + 7 * 86_400_000 + 5000) {
+      throw new HttpException({ error: { code: 'INVALID_VIDEO_REFERENCE_RESPONSE', message: '算力平台参考视频上传回执与文件或有效期不一致',
+        origin: 'sep', stage: 'upload-validation', computeStatus: result.status,
+        details: parsed.success ? parsed.data : sanitizeError(parsed.error.issues) } }, 502);
+    }
+    return parsed.data;
   }
 
   async query(connection: Sub2apiVideoConnection, taskId: string, modelId: string): Promise<Sub2apiVideoTask> {
@@ -291,15 +325,16 @@ export class Sub2apiVideoAdapter {
     const headers = new Headers(options.headers);
     headers.set('Authorization', `Bearer ${connection.key}`);
     if (!headers.has('Accept')) headers.set('Accept', 'application/json');
-    return fetch(connection.base + path, { ...options, headers, redirect: 'error', signal: AbortSignal.timeout(timeout) });
+    return fetch(connection.base + path, { ...options, headers, redirect: 'error',
+      signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout) });
   }
 
   private async json(connection: Sub2apiVideoConnection, path: string, options: RequestInit,
-    code = 'PRICE_UNAVAILABLE', maxBytes = 64 * 1024, dispatch = false, v3Dispatch = false): Promise<{ value: unknown; requestId: string | null }> {
+    code = 'PRICE_UNAVAILABLE', maxBytes = 64 * 1024, dispatch = false, v3Dispatch = false, upload = false): Promise<{ value: unknown; requestId: string | null; status: number }> {
     let requestId: string | null = null;
     let response: Response;
     try {
-      response = await this.fetch(connection, path, options, dispatch ? 180_000 : 15_000);
+      response = await this.fetch(connection, path, options, upload ? 240_000 : dispatch ? 180_000 : 15_000);
       // The middleware creates its own correlation ID; the supplier's X-Request-ID is unrelated.
       const clientId = response.headers.get('x-client-request-id');
       if (clientId && RequestIdSchema.safeParse(`client:${clientId}`).success) requestId = `client:${clientId}`;
@@ -335,12 +370,15 @@ export class Sub2apiVideoAdapter {
         if (dispatch) throw new VideoDispatchError(requestId, false, false, failure);
         throw new MediaUpstreamException(failure);
       }
-      return { value, requestId };
+      return { value, requestId, status: response.status };
     } catch (error) {
       await response?.body?.cancel().catch(() => {});
       const failure = protectMediaCredential(mediaFailure(error), connection.key);
       if (dispatch) throw error instanceof VideoDispatchError ? error : new VideoDispatchError(requestId, false, false, failure);
       if (error instanceof HttpException) throw error;
+      if (upload) throw new HttpException({ error: { code: 'VIDEO_REFERENCE_UPLOAD_FAILED', origin: 'sep', stage: 'upload',
+        message: errorMessage(failure.body) ?? '参考视频转交算力平台失败', details: failure.body,
+        ...(response ? { computeStatus: response.status } : {}) } }, options.signal?.aborted ? 408 : 502);
       throw new MediaUpstreamException(failure);
     }
   }

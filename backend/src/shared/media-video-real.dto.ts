@@ -6,8 +6,22 @@ import {
   MediaVideoGatewayRequestSchema, MediaVideoGatewayRequestV3Schema,
   MediaVideoGatewayReferenceSchema, MediaVideoGatewayReceiptSchema,
   MediaVideoRuntimeProfileSchema,
+  MediaVideoOperationSchema,
 } from './media-video.dto';
 import { MediaConfigVersionV3Schema, MediaProfileIdV3Schema, MediaVideoSpecV3Schema } from './media-spec.dto';
+import { VIDEO_INPUT_MAX_BYTES, VIDEO_INPUT_MIME_TYPES } from './media-runtime-parameters';
+
+export const MediaVideoReferenceUploadQuerySchema = z.object({
+  profileId: MediaProfileIdV3Schema, configVersion: MediaConfigVersionV3Schema,
+}).strict();
+export type MediaVideoReferenceUploadQuery = z.infer<typeof MediaVideoReferenceUploadQuerySchema>;
+export const MediaVideoInputReferenceSchema = z.object({
+  mock: z.literal(false), kind: z.literal('video'), referenceId: z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/),
+  ...MediaVideoReferenceUploadQuerySchema.shape,
+  mimeType: z.enum(VIDEO_INPUT_MIME_TYPES), byteLength: z.number().int().positive().max(VIDEO_INPUT_MAX_BYTES),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/), expiresAt: z.string().datetime({ offset: true }),
+}).strict();
+export type MediaVideoInputReference = z.infer<typeof MediaVideoInputReferenceSchema>;
 
 // Keep real execution a separate strict contract; never widen the mock discriminator.
 export const MediaVideoRealQuoteRequestSchema = z.union([MediaVideoGatewayQuoteRequestV3Schema, MediaVideoGatewayQuoteRequestSchema]);
@@ -38,7 +52,7 @@ export const MediaVideoRealQuoteV3Schema = MediaVideoRealQuoteBaseSchema.extend(
   protocolVersion: z.literal(3), semanticHashVersion: z.literal(3), specRevision: z.number().int().positive(),
   effectiveSpec: MediaVideoSpecV3Schema,
   billingDimensions: z.object({
-    model: z.string().min(1).max(160), operation: z.enum(['text-to-video', 'image-to-video']),
+    model: z.string().min(1).max(160), operation: MediaVideoOperationSchema,
     durationSeconds: z.number().int().positive(), resolution: z.string().min(1).max(64),
   }).strict(),
 }).strict();
@@ -73,6 +87,7 @@ const MediaVideoV3OutputSchema = z.object({
   expiresAt: z.string().datetime({ offset: true }).nullable(),
 }).strict();
 export const MediaVideoRealReceiptV3Schema = MediaVideoGatewayReceiptSchema.innerType().omit({ outputs: true }).extend({
+  operation: MediaVideoOperationSchema,
   upstreamError: MediaUpstreamErrorSchema.optional(),
   profileId: MediaProfileIdV3Schema, configVersion: MediaConfigVersionV3Schema,
   mock: z.literal(false), billingStatus: MediaVideoRealBillingStatusSchema,
@@ -80,7 +95,7 @@ export const MediaVideoRealReceiptV3Schema = MediaVideoGatewayReceiptSchema.inne
   protocolVersion: z.literal(3), semanticHashVersion: z.literal(3), specRevision: z.number().int().positive(),
   effectiveSpec: MediaVideoSpecV3Schema, outputs: z.array(MediaVideoV3OutputSchema).max(4),
   billingDimensions: z.object({
-    model: z.string().min(1).max(160), operation: z.enum(['text-to-video', 'image-to-video']),
+    model: z.string().min(1).max(160), operation: MediaVideoOperationSchema,
     durationSeconds: z.number().int().positive(), resolution: z.string().min(1).max(64),
   }).strict(),
   actualSpec: z.object({

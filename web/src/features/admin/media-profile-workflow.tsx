@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { MediaImageSpecV3Schema, MediaVideoSpecV3Schema } from 'shared/media-spec.dto';
 import { MAX_MEDIA_REFERENCE_COUNT } from 'shared/media-reference.dto';
-import { effectiveImageLimits, IMAGE_ADAPTER_MAX_OUTPUTS, IMAGE_REFERENCE_DEFAULT_COUNT } from 'shared/media-runtime-parameters';
+import { effectiveImageLimits, IMAGE_ADAPTER_MAX_OUTPUTS, IMAGE_REFERENCE_DEFAULT_COUNT, VIDEO_INPUT_MAX_COUNT, VIDEO_INPUT_MAX_BYTES, VIDEO_INPUT_MIME_TYPES } from 'shared/media-runtime-parameters';
 import { CreateMediaProfileDtoSchema } from 'shared/media.dto';
 import { CreateMediaVideoProfileDtoSchema } from 'shared/media-video-config.dto';
 import { MediaVideoDurationRangeSchema } from 'shared/media-video.dto';
@@ -20,7 +20,7 @@ interface Props {
   profile?: MediaProfile | MediaVideoProfile;
 }
 
-type Operation = 'generate' | 'edit' | 'text-to-video' | 'image-to-video';
+type Operation = 'generate' | 'edit' | 'text-to-video' | 'image-to-video' | 'video-to-video';
 const splitValues = (value: string) => [...new Set(value.split(/[\s,，、;；]+/).map(item => item.trim()).filter(Boolean))];
 const listValue = (values: readonly (string | number)[] | undefined) => values?.join(', ') ?? '';
 
@@ -42,7 +42,10 @@ export function MediaProfileWorkflow({ kind, model, profile }: Props) {
   const setForm = (nextMode: typeof mode) => {
     setError(null);
     setMode(nextMode);
-    if (!profile || nextMode === 'quote') { setDraft(nextMode === 'configure' ? { maxReferenceCount: kind === 'image' ? String(IMAGE_REFERENCE_DEFAULT_COUNT) : '1' } : {}); return; }
+    if (!profile || nextMode === 'quote') { setDraft(nextMode === 'configure' ? {
+      maxReferenceCount: kind === 'image' ? String(IMAGE_REFERENCE_DEFAULT_COUNT) : '1',
+      ...(kind === 'video' ? { maxVideoReferenceCount: '1', maxVideoReferenceMiB: '90', videoReferenceMimeTypes: VIDEO_INPUT_MIME_TYPES.join(',') } : {}),
+    } : {}); return; }
     if (kind === 'image' && profile.kind === 'image') {
       setDraft({ operations: profile.operations.join(','), sizes: listValue(profile.capabilities.sizes),
         maxOutputs: String(effectiveImageLimits(profile.capabilities).maxOutputs), supportsReferenceImage: String(profile.capabilities.supportsReferenceImage),
@@ -53,7 +56,9 @@ export function MediaProfileWorkflow({ kind, model, profile }: Props) {
         minDurationSeconds: String(c.durationRange?.minimum ?? Math.min(...c.durationsSeconds)),
         maxDurationSeconds: String(c.durationRange?.maximum ?? Math.max(...c.durationsSeconds)),
         resolutions: listValue(c.resolutions), aspectRatios: listValue(c.aspectRatios), frameRates: listValue(c.frameRates),
-        outputFormats: listValue(c.outputFormats), supportsAudio: String(c.supportsAudio), maxReferenceCount: String(c.maxReferenceCount || 1) });
+        outputFormats: listValue(c.outputFormats), supportsAudio: String(c.supportsAudio), maxReferenceCount: String(c.maxReferenceCount || 1),
+        maxVideoReferenceCount: String(c.maxVideoReferenceCount || 1), maxVideoReferenceMiB: String((c.maxVideoReferenceBytes ?? VIDEO_INPUT_MAX_BYTES) / 1024 / 1024),
+        videoReferenceMimeTypes: listValue(c.videoReferenceMimeTypes ?? VIDEO_INPUT_MIME_TYPES) });
     }
   };
   const toggleForm = (nextMode: typeof mode) => {
@@ -109,6 +114,10 @@ export function MediaProfileWorkflow({ kind, model, profile }: Props) {
         const operations = (draft.operations ?? '').split(',').filter(Boolean);
         const durationRange = MediaVideoDurationRangeSchema.parse({ minimum: Number(draft.minDurationSeconds), maximum: Number(draft.maxDurationSeconds) });
         const capabilities = { supportsTextToVideo: operations.includes('text-to-video'), supportsImageToVideo: operations.includes('image-to-video'),
+          supportsVideoToVideo: operations.includes('video-to-video'),
+          maxVideoReferenceCount: operations.includes('video-to-video') ? Number(draft.maxVideoReferenceCount) : 0,
+          ...(operations.includes('video-to-video') ? { maxVideoReferenceBytes: Number(draft.maxVideoReferenceMiB) * 1024 * 1024,
+            videoReferenceMimeTypes: splitValues(draft.videoReferenceMimeTypes) as (typeof VIDEO_INPUT_MIME_TYPES[number])[] } : {}),
           supportsAudio: draft.supportsAudio === 'true', durationRange,
           durationsSeconds: [...new Set([durationRange.minimum, durationRange.maximum])],
           aspectRatios: splitValues(draft.aspectRatios), resolutions: splitValues(draft.resolutions),
@@ -119,7 +128,7 @@ export function MediaProfileWorkflow({ kind, model, profile }: Props) {
           resultRetentionSeconds: profile?.kind === 'video' ? profile.capabilities.resultRetentionSeconds : 86400 };
         if (profile) await videoUpdate.mutateAsync({ profileId: profile.profileId,
           dto: { expectedConfigVersion: profile.configVersion,
-            ...(!autoProfile ? { operations: operations as ('text-to-video' | 'image-to-video')[] } : {}), capabilities } });
+            ...(!autoProfile ? { operations: operations as ('text-to-video' | 'image-to-video' | 'video-to-video')[] } : {}), capabilities } });
         else await videoCreate.mutateAsync(CreateMediaVideoProfileDtoSchema.parse({ profileId: draft.profileId, displayName: draft.displayName,
           kind: 'video', modelId: model.modelId, executionMode: 'async-query', enabled: false, operations, capabilities }));
       }
@@ -137,8 +146,8 @@ export function MediaProfileWorkflow({ kind, model, profile }: Props) {
     <Textarea required={required} rows={2} placeholder="逗号或换行分隔" aria-label={label} aria-describedby={`${key}-limits`}
       value={draft[key] ?? ''} disabled={busy} onChange={event => edit(key, event.target.value)} />
     <span id={`${key}-limits`} className="mt-1 block text-[11px] text-fg-muted">可用逗号或换行输入多项；{limits}</span></label>;
-  const operationChoices: Operation[] = kind === 'image' ? ['generate', 'edit'] : ['text-to-video', 'image-to-video'];
-  const operationLabels: Record<Operation, string> = { generate: '文生图', edit: '图片编辑', 'text-to-video': '文生视频', 'image-to-video': '图生视频' };
+  const operationChoices: Operation[] = kind === 'image' ? ['generate', 'edit'] : ['text-to-video', 'image-to-video', 'video-to-video'];
+  const operationLabels: Record<Operation, string> = { generate: '文生图', edit: '图片编辑', 'text-to-video': '文生视频', 'image-to-video': '图生视频', 'video-to-video': '视频生视频' };
   const operationsControl = <fieldset className="sm:col-span-2"><legend className="text-xs">操作</legend><div className="mt-1 flex flex-wrap gap-4">
     {operationChoices.map(operation => <label key={operation} className="flex items-center gap-2 text-xs"><input type="checkbox" disabled={busy}
       checked={selected(operation)} onChange={() => toggleOperation(operation)} />{operationLabels[operation]}</label>)}
@@ -161,7 +170,19 @@ export function MediaProfileWorkflow({ kind, model, profile }: Props) {
         {multiField('outputFormats', '支持输出格式', '最多 4 项：video/mp4、video/webm')}
         <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={draft.supportsAudio === 'true'} disabled={busy}
           onChange={event => edit('supportsAudio', String(event.target.checked))} />支持音频</label>
-        {selected('image-to-video') && referenceCountField}</>}</>;
+        {selected('image-to-video') && referenceCountField}
+        {selected('video-to-video') && <>
+          {field('maxVideoReferenceCount', '最多参考视频数量', true, true, VIDEO_INPUT_MAX_COUNT, true)}
+          {field('maxVideoReferenceMiB', '单个参考视频上限（MiB）', true, true, VIDEO_INPUT_MAX_BYTES / 1024 / 1024, true)}
+          <fieldset className="min-w-0 text-xs sm:col-span-2"><legend>参考视频格式</legend><div className="mt-1 flex flex-wrap gap-4">
+            {VIDEO_INPUT_MIME_TYPES.map(mime => <label key={mime} className="flex items-center gap-2"><input type="checkbox" disabled={busy}
+              checked={splitValues(draft.videoReferenceMimeTypes ?? '').includes(mime)} onChange={event => {
+                const formats = new Set(splitValues(draft.videoReferenceMimeTypes ?? ''));
+                if (event.target.checked) formats.add(mime); else formats.delete(mime);
+                edit('videoReferenceMimeTypes', [...formats].join(','));
+              }} />{mime === 'video/mp4' ? 'MP4' : 'MOV'}</label>)}
+          </div></fieldset>
+        </>}</>}</>;
   return <div className="min-w-0 w-full space-y-2">
     <div className="flex flex-wrap gap-2">
       <Button size="sm" variant="outline" disabled={busy} onClick={() => toggleForm('configure')}>

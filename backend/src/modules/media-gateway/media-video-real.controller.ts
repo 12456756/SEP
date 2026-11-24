@@ -1,5 +1,5 @@
-import { Body, Controller, Get, Header, Logger, Param, Post, Query, Res, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
-import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Get, Header, Logger, Param, Post, Query, Req, Res, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { ApiBearerAuth, ApiBody, ApiConsumes, ApiOperation, ApiQuery, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { SkipThrottle } from '@nestjs/throttler';
 import { memoryStorage } from 'multer';
@@ -16,6 +16,7 @@ import { MediaSpecValidationPipe } from './media-spec-validation.pipe';
 import { MediaVideoRealGuard } from './media-video-real.guard';
 import { MediaVideoRealService } from './media-video-real.service';
 import { exceptionDetails } from '../../common/errors/error-diagnostics';
+import { VideoReferenceUploadInterceptor, type VideoReferenceUploadRequest } from './video-reference-upload.interceptor';
 
 @ApiTags('media-video-real')
 @ApiBearerAuth()
@@ -55,6 +56,21 @@ export class MediaVideoRealController {
   @UseInterceptors(FileInterceptor('file', { storage: memoryStorage(), limits: { fileSize: VIDEO_REFERENCE_MAX_BYTES, files: 1, fields: 0, parts: 2 } }))
   reference(@ClientEmployment() claims: ClientEmploymentClaims, @UploadedFile() file: Express.Multer.File, @Body() fields: unknown) {
     return this.media.reference(claims, file, fields);
+  }
+
+  @Post('video-references')
+  @Header('Cache-Control', 'no-store')
+  @ApiOperation({ summary: 'Upload one MP4/MOV reference video to the authorized profile (no generation charge)' })
+  @ApiQuery({ name: 'profileId', required: true, type: String })
+  @ApiQuery({ name: 'configVersion', required: true, type: String })
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({ schema: { type: 'object', required: ['file'], properties: { file: { type: 'string', format: 'binary' } } } })
+  @ApiResponse({ status: 413, description: 'File exceeds profile limit (at most 90 MiB), or request exceeds 92 MiB' })
+  @ApiResponse({ status: 415, description: 'Not an MP4/MOV video or format disabled in profile' })
+  @ApiResponse({ status: 408, description: 'Video upload interrupted or exceeded five minutes' })
+  @UseInterceptors(VideoReferenceUploadInterceptor)
+  videoReference(@ClientEmployment() claims: ClientEmploymentClaims, @Req() request: VideoReferenceUploadRequest) {
+    return this.media.videoReference(claims, request.videoReferenceUpload);
   }
 
   @Post('quotes')

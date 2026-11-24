@@ -26,7 +26,7 @@ import { SettingService } from '../setting/setting.service';
 import { MediaModelSyncService, mediaConnectionFingerprint } from './media-model-sync.service';
 import { MediaVideoRuntimeV3Schema } from 'shared';
 import type { MediaVideoRuntimeV3 } from 'shared';
-import { mediaRuntimeStatus, MEDIA_UNAVAILABLE_MESSAGES, videoRuntimeCapabilities, videoRuntimePolicy } from './media-runtime-capabilities';
+import { mediaRuntimeStatus, MEDIA_UNAVAILABLE_MESSAGES, videoRuntimeCapabilities, videoReferenceCapabilities, videoRuntimePolicy } from './media-runtime-capabilities';
 
 const MOCK_PROFILE = MediaVideoProfileSchema.parse(fixture.profile);
 
@@ -57,7 +57,7 @@ export class MediaVideoConfigService {
 
   private realCompatible(profile: MediaVideoProfile): boolean {
     const c = profile.capabilities;
-    return profile.modelId === 'minimax-h3' && profile.executionMode === 'async-query'
+    return profile.operations.every(op => op !== 'video-to-video') && profile.modelId === 'minimax-h3' && profile.executionMode === 'async-query'
       && !c.supportsCancel && c.supportsTaskQuery && c.supportsAudio
       && c.durationsSeconds.every(value => value === 4) && c.aspectRatios.every(value => value === '16:9')
       && c.resolutions.every(value => value === '720p') && c.frameRates.every(value => value === 24)
@@ -222,7 +222,8 @@ export class MediaVideoConfigService {
       for (const operation of profile.operations) await this.videoAdapter.pricing(connection, {
         protocolVersion: 3, specRevision: 1,
         profileId: profile.profileId, configVersion: profile.configVersion, operation,
-        referenceIds: operation === 'image-to-video' ? ['verification-only'] : [], creativeBrief: 'Configuration verification only',
+        referenceIds: operation === 'image-to-video' ? ['verification-only'] : [],
+        ...(operation === 'video-to-video' ? { videoReferenceIds: ['verification-only'] } : {}), creativeBrief: 'Configuration verification only',
         requestedSpec,
       }, profile.modelId);
     }
@@ -387,7 +388,7 @@ export class MediaVideoConfigService {
       .map(profile => ({
         profileId: profile.profileId, kind: profile.kind, displayName: profile.displayName,
         configVersion: profile.configVersion, executionMode: profile.executionMode,
-        operations: profile.operations,
+        operations: profile.operations.filter(operation => operation !== 'video-to-video'),
         capabilities: { ...profile.capabilities,
           supportsCancel: false,
         },
@@ -438,7 +439,8 @@ export class MediaVideoConfigService {
       }
     }
     const profiles = configuredProfiles.filter(profile => policy.enabledProfileIds.includes(profile.profileId)).map(profile => {
-      const operations = profile.operations.filter(operation => operation === 'image-to-video' || operation === 'text-to-video');
+      const operations = profile.operations.filter(operation => operation === 'image-to-video' || operation === 'text-to-video'
+        || operation === 'video-to-video' && profile.capabilities.supportsVideoToVideo);
       const reason = !profile.enabled ? 'PROFILE_DISABLED'
         : !profile.verified ? 'PROFILE_UNVERIFIED'
           : !this.realEnabled() ? 'EXECUTION_DISABLED'
@@ -446,6 +448,7 @@ export class MediaVideoConfigService {
               : profile.executionMode !== 'async-query' ? 'ADAPTER_PROTOCOL_UNSUPPORTED'
                 : operations.length === 0 ? 'ADAPTER_OPERATION_UNSUPPORTED' : undefined;
       const capabilities = videoRuntimeCapabilities(profile, operations);
+      const videos = operations.includes('video-to-video') ? videoReferenceCapabilities(profile, operations) : undefined;
       return {
         profileId: profile.profileId, configVersion: profile.configVersion, kind: 'video' as const,
         modelId: profile.modelId, modelDisplayName: profile.modelId,
@@ -453,16 +456,19 @@ export class MediaVideoConfigService {
         adapter: {
           id: 'sub2api-video', version: '3', available: reason === undefined, ...(reason ? { reason } : {}), operations,
           referenceSupport: capabilities.referenceSupport,
+          ...(videos ? { videoReferenceSupport: videos.videoReferenceSupport } : {}),
           supportsTaskQuery: true,
           supportsCancel: false,
         },
         parameters: capabilities.parameters, constraints: capabilities.constraints, referenceRules: capabilities.referenceRules,
+        ...(videos ? { videoReferenceRules: videos.videoReferenceRules } : {}),
         unavailableReason: reason ?? null, unavailableMessage: reason ? MEDIA_UNAVAILABLE_MESSAGES[reason] : null,
       };
     });
     const executable = profiles.filter(profile => profile.adapter.available);
     const tools = [
       ...(executable.some(profile => profile.operations.includes('image-to-video')) ? ['video_from_image'] : []),
+      ...(executable.some(profile => profile.operations.includes('video-to-video')) ? ['video_from_video'] : []),
       ...(executable.some(profile => profile.operations.includes('text-to-video')) ? ['video_generate'] : []),
       ...(executable.some(profile => profile.adapter.supportsTaskQuery) ? ['video_get_job'] : []),
       ...(executable.some(profile => profile.adapter.supportsCancel) ? ['video_cancel_job'] : []),

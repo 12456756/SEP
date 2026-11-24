@@ -37,7 +37,7 @@ export type VideoRequestClaim = Omit<VideoRequestRecord, 'revision' | 'receipt'>
 export type VideoErrorDetails = {
   cause?: unknown;
   field?: string;
-  stage?: 'video-authorization' | 'video-quote' | 'video-submit' | 'video-query' | 'video-content';
+  stage?: 'video-authorization' | 'video-upload' | 'video-quote' | 'video-submit' | 'video-query' | 'video-content';
   recovery?: string;
   submissionState?: 'not_submitted';
   billingState?: 'not_reserved';

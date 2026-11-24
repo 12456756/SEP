@@ -60,6 +60,28 @@ function createInput(overrides: Record<string, unknown> = {}) {
 }
 
 describe('MediaVideoConfigService real configuration', () => {
+  it('requires explicit video-reference configuration, verifies pricing only, and publishes operation-specific limits', async () => {
+    const f = setup(true);
+    f.row.modelId = 'seedance-2.0-fast';
+    f.videoAdapter.discover.mockResolvedValue([{ modelId: f.row.modelId, displayName: 'Seedance' }]);
+    expect((await f.service.getRuntimeVideoV3('ent-1')).tools).not.toContain('video_from_video');
+    const saved = await f.service.updateProfile(f.row.profileId, { expectedConfigVersion: f.row.configVersion,
+      operations: ['image-to-video', 'video-to-video'], capabilities: { supportsVideoToVideo: true,
+        maxVideoReferenceCount: 3, maxVideoReferenceBytes: 90 * 1024 * 1024, videoReferenceMimeTypes: ['video/mp4', 'video/quicktime'] } });
+    expect(saved).toMatchObject({ verified: false, enabled: false });
+    await f.service.verifyProfile(saved.profileId, { expectedConfigVersion: saved.configVersion,
+      verificationSpec: { durationSeconds: 5, resolution: '720p', audio: false } });
+    expect(f.videoAdapter.pricing).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ operation: 'video-to-video',
+      videoReferenceIds: ['verification-only'], referenceIds: [], requestedSpec: expect.objectContaining({ audio: false }) }), f.row.modelId);
+    await f.service.updateProfile(saved.profileId, { expectedConfigVersion: f.row.configVersion, enabled: true });
+    const runtime = await f.service.getRuntimeVideoV3('ent-1');
+    expect(runtime.tools).toContain('video_from_video');
+    expect(runtime.profiles[0]).toMatchObject({ adapter: { referenceSupport: { maxInputBytes: 10 * 1024 * 1024 },
+      videoReferenceSupport: { maxCount: 3, maxInputBytes: 90 * 1024 * 1024 } },
+      referenceRules: expect.arrayContaining([{ operation: 'video-to-video', minCount: 0, maxCount: 0, maxInputBytes: 0, mimeTypes: [] }]),
+      videoReferenceRules: expect.arrayContaining([{ operation: 'image-to-video', minCount: 0, maxCount: 0, maxInputBytes: 0, mimeTypes: [] }]) });
+    expect((await f.service.getRuntimeVideo('ent-1')).tools).not.toContain('video_from_video');
+  });
   it('saves and publishes an administrator-defined video reference maximum', async () => {
     const { service, row } = setup(true);
     row.modelId = 'seedance-2.0';

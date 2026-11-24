@@ -23,6 +23,24 @@ afterEach(cleanup);
 beforeEach(() => vi.resetAllMocks());
 
 describe('explicit media profile management', () => {
+  it('saves separate reference-video limits and formats without changing the image limit', async () => {
+    const video = MediaVideoProfileSchema.parse({ ...videoFixture.profile, enabled: false, verified: false });
+    vi.mocked(api.patch).mockResolvedValue(video);
+    render(<QueryClientProvider client={new QueryClient()}><MediaProfileWorkflow kind="video" model={{ modelId: video.modelId, displayName: video.displayName }} profile={video} /></QueryClientProvider>);
+    fireEvent.click(screen.getByRole('button', { name: '编辑能力配置' }));
+    expect(screen.getByLabelText('视频生视频')).not.toBeChecked();
+    fireEvent.click(screen.getByLabelText('视频生视频'));
+    expect(screen.getByLabelText('单个参考视频上限（MiB）')).toHaveValue(90);
+    fireEvent.change(screen.getByLabelText('最多参考视频数量'), { target: { value: '3' } });
+    fireEvent.change(screen.getByLabelText('单个参考视频上限（MiB）'), { target: { value: '80' } });
+    fireEvent.click(screen.getByLabelText('MOV'));
+    fireEvent.click(screen.getByRole('button', { name: '保存能力配置' }));
+    await waitFor(() => expect(api.patch).toHaveBeenCalledWith(`/admin/media/video/profiles/${video.profileId}`, expect.objectContaining({
+      operations: ['image-to-video', 'video-to-video'], capabilities: expect.objectContaining({ supportsVideoToVideo: true,
+        maxVideoReferenceCount: 3, maxVideoReferenceBytes: 80 * 1024 * 1024, videoReferenceMimeTypes: ['video/mp4'],
+        maxInputBytes: video.capabilities.maxInputBytes, maxReferenceCount: video.capabilities.maxReferenceCount }),
+    })));
+  });
   it('saves quality suggestions, reference count and output limit for an auto-discovered image profile', async () => {
     const managed = { ...profile, profileId: 'auto-image-example', operations: ['generate', 'edit'] as MediaProfile['operations'],
       capabilities: { ...profile.capabilities, supportsReferenceImage: true, qualities: ['low', 'high'], maxReferenceCount: 3 } };

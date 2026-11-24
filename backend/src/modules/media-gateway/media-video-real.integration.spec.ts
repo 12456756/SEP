@@ -15,6 +15,7 @@ import { MediaVideoRealService } from './media-video-real.service';
 import { MediaVideoRealStore } from './media-video-real.store';
 import { fingerprint, videoClaims, videoRealPrisma } from './media-video-real.test-support';
 import { VideoFileCacheService } from './video-file-cache.service';
+import { VideoReferenceUploadService } from './video-reference-upload.service';
 
 const run = promisify(execFile);
 
@@ -113,7 +114,7 @@ acceptance('real-mode video HTTP, cache and Electron host integration (synthetic
     const service = new MediaVideoRealService(state.config as never, state.db as never,
       { getEffectiveValue: async () => '7' } as never, state.runtime, adapter as never, cache, billing as never, store);
     const module = await Test.createTestingModule({ controllers: [MediaVideoRealController, VideoRealIntegrationController],
-      providers: [MediaVideoRealGuard, { provide: MediaVideoRealService, useValue: service },
+      providers: [MediaVideoRealGuard, { provide: MediaVideoRealService, useValue: service }, { provide: VideoReferenceUploadService, useValue: {} },
         { provide: VideoRealIntegrationState, useValue: state }],
     }).overrideGuard(ClientEmploymentGuard).useValue({ canActivate(context: ExecutionContext) {
       const req = context.switchToHttp().getRequest();

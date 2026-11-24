@@ -14,6 +14,7 @@ import { MediaVideoRealStore } from './media-video-real.store';
 import { fingerprint, input, outputMetadata, scope, videoBytes, videoClaims, videoRealPrisma } from './media-video-real.test-support';
 import { MEDIA_MOCK_PNG } from './media-gateway-mock.adapter';
 import { videoGatewayError } from './media-video-gateway.store';
+import { VideoReferenceUploadService } from './video-reference-upload.service';
 
 const root = '/api/gateway/v1/media/video-real';
 describe('real video controller and guard HTTP', () => {
@@ -25,7 +26,7 @@ describe('real video controller and guard HTTP', () => {
   const disabled = () => { throw new HttpException({ error: { code: 'MEDIA_REAL_DISABLED' } }, 503); };
   beforeAll(async () => {
     const module = await Test.createTestingModule({ controllers: [MediaVideoRealController],
-      providers: [MediaVideoRealGuard, { provide: MediaVideoRealService, useValue: media }],
+      providers: [MediaVideoRealGuard, { provide: MediaVideoRealService, useValue: media }, { provide: VideoReferenceUploadService, useValue: {} }],
     }).overrideGuard(ClientEmploymentGuard).useValue({ canActivate(context: ExecutionContext) {
       const req = context.switchToHttp().getRequest();
       if (req.headers.authorization !== 'Bearer employment') throw new UnauthorizedException();

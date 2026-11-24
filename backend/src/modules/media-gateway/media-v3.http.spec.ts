@@ -17,6 +17,7 @@ import { MediaVideoRealStore } from './media-video-real.store';
 import { videoClaims, videoRealPrisma } from './media-video-real.test-support';
 import { Sub2apiVideoAdapter } from './sub2api-video.adapter';
 import { VideoFileCacheService } from './video-file-cache.service';
+import { VideoReferenceUploadService } from './video-reference-upload.service';
 
 const run = promisify(execFile);
 const prefix = '/api/gateway/v1/media/video-real';
@@ -110,7 +111,7 @@ describe('V3 HTTP with production video adapter, cache and fake upstream', () =>
     const service = new MediaVideoRealService(config as never, db as never, settings as never, runtime, adapter, cache,
       billing as never, new MediaVideoRealStore(db as never));
     const module = await Test.createTestingModule({ controllers: [MediaVideoRealController],
-      providers: [MediaVideoRealGuard, { provide: MediaVideoRealService, useValue: service }],
+      providers: [MediaVideoRealGuard, { provide: MediaVideoRealService, useValue: service }, { provide: VideoReferenceUploadService, useValue: {} }],
     }).overrideGuard(ClientEmploymentGuard).useValue({ canActivate(context: ExecutionContext) {
       const req = context.switchToHttp().getRequest();
       if (req.headers['x-test-auth'] !== 'yes') throw new UnauthorizedException();

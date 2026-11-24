@@ -59,6 +59,11 @@ function ProfileCapabilities({ profile }: { profile: ProfileStatus }) {
     <div><dt className="inline text-fg-muted">取消：</dt><dd className="inline">{yesNo(capabilities.supportsCancel)}</dd></div>
     <div><dt className="inline text-fg-muted">参考图数量：</dt><dd className="inline">{capabilities.maxReferenceCount}</dd></div>
     <div><dt className="inline text-fg-muted">参考输入字节上限：</dt><dd className="inline">{capabilities.maxInputBytes.toLocaleString()} 字节</dd></div>
+    {capabilities.supportsVideoToVideo && <>
+      <div><dt className="inline text-fg-muted">参考视频数量：</dt><dd className="inline">{capabilities.maxVideoReferenceCount}</dd></div>
+      <div><dt className="inline text-fg-muted">参考视频上限：</dt><dd className="inline">{(capabilities.maxVideoReferenceBytes ?? 0) / 1024 / 1024} MiB / 个</dd></div>
+      <div><dt className="inline text-fg-muted">参考视频格式：</dt><dd className="inline break-words">{list(capabilities.videoReferenceMimeTypes)}</dd></div>
+    </>}
     <div><dt className="inline text-fg-muted">输出尺寸 / 字节上限：</dt><dd className="inline">未提供</dd></div>
     <div><dt className="inline text-fg-muted">输出格式：</dt><dd className="inline break-words">{list(capabilities.outputFormats)}</dd></div>
     <div><dt className="inline text-fg-muted">结果保留：</dt><dd className="inline">{capabilities.resultRetentionSeconds} 秒</dd></div>

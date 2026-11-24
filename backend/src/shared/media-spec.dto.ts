@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { MediaProfileParametersSchema } from './media-runtime-parameters';
+import { MediaProfileParametersSchema, MediaReferenceRuleSchema, VIDEO_INPUT_MAX_BYTES, VIDEO_INPUT_MAX_COUNT, VIDEO_INPUT_MIME_TYPES } from './media-runtime-parameters';
 
 export const MediaProfileIdV3Schema = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/);
 export const MediaConfigVersionV3Schema = z.string().trim().min(1).max(80).regex(/^[^\p{Cc}\p{Cf}]+$/u);
@@ -75,6 +75,10 @@ export const MediaAdapterV3Schema = z.object({
     maxCount: z.number().int().nonnegative().safe(), maxInputBytes: z.number().int().nonnegative().safe(),
     mimeTypes: z.array(LabelSchema).max(16),
   }).strict(),
+  videoReferenceSupport: z.object({
+    maxCount: z.number().int().min(0).max(VIDEO_INPUT_MAX_COUNT), maxInputBytes: z.number().int().min(0).max(VIDEO_INPUT_MAX_BYTES),
+    mimeTypes: z.array(z.enum(VIDEO_INPUT_MIME_TYPES)).max(2),
+  }).strict().optional(),
   supportsTaskQuery: z.boolean(), supportsCancel: z.boolean(),
 }).strict();
 export const MediaRuntimeV3ProfileSchema = z.object({
@@ -86,6 +90,7 @@ export const MediaRuntimeV3ProfileSchema = z.object({
   parameters: MediaProfileParametersSchema.innerType().shape.parameters,
   constraints: MediaProfileParametersSchema.innerType().shape.constraints,
   referenceRules: MediaProfileParametersSchema.innerType().shape.referenceRules,
+  videoReferenceRules: z.array(MediaReferenceRuleSchema).max(3).optional(),
   unavailableReason: LabelSchema.nullable(), unavailableMessage: z.string().min(1).max(256).nullable(),
 }).strict().superRefine((value, ctx) => {
   const rules = MediaProfileParametersSchema.safeParse({ parameters: value.parameters, constraints: value.constraints, referenceRules: value.referenceRules });
@@ -98,6 +103,18 @@ export const MediaRuntimeV3ProfileSchema = z.object({
   if (value.referenceRules.some(rule => rule.maxCount > value.adapter.referenceSupport.maxCount
     || rule.maxInputBytes > value.adapter.referenceSupport.maxInputBytes
     || rule.mimeTypes.some(mime => !value.adapter.referenceSupport.mimeTypes.includes(mime)))) issue('referenceRules', '参考图规则超出适配器上限');
+  const videoSupport = value.adapter.videoReferenceSupport;
+  const videoRules = value.videoReferenceRules ?? [];
+  if (videoSupport || videoRules.length || value.operations.includes('video-to-video')) {
+    if (value.kind !== 'video' || !videoSupport || new Set(videoRules.map(rule => rule.operation)).size !== videoRules.length
+      || value.operations.some(op => !videoRules.some(rule => rule.operation === op))
+      || videoRules.some(rule => !value.operations.includes(rule.operation)
+        || rule.maxCount > videoSupport.maxCount || rule.maxInputBytes > videoSupport.maxInputBytes
+        || rule.mimeTypes.some(mime => !(videoSupport.mimeTypes as string[]).includes(mime))
+        || (rule.operation === 'video-to-video' ? rule.minCount < 1 : rule.maxCount !== 0))) {
+      issue('videoReferenceRules', '参考视频规则必须覆盖配置操作且符合适配器上限');
+    }
+  }
   if ((value.unavailableReason === null) !== (value.unavailableMessage === null)
     || (value.adapter.available && value.unavailableReason !== null)
     || (!value.adapter.available && value.unavailableReason === null)) issue('unavailableReason', '可用状态和原因不一致');

@@ -98,6 +98,22 @@ export function videoRuntimeCapabilities(profile: MediaVideoProfile, operations:
     ...references(operations, c.maxReferenceCount, Math.min(c.maxInputBytes, VIDEO_REFERENCE_MAX_BYTES)) };
 }
 
+export function videoReferenceCapabilities(profile: MediaVideoProfile, operations: MediaParameter['operations']) {
+  const c = profile.capabilities;
+  const enabled = c.supportsVideoToVideo && operations.includes('video-to-video');
+  const videoReferenceRules: MediaReferenceRule[] = operations.map(operation => ({
+    operation, minCount: operation === 'video-to-video' ? 1 : 0,
+    maxCount: operation === 'video-to-video' && enabled ? c.maxVideoReferenceCount ?? 0 : 0,
+    maxInputBytes: operation === 'video-to-video' && enabled ? c.maxVideoReferenceBytes ?? 0 : 0,
+    mimeTypes: operation === 'video-to-video' && enabled ? c.videoReferenceMimeTypes ?? [] : [],
+  }));
+  return { videoReferenceRules, videoReferenceSupport: {
+    maxCount: Math.max(0, ...videoReferenceRules.map(rule => rule.maxCount)),
+    maxInputBytes: Math.max(0, ...videoReferenceRules.map(rule => rule.maxInputBytes)),
+    mimeTypes: [...new Set(videoReferenceRules.flatMap(rule => rule.mimeTypes))],
+  } };
+}
+
 export function mediaRuntimeStatus(profileCount: number, executionEnabled: boolean, executionAvailable: boolean) {
   return !profileCount ? 'empty' as const : !executionEnabled ? 'disabled' as const
     : executionAvailable ? 'ready' as const : 'unavailable' as const;

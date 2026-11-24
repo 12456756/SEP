@@ -1,12 +1,14 @@
 import { z } from 'zod';
 import { MAX_MEDIA_REFERENCE_COUNT, MediaReferenceCountSchema } from './media-reference.dto';
 import { MediaConfigVersionV3Schema, MediaProfileIdV3Schema, MediaSpecMetadataV3Schema, MediaVideoSpecV3Schema } from './media-spec.dto';
+import { VIDEO_INPUT_MAX_BYTES, VIDEO_INPUT_MAX_COUNT, VIDEO_INPUT_MIME_TYPES } from './media-runtime-parameters';
 
 const MediaVideoIdSchema = z.string().regex(/^[a-zA-Z0-9_-]{1,128}$/);
 const Sha256Schema = z.string().regex(/^[a-fA-F0-9]{64}$/);
 const DateTimeSchema = z.string().datetime({ offset: true });
 
-export const MediaVideoOperationSchema = z.enum(['image-to-video', 'text-to-video']);
+export const MediaVideoLegacyOperationSchema = z.enum(['image-to-video', 'text-to-video']);
+export const MediaVideoOperationSchema = z.enum(['image-to-video', 'text-to-video', 'video-to-video']);
 export type MediaVideoOperation = z.infer<typeof MediaVideoOperationSchema>;
 export const MediaVideoResolutionSchema = z.enum(['480p', '720p', '1080p', '4k']);
 export type MediaVideoResolution = z.infer<typeof MediaVideoResolutionSchema>;
@@ -34,6 +36,10 @@ export function isVideoDurationInRange(duration: number | undefined,
 const MediaVideoCapabilitiesBaseSchema = z.object({
   supportsTextToVideo: z.boolean().default(false),
   supportsImageToVideo: z.boolean().default(false),
+  supportsVideoToVideo: z.boolean().optional(),
+  maxVideoReferenceCount: z.number().int().min(0).max(VIDEO_INPUT_MAX_COUNT).optional(),
+  maxVideoReferenceBytes: z.number().int().positive().max(VIDEO_INPUT_MAX_BYTES).optional(),
+  videoReferenceMimeTypes: z.array(z.enum(VIDEO_INPUT_MIME_TYPES)).min(1).max(2).optional(),
   supportsAudio: z.boolean().default(false),
   durationsSeconds: z.array(z.number().int().positive().safe()).min(1).max(32),
   durationRange: MediaVideoDurationRangeSchema.optional(),
@@ -49,6 +55,9 @@ const MediaVideoCapabilitiesBaseSchema = z.object({
 }).strict();
 
 export const MediaVideoCapabilitiesSchema = MediaVideoCapabilitiesBaseSchema.superRefine((value, ctx) => {
+  if (value.supportsVideoToVideo && (!value.maxVideoReferenceCount || !value.maxVideoReferenceBytes || !value.videoReferenceMimeTypes?.length)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['maxVideoReferenceCount'], message: '视频生视频需要配置参考视频数量、大小和格式。' });
+  }
   if (value.supportsImageToVideo && value.maxReferenceCount < 1) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['maxReferenceCount'], message: 'Image-to-video requires a reference slot.' });
   }
@@ -61,7 +70,7 @@ const MediaVideoProfileBaseSchema = z.object({
   displayName: z.string().trim().min(1).max(80),
   modelId: z.string().trim().min(1).max(160),
   configVersion: z.string().trim().min(1).max(80),
-  operations: z.array(MediaVideoOperationSchema).min(1).max(2),
+  operations: z.array(MediaVideoOperationSchema).min(1).max(3),
   executionMode: MediaVideoExecutionModeSchema,
   capabilities: MediaVideoCapabilitiesSchema,
   enabled: z.boolean(),
@@ -69,6 +78,9 @@ const MediaVideoProfileBaseSchema = z.object({
 }).strict();
 
 export const MediaVideoProfileSchema = MediaVideoProfileBaseSchema.superRefine((value, ctx) => {
+  if (value.operations.includes('video-to-video') && !value.capabilities.supportsVideoToVideo) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['capabilities', 'supportsVideoToVideo'], message: '视频生视频操作需要启用相应能力。' });
+  }
   if (value.operations.includes('image-to-video') && !value.capabilities.supportsImageToVideo) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['capabilities', 'supportsImageToVideo'], message: 'Profile operation requires image-to-video capability.' });
   }
@@ -78,7 +90,9 @@ export const MediaVideoProfileSchema = MediaVideoProfileBaseSchema.superRefine((
 });
 export type MediaVideoProfile = z.infer<typeof MediaVideoProfileSchema>;
 
-export const MediaVideoRuntimeProfileSchema = MediaVideoProfileBaseSchema.omit({ modelId: true, enabled: true, verified: true });
+export const MediaVideoRuntimeProfileSchema = MediaVideoProfileBaseSchema.omit({ modelId: true, enabled: true, verified: true }).extend({
+  operations: z.array(MediaVideoLegacyOperationSchema).min(1).max(2),
+});
 export const MediaVideoRuntimeSchema = z.object({
   protocolVersion: z.literal(1),
   executionMode: z.enum(['mock', 'real']).optional(),
@@ -170,7 +184,7 @@ export type MediaVideoParameters = z.infer<typeof MediaVideoParametersSchema>;
 const VideoRequestObjectSchema = z.object({
   profileId: MediaVideoIdSchema,
   configVersion: MediaVideoIdSchema,
-  operation: MediaVideoOperationSchema,
+  operation: MediaVideoLegacyOperationSchema,
   referenceIds: z.array(MediaVideoIdSchema).max(4),
   creativeBrief: z.string().trim().min(1).max(4000),
   parameters: MediaVideoParametersSchema,
@@ -199,6 +213,7 @@ const MediaVideoRequestV3BaseSchema = z.object({
   configVersion: MediaConfigVersionV3Schema,
   operation: MediaVideoOperationSchema,
   referenceIds: z.array(MediaVideoIdSchema).max(MAX_MEDIA_REFERENCE_COUNT),
+  videoReferenceIds: z.array(MediaVideoIdSchema).max(VIDEO_INPUT_MAX_COUNT).optional(),
   creativeBrief: z.string().trim().min(1).max(4000),
   specRevision: MediaSpecMetadataV3Schema.shape.specRevision,
   requestedSpec: MediaVideoSpecV3Schema,
@@ -206,6 +221,13 @@ const MediaVideoRequestV3BaseSchema = z.object({
 }).strict();
 
 function refineVideoRequestV3(value: z.infer<typeof MediaVideoRequestV3BaseSchema>, ctx: z.RefinementCtx): void {
+  const videos = value.videoReferenceIds ?? [];
+  if (value.operation === 'video-to-video' ? !videos.length || value.referenceIds.length > 0 : videos.length > 0) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['videoReferenceIds'], message: '视频生视频需要参考视频且不能混用图片；其他操作不接受参考视频。' });
+  }
+  if (new Set(videos).size !== videos.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['videoReferenceIds'], message: '参考视频不能重复。' });
+  }
   if (value.operation === 'image-to-video' && value.referenceIds.length === 0) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['referenceIds'], message: 'Image-to-video requires at least one reference.' });
   }
@@ -262,7 +284,7 @@ export const MediaVideoGatewayReceiptSchema = z.object({
   clientRequestId: MediaVideoIdSchema,
   profileId: MediaVideoIdSchema,
   configVersion: MediaVideoIdSchema,
-  operation: MediaVideoOperationSchema,
+  operation: MediaVideoLegacyOperationSchema,
   status: z.enum(['SUBMITTING', 'QUEUED', 'RUNNING', 'SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED', 'SUBMISSION_UNKNOWN']),
   pollAfterMs: z.number().int().nonnegative().nullable(),
   outputs: z.array(MediaVideoGatewayOutputSchema).max(4),

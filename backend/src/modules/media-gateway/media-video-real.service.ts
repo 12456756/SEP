@@ -2,15 +2,16 @@ import { HttpException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Decimal } from '@prisma/client/runtime/library';
 import { createHash } from 'node:crypto';
-import { MAX_MEDIA_REFERENCE_TOTAL_BYTES } from 'shared';
+import { MAX_MEDIA_REFERENCE_TOTAL_BYTES, MediaVideoCapabilitiesSchema, MediaVideoReferenceUploadQuerySchema } from 'shared';
 import { MediaUpstreamException, mediaFailure, retainMediaFailure } from '../../common/errors/media-upstream.exception';
 import { exceptionDetails } from '../../common/errors/error-diagnostics';
 import { z } from 'zod';
-import { isVideoDurationInRange, MediaVideoDurationRangeSchema, parseUsdToCnyRate, SETTING_KEYS, VIDEO_REFERENCE_MAX_BYTES } from 'shared';
+import { isVideoDurationInRange, parseUsdToCnyRate, SETTING_KEYS, VIDEO_REFERENCE_MAX_BYTES } from 'shared';
 import type { MediaVideoGatewayQuoteRequest, MediaVideoGatewayQuoteRequestV3,
   MediaVideoGatewayRequest } from 'shared';
 import { MediaVideoAuthorizationSchema, MediaVideoRealProfilesSchema, MediaVideoRealQuoteRequestSchema, MediaVideoRealReceiptSchema, MediaVideoRealRequestSchema } from 'shared';
 import type { MediaVideoRealQuoteRequest, MediaVideoRealReceipt, MediaVideoRealRequest } from 'shared';
+import type { MediaVideoReferenceUploadQuery } from 'shared';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SettingService } from '../setting/setting.service';
 import { MediaVideoConfigService } from '../media-config/media-video-config.service';
@@ -24,6 +25,7 @@ import { Sub2apiVideoAdapter, VideoDispatchError } from './sub2api-video.adapter
 import type { Sub2apiVideoConnection } from './sub2api-video.adapter';
 import { VideoFileCacheService } from './video-file-cache.service';
 import { videoGatewayError as fail, videoStorageUnavailable } from './media-video-gateway.store';
+import type { InspectedVideoReference } from './video-reference-upload.service';
 
 const hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
 const ResourceIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
@@ -86,12 +88,40 @@ export class MediaVideoRealService {
     return reference;
   }
 
+  async prepareVideoReference(claims: ClientEmploymentClaims, raw: MediaVideoReferenceUploadQuery) {
+    const input = this.parse(MediaVideoReferenceUploadQuerySchema, raw);
+    await this.authorize(claims, true);
+    const profile = await this.requireProfile(claims, { ...input, protocolVersion: 3, operation: 'video-to-video', requestedSpec: {} }, true, 'video-upload');
+    return { input, capabilities: profile.capabilities, connection: await this.adapter.connection() };
+  }
+
+  async videoReference(claims: ClientEmploymentClaims, upload: {
+    file: InspectedVideoReference; context: Awaited<ReturnType<MediaVideoRealService['prepareVideoReference']>>; signal: AbortSignal;
+  }) {
+    const { file, context, signal } = upload;
+    const current = await this.prepareVideoReference(claims, context.input);
+    if (current.connection.fingerprint !== context.connection.fingerprint) fail(409, 'CONFIG_CHANGED', '视频连接在上传期间发生变化');
+    if (signal.aborted) fail(408, 'VIDEO_REFERENCE_UPLOAD_TIMEOUT', '参考视频上传已中断或超时');
+    const upstream = await this.adapter.uploadReference(context.connection, file, signal);
+    const afterUpload = await this.prepareVideoReference(claims, context.input);
+    if (afterUpload.connection.fingerprint !== context.connection.fingerprint) fail(409, 'CONFIG_CHANGED', '视频连接在上传期间发生变化，请重新上传');
+    if (signal.aborted) fail(408, 'VIDEO_REFERENCE_UPLOAD_TIMEOUT', '参考视频上传已中断或超时');
+    return this.store.saveVideoReference(this.scope(claims), {
+      value: { ...context.input, mock: false, kind: 'video', mimeType: file.mimeType, byteLength: file.byteLength,
+        sha256: file.sha256, expiresAt: upstream.expires_at },
+      upstreamReferenceId: upstream.reference_id, connectionFingerprint: context.connection.fingerprint,
+    });
+  }
+
   async quote(claims: ClientEmploymentClaims, raw: MediaVideoRealQuoteRequest) {
     await this.authorize(claims, true);
     const input = this.parse(MediaVideoRealQuoteRequestSchema, raw);
     const profile = await this.requireProfile(claims, input, true, 'video-quote');
     const references = await this.references(claims, input.referenceIds, profile.capabilities.maxInputBytes);
     const connection = await this.adapter.connection();
+    const videos = await this.videoReferences(claims, input, profile.capabilities, connection.fingerprint);
+    const allIds = this.referenceIds(input);
+    const allHashes = [...references.map(r => r.sha256), ...videos.map(r => r.value.sha256)];
     const price = await this.adapter.pricing(connection, input, profile.modelId);
     const dimensions = this.billingDimensions(input);
     if (price.model !== profile.modelId || price.operation !== input.operation || price.duration_seconds !== dimensions.durationSeconds ||
@@ -100,10 +130,10 @@ export class MediaVideoRealService {
     const amountUsd = new Decimal(price.amount_usd);
     const amountCny = amountUsd.mul(rate).toDecimalPlaces(6, Decimal.ROUND_HALF_UP).toFixed(6);
     if (!amountUsd.isFinite() || amountUsd.lte(0) || new Decimal(amountCny).lte(0) || new Decimal(amountCny).gt('99999999.999999')) fail(503, 'PRICE_UNAVAILABLE', '视频报价金额无效');
-    const expiresAt = new Date(Math.min(Date.now() + 60_000, Date.parse(price.expires_at))).toISOString();
+    const expiresAt = new Date(Math.min(Date.now() + 60_000, Date.parse(price.expires_at), ...videos.map(r => Date.parse(r.value.expiresAt)))).toISOString();
     if (Date.parse(expiresAt) <= Date.now()) fail(409, 'QUOTE_EXPIRED', '视频报价已过期');
     const funding = await this.billing.quoteFunding(claims, amountCny);
-    const semanticSha256 = this.semanticHash(input, references.map(r => r.sha256), this.scope(claims));
+    const semanticSha256 = this.semanticHash(input, allHashes, this.scope(claims));
     await this.authorize(claims, true);
     await this.requireProfile(claims, input, true, 'video-quote');
     return this.store.saveQuote(this.scope(claims), {
@@ -117,6 +147,8 @@ export class MediaVideoRealService {
         ? { adapter: VIDEO_REAL_ADAPTER, protocolVersion: 3 as const, semanticHashVersion: 3 as const,
           specRevision: input.specRevision, profileId: input.profileId, configVersion: input.configVersion,
           modelId: profile.modelId, operation: input.operation, maxReferenceCount: profile.capabilities.maxReferenceCount,
+          ...(videos.length ? { maxVideoReferenceCount: profile.capabilities.maxVideoReferenceCount,
+            videoReferences: videos.map(r => ({ ...r.value, upstreamReferenceId: r.upstreamReferenceId })) } : {}),
           requestedSpec: input.requestedSpec, effectiveSpec: input.requestedSpec,
           parameterSources: input.parameterSources,
           connectionFingerprint: connection.fingerprint, amountCny, amountUsd: price.amount_usd,
@@ -124,7 +156,7 @@ export class MediaVideoRealService {
         : { adapter: VIDEO_REAL_ADAPTER, profileId: input.profileId, configVersion: input.configVersion,
           modelId: 'minimax-h3', operation: input.operation, parameters: (input as MediaVideoGatewayQuoteRequest).parameters, connectionFingerprint: connection.fingerprint,
           amountCny, amountUsd: price.amount_usd, pricingVersion: price.pricing_version, usdToCnyRate: rate },
-      referenceIds: input.referenceIds, referenceHashes: references.map(r => r.sha256),
+      referenceIds: allIds, referenceHashes: allHashes,
     });
   }
 
@@ -145,17 +177,23 @@ export class MediaVideoRealService {
     await this.authorize(claims, true);
     const profile = await this.requireProfile(claims, input, true, 'video-submit');
     const references = await this.references(claims, input.referenceIds, profile.capabilities.maxInputBytes);
+    const currentConnection = input.operation === 'video-to-video' ? await this.adapter.connection() : undefined;
+    const videos = await this.videoReferences(claims, input, profile.capabilities, currentConnection?.fingerprint ?? '');
+    const allIds = this.referenceIds(input);
+    const allHashes = [...references.map(r => r.sha256), ...videos.map(r => r.value.sha256)];
     const quote = await this.store.findQuote(scope, input.quoteId);
     if (!quote) fail(404, 'MEDIA_NOT_FOUND', '视频报价不可用');
     if (Date.parse(quote.value.expiresAt) <= Date.now()) fail(409, 'QUOTE_EXPIRED', '视频报价已过期');
-    const semanticSha256 = this.semanticHash(input, references.map(r => r.sha256), scope);
-    if (semanticSha256 !== quote.value.semanticSha256 || JSON.stringify(input.referenceIds) !== JSON.stringify(quote.referenceIds) ||
+    const semanticSha256 = this.semanticHash(input, allHashes, scope);
+    if (semanticSha256 !== quote.value.semanticSha256 || JSON.stringify(allIds) !== JSON.stringify(quote.referenceIds) ||
       !this.sameSpec(input, quote.configuration) || profile.modelId !== quote.configuration.modelId) fail(409, 'IDEMPOTENCY_CONFLICT', '视频请求与冻结报价不一致');
+    if (videos.length && (!('protocolVersion' in quote.configuration) || JSON.stringify(quote.configuration.videoReferences) !==
+      JSON.stringify(videos.map(r => ({ ...r.value, upstreamReferenceId: r.upstreamReferenceId }))))) fail(409, 'IDEMPOTENCY_CONFLICT', '参考视频与冻结报价不一致');
     const connection = await this.frozenConnection(quote.configuration.connectionFingerprint);
     const bytes = await Promise.all(references.map(r => this.cache.readReference(scope, r.referenceId,
       { sha256: r.sha256, byteLength: r.byteLength, expiresAt: r.expiresAt })));
     const claim = await this.store.claim({ enterpriseId: claims.enterpriseId, clientRequestId: input.clientRequestId, scope,
-      semanticSha256, referenceIds: input.referenceIds, referenceHashes: references.map(r => r.sha256),
+      semanticSha256, referenceIds: allIds, referenceHashes: allHashes,
       submissionDeadline: new Date(Date.now() + SUBMISSION_TTL),
       configuration: { ...quote.configuration, quoteId: input.quoteId, upstreamTaskId: null, upstreamRequestId: null,
         dispatchState: 'NOT_DISPATCHED', outputExpiresAt: null },
@@ -196,6 +234,7 @@ export class MediaVideoRealService {
       await this.authorize(claims, true);
       await this.requireProfile(claims, input, true, 'video-submit');
       await this.frozenConnection(record.configuration.connectionFingerprint);
+      await this.videoReferences(claims, input, profile.capabilities, connection.fingerprint);
     } catch (error) {
       record.receipt.status = 'FAILED'; record.receipt.errorCode = 'CONFIG_CHANGED';
       saved = await this.store.save(this.normalize(record));
@@ -211,7 +250,7 @@ export class MediaVideoRealService {
     record = saved.record;
     try {
       const result = await this.adapter.submit(connection, generationInput, profile.modelId, bytes, clientRequestId,
-        record.configuration.pricingVersion);
+        record.configuration.pricingVersion, ...(videos.length ? [videos.map(r => r.upstreamReferenceId)] : []));
       record.configuration.upstreamTaskId = result.taskId;
       record.configuration.upstreamRequestId = result.requestId;
       record.configuration.dispatchState = 'ACCEPTED';
@@ -475,8 +514,8 @@ export class MediaVideoRealService {
 
   private async requireProfile(claims: ClientEmploymentClaims,
     input: (Pick<MediaVideoGatewayQuoteRequest, 'profileId' | 'configVersion' | 'operation' | 'parameters'> |
-      Pick<MediaVideoGatewayQuoteRequestV3, 'protocolVersion' | 'profileId' | 'configVersion' | 'operation' | 'requestedSpec'>) & { referenceIds?: string[] }, execution: boolean,
-    stage: 'video-quote' | 'video-submit' | 'video-query' | 'video-content', frozenModelId?: string) {
+      Pick<MediaVideoGatewayQuoteRequestV3, 'protocolVersion' | 'profileId' | 'configVersion' | 'operation' | 'requestedSpec'>) & { referenceIds?: string[]; videoReferenceIds?: string[] }, execution: boolean,
+    stage: 'video-upload' | 'video-quote' | 'video-submit' | 'video-query' | 'video-content', frozenModelId?: string) {
     const row = await this.prisma.mediaModelProfile.findUnique({ where: { profileId: input.profileId } });
     const v3 = 'protocolVersion' in input;
     // Existing V3 tasks retain their frozen spec after capability edits. Grants and model identity still apply.
@@ -492,12 +531,12 @@ export class MediaVideoRealService {
     if (!parsed.success) fail(403, 'MEDIA_FORBIDDEN', '企业视频授权无效');
     const policy = parsed.data;
     if (!policy.enabledProfileIds.includes(input.profileId)) fail(403, 'MEDIA_FORBIDDEN', '企业视频授权已撤销', { field: 'profileId', stage, recovery: 'refresh_capabilities' });
-    const capabilities = this.parse(z.object({
-      supportsTextToVideo: z.boolean(), supportsImageToVideo: z.boolean(), supportsAudio: z.boolean(),
-      durationsSeconds: z.array(z.number()), resolutions: z.array(z.string()), aspectRatios: z.array(z.string()),
-      durationRange: MediaVideoDurationRangeSchema.optional(),
-      frameRates: z.array(z.number()), outputFormats: z.array(z.string()), maxInputBytes: z.number().positive(), maxReferenceCount: z.number().int().nonnegative(),
-    }), row.capabilities);
+    const capabilities = this.parse(MediaVideoCapabilitiesSchema, row.capabilities);
+    if (execution && input.operation === 'video-to-video' && (!capabilities.supportsVideoToVideo
+      || !capabilities.maxVideoReferenceCount || !capabilities.maxVideoReferenceBytes || !capabilities.videoReferenceMimeTypes?.length
+      || (input.videoReferenceIds?.length ?? 0) > capabilities.maxVideoReferenceCount)) {
+      fail(422, 'INVALID_REFERENCE', '当前 Profile 不支持视频生视频或参考视频数量超限', { field: 'videoReferenceIds', stage, recovery: 'revise_request' });
+    }
     if (execution && input.operation === 'image-to-video' && input.referenceIds &&
       (!capabilities.supportsImageToVideo || input.referenceIds.length > capabilities.maxReferenceCount)) {
       fail(422, 'INVALID_REFERENCE', `参考图数量超过当前 Profile 上限 ${capabilities.maxReferenceCount}`, {
@@ -550,6 +589,25 @@ export class MediaVideoRealService {
     return connection;
   }
 
+  private referenceIds(input: MediaVideoRealQuoteRequest): string[] {
+    return [...input.referenceIds, ...('protocolVersion' in input ? input.videoReferenceIds ?? [] : [])];
+  }
+
+  private async videoReferences(claims: ClientEmploymentClaims, input: MediaVideoRealQuoteRequest,
+    capabilities: { maxVideoReferenceBytes?: number; videoReferenceMimeTypes?: string[] }, connectionFingerprint: string) {
+    const ids = 'protocolVersion' in input ? input.videoReferenceIds ?? [] : [];
+    return Promise.all(ids.map(async id => {
+      const reference = await this.store.findVideoReference(this.scope(claims), id);
+      if (!reference) fail(404, 'MEDIA_NOT_FOUND', '参考视频不存在或不属于当前用户和订阅');
+      if (Date.parse(reference.value.expiresAt) <= Date.now()) fail(410, 'REFERENCE_EXPIRED', '参考视频已过期，请重新上传');
+      if (reference.value.profileId !== input.profileId || reference.value.configVersion !== input.configVersion
+        || reference.connectionFingerprint !== connectionFingerprint) fail(409, 'CONFIG_CHANGED', '参考视频的 Profile 或算力连接已变更，请重新上传');
+      if (reference.value.byteLength > (capabilities.maxVideoReferenceBytes ?? 0)
+        || !capabilities.videoReferenceMimeTypes?.includes(reference.value.mimeType)) fail(422, 'INVALID_REFERENCE', '参考视频超过当前 Profile 大小或格式限制');
+      return reference;
+    }));
+  }
+
   private normalize(record: VideoRealRecord): VideoRealRecord {
     const active = ['SUBMITTING', 'SUBMISSION_UNKNOWN', 'QUEUED', 'RUNNING'].includes(record.receipt.status);
     record.receipt.pollAfterMs = active ? 2000 : null;
@@ -569,7 +627,7 @@ export class MediaVideoRealService {
   private assertReplay(input: MediaVideoRealRequest, record: VideoRealRecord) {
     if (record.configuration.quoteId !== input.quoteId) fail(409, 'IDEMPOTENCY_CONFLICT', '幂等键已用于不同视频报价');
     if (record.semanticSha256 !== this.semanticHash(input, record.referenceHashes, record.scope)) fail(409, 'IDEMPOTENCY_CONFLICT', '幂等键请求语义哈希不匹配');
-    if (JSON.stringify(record.referenceIds) !== JSON.stringify(input.referenceIds)) fail(409, 'IDEMPOTENCY_CONFLICT', '幂等键参考图不匹配');
+    if (JSON.stringify(record.referenceIds) !== JSON.stringify(this.referenceIds(input))) fail(409, 'IDEMPOTENCY_CONFLICT', '幂等键参考素材不匹配');
   }
 
   private semanticHash(input: MediaVideoRealQuoteRequest, referenceHashes: string[], scope = '') {
@@ -577,6 +635,7 @@ export class MediaVideoRealService {
       scope, adapter: VIDEO_REAL_ADAPTER, adapterVersion: '3',
       profileId: input.profileId, configVersion: input.configVersion, operation: input.operation, specRevision: input.specRevision,
       referenceIds: input.referenceIds.map((id, index) => ({ id, hash: referenceHashes[index] })), briefSha256: hash(input.creativeBrief), requestedSpec: input.requestedSpec,
+      ...(input.videoReferenceIds?.length ? { videoReferenceIds: input.videoReferenceIds.map((id, index) => ({ id, hash: referenceHashes[input.referenceIds.length + index] })) } : {}),
       parameterSources: input.parameterSources ? Object.fromEntries(Object.entries(input.parameterSources).sort(([a], [b]) => a.localeCompare(b))) : null,
       omittedSpecFields: ['durationSeconds', 'aspectRatio', 'resolution', 'width', 'height', 'frameRate', 'audio', 'outputFormat']
         .filter(field => !(field in input.requestedSpec)) }));

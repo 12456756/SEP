@@ -16,6 +16,26 @@ sep.longdaoec.com {
     @sep_downloads path /sep-client/*
     reverse_proxy @sep_downloads sep-downloads:80
 
+    @video_reference {
+        method POST
+        path /api/gateway/v1/media/video-real/video-references /api/gateway/v1/media/video-real/video-references/
+    }
+    handle @video_reference {
+        request_body {
+            max_size 96468992
+        }
+        reverse_proxy sep-green-backend:3001 {
+            header_up X-Real-IP {client_ip}
+            header_up X-Forwarded-For {client_ip}
+            header_up X-Forwarded-Proto {scheme}
+            transport http {
+                response_header_timeout 330s
+                read_timeout 330s
+                write_timeout 330s
+            }
+        }
+    }
+
     @skill_import path /api/skill-import /api/skill-import/*
     handle @skill_import {
         @package {
