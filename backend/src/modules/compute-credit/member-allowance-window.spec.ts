@@ -38,7 +38,7 @@ describe("member-allowance-window pending image funds", () => {
 
     expect((await sumEnterpriseUsed(client, params)).toFixed(6)).toBe("15.000000");
     expect(prisma.computeUsageRecord.aggregate).toHaveBeenCalledWith({
-      where: { enterpriseId: params.enterpriseId, userId: params.userId, createdAt: { gte: params.from, lt: params.to } },
+      where: { enterpriseId: params.enterpriseId, userId: params.userId, paymentMode: { not: 'PERSONAL_ONLY' }, createdAt: { gte: params.from, lt: params.to } },
       _sum: USED_SUM_SELECT,
     });
     expect(prisma.mediaRealBillingReservation.aggregate).toHaveBeenCalledWith({

@@ -1,568 +1,309 @@
 import { HttpException } from '@nestjs/common';
-import { createHash } from 'node:crypto';
-import { MediaRealService } from './media-real.service';
-import { ImageDispatchError } from './sub2api-image.adapter';
-import { MediaRealQuoteRequestSchema, MediaRealQuoteRequestV3Schema, MediaRealQuoteV3Schema } from 'shared';
-import { MEDIA_MOCK_PNG } from './media-gateway-mock.adapter';
-import type { ClientEmploymentClaims } from '../client/client-employment.guard';
-import type { RealRequestRecord } from './media-real.store';
+import { MediaUpstreamException } from '../../common/errors/media-upstream.exception';
+import { MediaRealAnyReceiptSchema } from 'shared';
+import { imageClaims, imageHarness, imageInput } from './media-async.test-support';
+import { contractResult } from './longdao-media.test-support';
 import { referenceFixture } from './media-reference.test-support';
+import { MEDIA_MOCK_PNG } from './media-gateway-mock.adapter';
+import { createHash } from 'node:crypto';
 
-const claims = { enterpriseId: 'enterprise', sub: 'user', memberId: 'member', subscriptionId: 'subscription' } as ClientEmploymentClaims;
-const scope = JSON.stringify([claims.enterpriseId, claims.sub, claims.memberId, claims.subscriptionId]);
-const hash = createHash('sha256').update(MEDIA_MOCK_PNG).digest('hex');
-const profile = { profileId: 'image', configVersion: 'cfg_1', executionMode: 'sync-response', operations: ['generate', 'edit'],
-  capabilities: { sizes: ['1024x1024'], maxOutputs: 4, supportsReferenceImage: true } };
-const quoteInput = MediaRealQuoteRequestSchema.parse({ profileId: 'image', configVersion: 'cfg_1', operation: 'generate', creativeBrief: 'Draw a product' });
-const request = { ...quoteInput, clientRequestId: 'request', quoteId: 'quote' };
-const quoteInputV3 = MediaRealQuoteRequestV3Schema.parse({
-  protocolVersion: 3, specRevision: 1, profileId: 'image', configVersion: 'cfg_1', operation: 'generate',
-  referenceIds: [], creativeBrief: 'Draw a product', requestedSpec: { width: 1, height: 1, count: 1, quality: 'medium' },
-  parameterSources: { width: 'model', height: 'model', count: 'model', quality: 'model' },
-});
-
-function harness() {
-  let record: RealRequestRecord | null = null;
-  let quote: any = null;
-  const prisma = { enterpriseMember: { findFirst: jest.fn().mockResolvedValue({ departmentId: null }) },
-    enterpriseModelConfig: { findUnique: jest.fn().mockResolvedValue({ mediaPolicy: { enabledProfileIds: ['image'], defaultProfileId: null } }) },
-    subscription: { findFirst: jest.fn().mockResolvedValue({ id: 'subscription' }) },
-    mediaModelProfile: { findUnique: jest.fn().mockResolvedValue({ ...profile, modelId: 'gpt-image-2', enabled: true, verified: true }) } };
-  const config = { get: jest.fn().mockReturnValue('true') };
-  const settings = { getEffectiveValue: jest.fn().mockResolvedValue('7.2') };
-  const mediaConfig = { getConnection: jest.fn().mockResolvedValue({ configured: true }),
-    getRuntimeMedia: jest.fn().mockResolvedValue({ executionAvailable: true, profiles: [profile] }),
-    getRuntimeMediaV3: jest.fn().mockResolvedValue({ executionAvailable: true, profiles: [{
-      profileId: 'image', configVersion: 'cfg_1', executionMode: 'sync-response', operations: ['generate', 'edit'], authorized: true,
-      adapter: { available: true, operations: ['generate', 'edit'] },
-    }] }) };
-  const adapter = { pricing: jest.fn().mockResolvedValue({ amount_usd: '0.10', pricing_version: 'price1', expires_at: new Date(Date.now() + 60_000).toISOString() }),
-    connectionSnapshot: jest.fn().mockResolvedValue({ connection: { base: 'https://media.example.test/v1', key: 'secret' }, fingerprint: 'a'.repeat(64) }),
-    connectionFingerprint: jest.fn().mockResolvedValue('a'.repeat(64)), assertConnectionFingerprint: jest.fn().mockResolvedValue(undefined),
-    execute: jest.fn().mockResolvedValue({ requestId: 'upstream', images: [MEDIA_MOCK_PNG] }),
-    usage: jest.fn().mockResolvedValue({ status: 'settled', actual_cost_usd: '0.08', model: 'gpt-image-2', image_count: 1 }) };
-  const cache = { put: jest.fn().mockResolvedValue(undefined), get: jest.fn().mockResolvedValue(MEDIA_MOCK_PNG) };
-  const billing = { quoteFunding: jest.fn().mockResolvedValue({ creditCny: '0.720000', memberWalletCny: '0.000000', personalCny: '0.000000' }),
-    status: jest.fn().mockResolvedValue('RESERVED'),
-    reserve: jest.fn().mockResolvedValue(undefined), release: jest.fn().mockResolvedValue(undefined), settle: jest.fn().mockResolvedValue('SETTLED'),
-    settleNegotiated: jest.fn().mockResolvedValue('SETTLED') };
-  const store = {
-    saveQuote: jest.fn(async (_scope: string, value: any, usdToCnyRate: number, connectionFingerprint?: string) => {
-      quote = { scope: _scope, value: { ...value, quoteId: 'quote' }, usdToCnyRate, connectionFingerprint }; return quote.value;
-    }),
-    findQuote: jest.fn(async () => quote), findReference: jest.fn(async () => ({ scope, value: { sha256: hash, byteLength: MEDIA_MOCK_PNG.length, expiresAt: new Date(Date.now() + 60_000).toISOString() } })),
-    findByClientId: jest.fn(async () => record), findRequest: jest.fn(async () => record),
-    pendingRequests: jest.fn(async () => ({ records: record ? [structuredClone(record)] : [], afterId: undefined })),
-    claim: jest.fn(async (input: any) => {
-      if (record) return { record: structuredClone(record), created: false };
-      record = { ...input, id: 'receipt', receipt: { ...input.receipt, receiptId: 'receipt' }, revision: 0 };
-      return { record: structuredClone(record), created: true };
-    }),
-    save: jest.fn(async (value: RealRequestRecord) => {
-      if (record?.revision === value.revision) record = structuredClone({ ...value, revision: value.revision + 1 });
-      return structuredClone(record!);
-    }),
-    saveReference: jest.fn(async (_scope: string, value: any) => ({ ...value, referenceId: 'reference' })),
-  };
-  const service = new MediaRealService(config as any, prisma as any, settings as any, mediaConfig as any, adapter as any, cache as any, billing as any, store as any);
-  return { service, config, settings, mediaConfig, prisma, adapter, cache, billing, store,
-    quote: () => quote, record: () => record! };
-}
-
-describe('MediaRealService', () => {
-  it.each(['jpeg', 'webp'] as const)('uploads and caches the original %s reference', async format => {
-    const h = harness();
-    const bytes = await referenceFixture(format);
-    const file = { buffer: bytes, size: bytes.length, mimetype: `image/${format}`, originalname: `original.${format}` } as Express.Multer.File;
-    const reference = await h.service.uploadReference(claims, file);
-    expect(reference).toMatchObject({ referenceId: 'reference', mimeType: `image/${format}`,
-      byteLength: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), width: 3, height: 2 });
-    expect(h.cache.put).toHaveBeenCalledWith('reference', scope, 'reference', bytes, reference.expiresAt);
-    expect(h.adapter.execute).not.toHaveBeenCalled();
+describe('MediaRealService asynchronous client receipts', () => {
+  it('keeps a changed payment preference failure definitive and never dispatches generation', async () => {
+    const h = imageHarness();
+    h.billing.reserve.mockRejectedValueOnce(new HttpException({ error: { code: 'PAYMENT_MODE_CHANGED', message: '付款方式已变化，请重新报价' } }, 409));
+    const { receipt } = await h.submit();
+    expect(receipt).toMatchObject({ status: 'FAILED', billingStatus: 'NOT_RESERVED', errorCode: 'CONFIG_CHANGED',
+      execution: { submissionStatus: 'not_submitted', billing: { status: 'not_charged' } },
+      clientActions: { shouldPoll: false, canStartNewRequest: true },
+      billingError: { body: { error: { message: '付款方式已变化，请重新报价' } } } });
+    expect(h.adapter.submitAsync).not.toHaveBeenCalled();
   });
-
-  it('rejects mismatched MIME before storing the image reference', async () => {
-    const h = harness();
-    const bytes = await referenceFixture('jpeg');
-    await expect(h.service.uploadReference(claims, { buffer: bytes, size: bytes.length, mimetype: 'image/png' } as Express.Multer.File))
-      .rejects.toMatchObject({ status: 400, response: { error: { code: 'INVALID_REFERENCE' } } });
-    expect(h.store.saveReference).not.toHaveBeenCalled();
-    expect(h.cache.put).not.toHaveBeenCalled();
-  });
-  it('rejects excessive total reference bytes before asking for a price', async () => {
-    const h = harness();
-    h.prisma.mediaModelProfile.findUnique.mockResolvedValue({ ...profile, modelId: 'gpt-image-2', enabled: true, verified: true,
-      capabilities: { ...profile.capabilities, maxReferenceCount: 32 } });
-    h.store.findReference.mockImplementation(async () => ({ scope,
-      value: { sha256: hash, byteLength: 5 * 1024 * 1024, expiresAt: new Date(Date.now() + 60000).toISOString() } }));
-    const edit = { ...quoteInputV3, operation: 'edit' as const, referenceIds: Array.from({ length: 21 }, (_, i) => `ref-${i}`) };
-    await expect(h.service.quote(claims, edit)).rejects.toMatchObject({ status: 413, response: { error: { code: 'INVALID_REFERENCE' } } });
-    expect(h.adapter.pricing).not.toHaveBeenCalled();
-    expect(h.billing.reserve).not.toHaveBeenCalled();
-  });
-
-  it('enforces a changed reference limit for both quote and submit before dispatch', async () => {
-    const h = harness();
-    const row = { ...profile, modelId: 'gpt-image-2', enabled: true, verified: true,
-      capabilities: { ...profile.capabilities, maxReferenceCount: 3 } };
-    h.prisma.mediaModelProfile.findUnique.mockResolvedValue(row);
-    const edit = { ...quoteInputV3, operation: 'edit' as const, referenceIds: ['a', 'b', 'c'] };
-    await h.service.quote(claims, edit);
-    expect(h.adapter.pricing).toHaveBeenCalledTimes(1);
-    row.capabilities.maxReferenceCount = 2;
-    await expect(h.service.quote(claims, edit)).rejects.toMatchObject({ status: 422, response: { error: { code: 'INVALID_REFERENCE' } } });
-    await expect(h.service.submit(claims, { ...edit, quoteId: 'quote', clientRequestId: 'three-images' }))
-      .rejects.toMatchObject({ status: 422 });
-    expect(h.billing.reserve).not.toHaveBeenCalled();
-    expect(h.adapter.execute).not.toHaveBeenCalled();
-  });
-
-  it('returns the original submission error and persists it without resubmitting', async () => {
-    const h = harness();
-    const original = { status: 403, body: { error: { code: 'permission_error', message: 'Image edit denied' } } };
-    h.adapter.execute.mockRejectedValue(new ImageDispatchError('upstream', false, 'UPSTREAM_FAILED', original));
-    await h.service.quote(claims, quoteInputV3);
-    const input = { ...quoteInputV3, quoteId: 'quote', clientRequestId: 'upstream-error' };
-    await expect(h.service.submit(claims, input)).rejects.toMatchObject({ status: 403, response: original.body });
-    expect(h.record().receipt).toMatchObject({ status: 'SUBMISSION_UNKNOWN', billingStatus: 'RECONCILING', upstreamError: original });
-    await h.service.submit(claims, input);
-    expect(h.adapter.execute).toHaveBeenCalledTimes(1);
-    expect(h.billing.release).not.toHaveBeenCalled();
-  });
-
-  it.each(['quote', 'submit'] as const)('enforces the configured image output limit before %s can spend funds', async stage => {
-    const h = harness();
-    h.prisma.mediaModelProfile.findUnique.mockResolvedValue({ ...profile, modelId: 'gpt-image-2', enabled: true, verified: true,
-      capabilities: { ...profile.capabilities, maxOutputs: 1 } });
-    const input = { ...quoteInputV3, requestedSpec: { ...quoteInputV3.requestedSpec, count: 2 } };
-    const action = stage === 'quote' ? h.service.quote(claims, input)
-      : h.service.submit(claims, { ...input, quoteId: 'quote', clientRequestId: 'over-output-limit' });
-    await expect(action).rejects.toMatchObject({ status: 400, response: { error: {
-      code: 'UNSUPPORTED_MEDIA_PARAMETERS', field: 'requestedSpec.count' } } });
-    expect(h.adapter.pricing).not.toHaveBeenCalled();
-    expect(h.billing.reserve).not.toHaveBeenCalled();
-    expect(h.adapter.execute).not.toHaveBeenCalled();
-  });
-
-  it.each(['quote', 'submit'] as const)('enforces the configured reference count before %s', async stage => {
-    const h = harness();
-    h.prisma.mediaModelProfile.findUnique.mockResolvedValue({ ...profile, modelId: 'gpt-image-2', enabled: true, verified: true,
-      capabilities: { ...profile.capabilities, supportsReferenceImage: true, maxReferenceCount: 1 } });
-    const input = { ...quoteInputV3, operation: 'edit' as const, referenceIds: ['ref-1', 'ref-2'] };
-    const action = stage === 'quote' ? h.service.quote(claims, input)
-      : h.service.submit(claims, { ...input, quoteId: 'quote', clientRequestId: 'over-reference-limit' });
-    await expect(action).rejects.toMatchObject({ status: 422, response: { error: {
-      code: 'INVALID_REFERENCE', field: 'referenceIds' } } });
-    expect(h.adapter.pricing).not.toHaveBeenCalled();
-    expect(h.billing.reserve).not.toHaveBeenCalled();
-    expect(h.adapter.execute).not.toHaveBeenCalled();
-  });
-  it.each(['subscription', 'policy', 'profile', 'model', 'switch'] as const)(
-    'rechecks V3 execution authorization after reservation when %s changes', async change => {
-      const h = harness();
-      await h.service.quote(claims, quoteInputV3);
-      h.billing.reserve.mockImplementationOnce(async () => {
-        if (change === 'subscription') h.prisma.subscription.findFirst.mockResolvedValue(null);
-        if (change === 'policy') h.mediaConfig.getRuntimeMediaV3.mockResolvedValue({ executionAvailable: false, profiles: [] });
-        if (change === 'profile') h.prisma.mediaModelProfile.findUnique.mockResolvedValue({ ...profile, modelId: 'gpt-image-2', enabled: false, verified: true });
-        if (change === 'model') h.prisma.mediaModelProfile.findUnique.mockResolvedValue({ ...profile, modelId: 'different-image-model', enabled: true, verified: true });
-        if (change === 'switch') h.config.get.mockReturnValue('false');
-      });
-      const receipt = await h.service.submit(claims, { ...quoteInputV3, clientRequestId: 'revoked-during-reserve', quoteId: 'quote' });
-      expect(receipt).toMatchObject({ status: 'FAILED', errorCode: 'CONFIG_CHANGED', billingStatus: 'RELEASED' });
-      expect(h.adapter.execute).not.toHaveBeenCalled();
-      expect(h.billing.release).toHaveBeenCalledWith('receipt');
-    },
-  );
-  it.each(['changed', 'unavailable'] as const)('releases a reserved V3 request when its pre-dispatch connection is %s', async failure => {
-    const h = harness();
-    await h.service.quote(claims, quoteInputV3);
-    const unchanged = { connection: { base: 'https://media.example.test/v1', key: 'secret' }, fingerprint: 'a'.repeat(64) };
-    h.adapter.connectionSnapshot.mockResolvedValueOnce(unchanged);
-    if (failure === 'changed') h.adapter.connectionSnapshot.mockResolvedValueOnce({ ...unchanged, fingerprint: 'b'.repeat(64) });
-    else h.adapter.connectionSnapshot.mockRejectedValueOnce(new Error('connection unavailable'));
-    const receipt = await h.service.submit(claims, { ...quoteInputV3, clientRequestId: 'local-failure', quoteId: 'quote' });
-    expect(receipt).toMatchObject({ status: 'FAILED', errorCode: 'CONFIG_CHANGED', billingStatus: 'RELEASED', recovery: { canQuery: false } });
-    expect(h.adapter.execute).not.toHaveBeenCalled();
-    expect(h.billing.release).toHaveBeenCalledWith('receipt');
-  });
-
-  it('retries a local pre-dispatch failure refund without dispatching or querying usage', async () => {
-    const h = harness();
-    await h.service.quote(claims, quoteInputV3);
-    h.adapter.connectionSnapshot.mockResolvedValueOnce({ connection: { base: 'https://media.example.test/v1', key: 'secret' }, fingerprint: 'a'.repeat(64) })
-      .mockRejectedValueOnce(new Error('connection unavailable'));
-    h.billing.release.mockRejectedValueOnce(new Error('billing unavailable'));
-    const submitted = await h.service.submit(claims, { ...quoteInputV3, clientRequestId: 'refund-retry', quoteId: 'quote' });
-    expect(submitted).toMatchObject({ status: 'FAILED', errorCode: 'CONFIG_CHANGED', billingStatus: 'RECONCILING', recovery: { canQuery: true } });
-    const recovered = await h.service.receipt(claims, 'receipt');
-    expect(recovered).toMatchObject({ status: 'FAILED', billingStatus: 'RELEASED' });
-    expect(h.billing.release).toHaveBeenCalledTimes(2);
-    expect(h.adapter.execute).not.toHaveBeenCalled(); expect(h.adapter.usage).not.toHaveBeenCalled();
-  });
-
-  it('does not release a V3 reservation when execute has started but acceptance is unknown', async () => {
-    const h = harness();
-    await h.service.quote(claims, quoteInputV3);
-    h.adapter.execute.mockRejectedValue(new ImageDispatchError(null, false));
-    const receipt = await h.service.submit(claims, { ...quoteInputV3, clientRequestId: 'ambiguous-dispatch', quoteId: 'quote' });
-    expect(receipt).toMatchObject({ status: 'SUBMISSION_UNKNOWN', billingStatus: 'RECONCILING' });
-    expect(h.billing.release).not.toHaveBeenCalled();
-  });
-
-  it('reports a known size mismatch for heterogeneous V3 outputs without inventing a shared actual size', async () => {
-    const h = harness();
-    await h.service.quote(claims, quoteInputV3);
-    await h.service.submit(claims, { ...quoteInputV3, clientRequestId: 'mixed-dimensions', quoteId: 'quote' });
-    const record = h.record();
-    record.receipt.outputs.push({ ...record.receipt.outputs[0], outputId: 'different-dimensions', width: 2, height: 2 });
-    (h.service as any).applyActualSpec(record, { size: '1x1', count: 2, quality: 'medium' });
-    expect(record.receipt).toMatchObject({ actualSpec: { count: 2 }, acceptance: { status: 'mismatched', mismatchedFields: ['size'], unknownFields: ['quality'] } });
-    expect((record.receipt as any).actualSpec.size).toBeUndefined();
-  });
-
-  it('distinguishes a removed V3 grant from an authorized profile version change', async () => {
-    const h = harness();
-    h.mediaConfig.getRuntimeMediaV3.mockResolvedValue({ executionAvailable: false, profiles: [] });
-    h.prisma.enterpriseModelConfig.findUnique.mockResolvedValue({ mediaPolicy: { enabledProfileIds: [], defaultProfileId: null } });
-    await expect(h.service.quote(claims, quoteInputV3)).rejects.toMatchObject({ response: { error: { code: 'MEDIA_FORBIDDEN' } } });
-    h.prisma.enterpriseModelConfig.findUnique.mockResolvedValue({ mediaPolicy: { enabledProfileIds: ['image'], defaultProfileId: null } });
-    await expect(h.service.quote(claims, quoteInputV3)).rejects.toMatchObject({ response: { error: { code: 'CONFIG_CHANGED' } } });
-  });
-
-  it('quotes full-length V3 size and quality labels without storage contract truncation', async () => {
-    const h = harness();
-    const dto = { ...quoteInputV3, requestedSpec: { size: 's'.repeat(128), count: 1, quality: 'q'.repeat(128) } };
-    const result = await h.service.quote(claims, dto);
-    expect(MediaRealQuoteV3Schema.safeParse(result).success).toBe(true);
-  });
-  it('retains an upstream specification error without assuming rejection before execution or releasing funds', async () => {
-    const h = harness();
-    await h.service.quote(claims, quoteInputV3);
-    h.adapter.execute.mockRejectedValue(new ImageDispatchError('upstream', false, 'UPSTREAM_SPEC_UNSUPPORTED'));
-    const receipt = await h.service.submit(claims, { ...quoteInputV3, clientRequestId: 'unsupported-spec', quoteId: 'quote' });
-    expect(receipt).toMatchObject({ status: 'SUBMISSION_UNKNOWN', errorCode: 'UPSTREAM_SPEC_UNSUPPORTED', billingStatus: 'RECONCILING' });
-    await h.service.receipt(claims, receipt.receiptId);
-    expect(h.billing.release).not.toHaveBeenCalled();
-    expect(h.adapter.execute).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not drop explicit pixel dimensions when a named size cannot express them', async () => {
-    const h = harness();
-    await expect(h.service.quote(claims, { ...quoteInputV3, requestedSpec: { size: 'auto', width: 1, height: 1, count: 1, quality: 'medium' } }))
-      .rejects.toMatchObject({ response: { error: { code: 'ADAPTER_FIELD_UNMAPPED', field: 'requestedSpec.width' } } });
-    expect(h.adapter.pricing).not.toHaveBeenCalled();
-    expect(h.billing.reserve).not.toHaveBeenCalled();
-  });
-  it('retains and settles extra safe V3 outputs while reporting count mismatch', async () => {
-    const h = harness();
-    h.adapter.execute.mockResolvedValue({ requestId: 'upstream', images: [MEDIA_MOCK_PNG, MEDIA_MOCK_PNG] });
-    h.adapter.usage.mockResolvedValue({ status: 'settled', actual_cost_usd: '0.08', model: 'gpt-image-2', image_count: 2 });
-    await h.service.quote(claims, quoteInputV3);
-    const receipt = await h.service.submit(claims, { ...quoteInputV3, clientRequestId: 'extra-outputs', quoteId: 'quote' });
-    expect(receipt).toMatchObject({ status: 'SUCCEEDED', billingStatus: 'SETTLED', actualSpec: { count: 2 },
-      acceptance: { status: 'mismatched', mismatchedFields: ['count'] }, recovery: { canDownload: true } });
-    expect(receipt.outputs).toHaveLength(2);
-  });
-
-  it('settles a negotiated unknown model with dot profile and nonlegacy config IDs', async () => {
-    const h = harness();
-    const dto = { ...quoteInputV3, profileId: 'future.image', configVersion: 'config:2026.10' };
-    h.prisma.mediaModelProfile.findUnique.mockResolvedValue({ ...profile, ...dto, modelId: 'future-image-native', enabled: true, verified: true });
-    const runtime = await h.mediaConfig.getRuntimeMediaV3();
-    h.mediaConfig.getRuntimeMediaV3.mockResolvedValue({ ...runtime, profiles: runtime.profiles.map(item => ({ ...item, profileId: dto.profileId, configVersion: dto.configVersion })) });
-    h.adapter.usage.mockResolvedValue({ status: 'settled', actual_cost_usd: '0.08', model: 'future-image-native', image_count: 1 });
-    await h.service.quote(claims, dto);
-    const receipt = await h.service.submit(claims, { ...dto, clientRequestId: 'future-request', quoteId: 'quote' });
-    expect(receipt).toMatchObject({ protocolVersion: 3, profileId: 'future.image', configVersion: 'config:2026.10', status: 'SUCCEEDED', billingStatus: 'SETTLED' });
-    expect(h.billing.settleNegotiated).toHaveBeenCalledWith('receipt', '0.576000', '0.080000', 'future-image-native', 'future-image-native');
-  });
-
-  it.each(['amount', 'version', 'model', 'adapter', 'connection'] as const)('does not reserve or dispatch when V3 frozen %s changes', async change => {
-    const h = harness();
-    await h.service.quote(claims, quoteInputV3);
-    if (change === 'amount') h.adapter.pricing.mockResolvedValue({ amount_usd: '0.11', pricing_version: 'price1', expires_at: new Date(Date.now() + 60_000).toISOString() });
-    if (change === 'version') h.adapter.pricing.mockResolvedValue({ amount_usd: '0.10', pricing_version: 'price2', expires_at: new Date(Date.now() + 60_000).toISOString() });
-    if (change === 'model') h.prisma.mediaModelProfile.findUnique.mockResolvedValue({ ...profile, modelId: 'future-image-native', enabled: true, verified: true });
-    if (change === 'adapter') h.quote().value.adapterVersion = 'old-adapter';
-    if (change === 'connection') h.adapter.connectionSnapshot.mockResolvedValue({ connection: { base: 'https://changed.example/v1', key: 'secret' }, fingerprint: 'b'.repeat(64) });
-    await expect(h.service.submit(claims, { ...quoteInputV3, clientRequestId: 'request-v3', quoteId: 'quote' })).rejects.toMatchObject({ response: { error: { code: 'CONFIG_CHANGED' } } });
-    expect(h.billing.reserve).not.toHaveBeenCalled();
-    expect(h.adapter.execute).not.toHaveBeenCalled();
-  });
-
-  it.each([[false, true, 'MEDIA_FORBIDDEN'], [true, false, 'ADAPTER_UNAVAILABLE']] as const)('reports V3 authorization %s and adapter availability %s precisely', async (authorized, available, code) => {
-    const h = harness();
-    const runtime = await h.mediaConfig.getRuntimeMediaV3();
-    h.mediaConfig.getRuntimeMediaV3.mockResolvedValue({ executionAvailable: false, profiles: runtime.profiles.map(item => ({ ...item, authorized, adapter: { ...item.adapter, available } })) });
-    await expect(h.service.quote(claims, quoteInputV3)).rejects.toMatchObject({ response: { error: { code, field: 'profileId' } } });
-    expect(h.adapter.pricing).not.toHaveBeenCalled();
-  });
-
-  it('quotes and submits V3 without capability-hint whitelisting or silent defaults', async () => {
-    const h = harness();
-    const quote = await h.service.quote(claims, quoteInputV3);
-    expect(quote).toMatchObject({ protocolVersion: 3, semanticHashVersion: 3,
-      effectiveSpec: { size: '1x1', count: 1, quality: 'medium' } });
-    expect(h.adapter.pricing).toHaveBeenCalledWith(expect.objectContaining({ requestedSpec: expect.objectContaining({ size: '1x1' }) }), 'gpt-image-2', expect.any(Object));
-    const receipt = await h.service.submit(claims, { ...quoteInputV3, clientRequestId: 'request-v3', quoteId: 'quote' });
-    expect(receipt).toMatchObject({ protocolVersion: 3, status: 'SUCCEEDED', actualSpec: { count: 1 },
-      acceptance: { status: 'unknown', unknownFields: ['quality'] } });
-    expect(h.billing.settleNegotiated).toHaveBeenCalledWith('receipt', '0.576000', '0.080000', 'gpt-image-2', 'gpt-image-2');
-  });
-
-  it('rejects missing V3 pricing dimensions before pricing or dispatch', async () => {
-    const h = harness();
-    const missing = MediaRealQuoteRequestV3Schema.parse({ ...quoteInputV3, requestedSpec: { count: 1 } });
-    await expect(h.service.quote(claims, missing)).rejects.toMatchObject({ response: { error: { code: 'MISSING_SPEC', field: 'requestedSpec.size' } } });
-    expect(h.adapter.pricing).not.toHaveBeenCalled(); expect(h.adapter.execute).not.toHaveBeenCalled();
-  });
-  it('returns client profiles contract and respects disabled runtime', async () => {
-    const h = harness();
-    expect(await h.service.profiles(claims)).toMatchObject({ mock: false, persistence: 'database', profiles: [profile] });
-    h.mediaConfig.getRuntimeMedia.mockResolvedValue({ executionAvailable: false, profiles: [profile] });
-    expect((await h.service.profiles(claims)).profiles).toEqual([]);
-  });
-
-  it('does not reserve or dispatch at quote and freezes the exchange rate', async () => {
-    const h = harness(); const quote = await h.service.quote(claims, quoteInput);
-    expect(quote.amountCny).toBe('0.720000');
-    expect(h.billing.reserve).not.toHaveBeenCalled(); expect(h.adapter.execute).not.toHaveBeenCalled();
-    h.settings.getEffectiveValue.mockResolvedValue('9');
-    const receipt = await h.service.submit(claims, request);
-    expect(receipt.billingStatus).toBe('SETTLED');
-    expect(h.billing.reserve).toHaveBeenCalledWith(claims, 'receipt', '0.720000', 7.2);
-    expect(h.billing.settle).toHaveBeenCalledWith('receipt', '0.576000', '0.080000', 'gpt-image-2');
-    expect(h.record().configuration).not.toHaveProperty('creativeBrief');
-  });
-
-  it('projects stable field, stage, and recovery metadata for unsupported image requests', async () => {
-    const h = harness();
-    h.mediaConfig.getRuntimeMedia.mockResolvedValue({ executionAvailable: true, profiles: [{ ...profile, capabilities: { ...profile.capabilities, sizes: ['1536x1024'] } }] });
-    await expect(h.service.quote(claims, quoteInput)).rejects.toMatchObject({ response: { error: {
-      code: 'CONFIG_CHANGED', field: 'parameters.size', stage: 'image-quote', recovery: 'revise_request',
-    } } });
-  });
-
-  it('freezes the selected profile model from quote through execution and billing reconciliation', async () => {
-    const h = harness();
-    h.prisma.mediaModelProfile.findUnique.mockResolvedValue({ ...profile, modelId: 'gpt-image-1.5', enabled: true, verified: true });
-    h.adapter.usage.mockResolvedValue({ status: 'settled', actual_cost_usd: '0.08', model: 'gpt-image-1.5', image_count: 1 });
-    await h.service.quote(claims, quoteInput);
-    expect(h.adapter.pricing).toHaveBeenCalledWith(quoteInput, 'gpt-image-1.5');
-    await h.service.submit(claims, request);
-    expect(h.store.claim.mock.calls[0][0].configuration).toMatchObject({ modelId: 'gpt-image-1.5' });
-    expect(h.adapter.execute).toHaveBeenCalledWith(expect.objectContaining({ ...quoteInput, ...request }), [], expect.any(Function), 'gpt-image-1.5');
-    expect(h.billing.settle).toHaveBeenCalledWith('receipt', '0.576000', '0.080000', 'gpt-image-1.5');
-  });
-
-  it('concurrent identical requests dispatch only once', async () => {
-    const h = harness(); await h.service.quote(claims, quoteInput);
-    await Promise.all([h.service.submit(claims, request), h.service.submit(claims, request)]);
-    expect(h.adapter.execute).toHaveBeenCalledTimes(1); expect(h.billing.reserve).toHaveBeenCalledTimes(1);
-  });
-
-  it('settles from verified usage without consulting a changed current profile', async () => {
-    const h = harness(); await h.service.quote(claims, quoteInput);
-    h.adapter.usage.mockResolvedValueOnce({ status: 'pending', actual_cost_usd: null, model: null, image_count: 0 } as any);
-    await h.service.submit(claims, request);
-    h.prisma.mediaModelProfile.findUnique.mockClear();
-    h.prisma.mediaModelProfile.findUnique.mockResolvedValue({ ...profile, modelId: 'changed-model', enabled: true, verified: true });
-    expect(await h.service.receipt(claims, 'receipt')).toMatchObject({ billingStatus: 'SETTLED' });
-    expect(h.billing.settle).toHaveBeenCalledWith('receipt', '0.576000', '0.080000', 'gpt-image-2');
-    expect(h.prisma.mediaModelProfile.findUnique).not.toHaveBeenCalled();
-  });
-
-  it.each([null, undefined, '', 'other-model'])('does not settle unverified upstream model %s', async model => {
-    const h = harness(); await h.service.quote(claims, quoteInput);
-    h.adapter.usage.mockResolvedValue({ status: 'settled', actual_cost_usd: '0.08', model, image_count: 1 } as any);
-    expect(await h.service.submit(claims, request)).toMatchObject({ billingStatus: 'RECONCILING' });
-    expect(h.billing.settle).not.toHaveBeenCalled();
-  });
-
-  it('rejects a changed payload under the same key', async () => {
-    const h = harness(); await h.service.quote(claims, quoteInput); await h.service.submit(claims, request);
-    await expect(h.service.submit(claims, { ...request, creativeBrief: 'Different prompt' })).rejects.toMatchObject({ status: 409 });
-    expect(h.adapter.execute).toHaveBeenCalledTimes(1);
-  });
-
-  it('recovers by original key even if edit references have expired', async () => {
-    const h = harness(); const edit = { ...quoteInput, operation: 'edit' as const, referenceIds: ['reference'] };
-    await h.service.quote(claims, edit); await h.service.submit(claims, { ...edit, quoteId: 'quote', clientRequestId: 'request' });
-    h.store.findReference.mockRejectedValue(new Error('expired'));
-    expect((await h.service.submit(claims, { ...edit, quoteId: 'quote', clientRequestId: 'request' })).status).toBe('SUCCEEDED');
-    expect(h.adapter.execute).toHaveBeenCalledTimes(1);
-  });
-
-  it('never resubmits or releases an ambiguous upstream result', async () => {
-    const h = harness(); await h.service.quote(claims, quoteInput);
-    h.adapter.execute.mockRejectedValue(new ImageDispatchError('upstream', false));
-    expect((await h.service.submit(claims, request)).status).toBe('SUBMISSION_UNKNOWN');
-    expect((await h.service.submit(claims, request)).status).toBe('SUBMISSION_UNKNOWN');
-    expect(h.adapter.execute).toHaveBeenCalledTimes(1); expect(h.billing.release).not.toHaveBeenCalled(); expect(h.billing.settle).not.toHaveBeenCalled();
-  });
-
-  it('releases the reservation only for a definite dispatch rejection', async () => {
-    const h = harness(); await h.service.quote(claims, quoteInput);
-    h.adapter.execute.mockRejectedValue(new ImageDispatchError(null, true));
-    expect(await h.service.submit(claims, request)).toMatchObject({ status: 'FAILED', billingStatus: 'RELEASED' });
-    expect(h.billing.release).toHaveBeenCalledWith('receipt');
-  });
-
-  it('marks an uncertain reservation as reconciling without dispatch or release', async () => {
-    const h = harness(); await h.service.quote(claims, quoteInput);
-    h.billing.reserve.mockRejectedValue(new Error('unknown commit'));
-    await expect(h.service.submit(claims, request)).rejects.toThrow('unknown commit');
-    expect(h.record().receipt).toMatchObject({ status: 'SUBMISSION_UNKNOWN', billingStatus: 'RECONCILING' });
-    expect(h.adapter.execute).not.toHaveBeenCalled(); expect(h.billing.release).not.toHaveBeenCalled();
-  });
-
-  it('rejects insufficient funds without upstream execution', async () => {
-    const h = harness(); await h.service.quote(claims, quoteInput);
-    h.billing.reserve.mockRejectedValue(new HttpException({}, 402));
-    await expect(h.service.submit(claims, request)).rejects.toMatchObject({ status: 402 });
-    expect(h.record().receipt).toMatchObject({ status: 'FAILED', billingStatus: 'RELEASED' });
-    expect(h.adapter.execute).not.toHaveBeenCalled();
-  });
-
-  it('checks reference cache before reserving', async () => {
-    const h = harness(); const edit = { ...quoteInput, operation: 'edit' as const, referenceIds: ['reference'] };
-    await h.service.quote(claims, edit); h.cache.get.mockRejectedValue(new HttpException({}, 410));
-    await expect(h.service.submit(claims, { ...edit, quoteId: 'quote', clientRequestId: 'request' })).rejects.toMatchObject({ status: 410 });
-    expect(h.billing.reserve).not.toHaveBeenCalled(); expect(h.store.claim).not.toHaveBeenCalled();
-  });
-
-  it('recovers download and billing from a new service instance without another dispatch', async () => {
-    const h = harness(); await h.service.quote(claims, quoteInput);
-    h.adapter.usage.mockResolvedValueOnce({ status: 'pending', actual_cost_usd: null, model: null, image_count: 0 } as any);
-    const receipt = await h.service.submit(claims, request);
-    expect(receipt).toMatchObject({ status: 'SUCCEEDED', billingStatus: 'RECONCILING' });
-    const restarted = new MediaRealService(h.config as any, h.prisma as any, h.settings as any, h.mediaConfig as any, h.adapter as any, h.cache as any, h.billing as any, h.store as any);
-    expect((await restarted.receipt(claims, 'receipt')).billingStatus).toBe('SETTLED');
-    expect((await restarted.content(claims, 'receipt', 'receipt_0')).bytes).toEqual(MEDIA_MOCK_PNG);
-    expect(h.adapter.execute).toHaveBeenCalledTimes(1);
-  });
-
-  it('returns partial upstream output without regenerating missing outputs', async () => {
-    const h = harness(); const input = { ...quoteInput, parameters: { ...quoteInput.parameters, count: 2 } };
-    await h.service.quote(claims, input);
-    expect(await h.service.submit(claims, { ...input, clientRequestId: 'request', quoteId: 'quote' })).toMatchObject({ status: 'PARTIAL_SUCCEEDED', outputErrors: [{ index: 1, code: 'OUTPUT_FAILED' }] });
-    expect(h.adapter.execute).toHaveBeenCalledTimes(1);
-  });
-
-  it('denies revoked membership and cross enterprise receipt/download access', async () => {
-    const h = harness(); await h.service.quote(claims, quoteInput); await h.service.submit(claims, request);
-    const other = { ...claims, enterpriseId: 'other' };
-    await expect(h.service.receipt(other, 'receipt')).rejects.toMatchObject({ status: 404 });
-    await expect(h.service.content(other, 'receipt', 'receipt_0')).rejects.toMatchObject({ status: 404 });
-    h.prisma.subscription.findFirst.mockResolvedValue(null);
-    await expect(h.service.content(claims, 'receipt', 'receipt_0')).rejects.toMatchObject({ status: 403 });
-  });
-
-  it('rejects expired quotes and unverified/currently changed profiles before claim', async () => {
-    const h = harness(); await h.service.quote(claims, quoteInput);
-    h.quote().value.expiresAt = new Date(Date.now() - 1).toISOString();
-    await expect(h.service.submit(claims, request)).rejects.toMatchObject({ status: 409 });
-    expect(h.store.claim).not.toHaveBeenCalled();
-    h.prisma.mediaModelProfile.findUnique.mockResolvedValue({ ...profile, modelId: 'gpt-image-2', enabled: true, verified: false });
-    await expect(h.service.quote(claims, quoteInput)).rejects.toMatchObject({ status: 409 });
-  });
-
-  it('marks expired downloads without generating or changing billing', async () => {
-    const h = harness(); await h.service.quote(claims, quoteInput); await h.service.submit(claims, request);
-    h.record().receipt.outputs[0].expiresAt = new Date(Date.now() - 1).toISOString();
-    expect(await h.service.receipt(claims, 'receipt')).toMatchObject({ status: 'RESULT_EXPIRED', billingStatus: 'SETTLED', recovery: { canDownload: false } });
-    await expect(h.service.content(claims, 'receipt', 'receipt_0')).rejects.toMatchObject({ status: 410 });
-    expect(h.adapter.execute).toHaveBeenCalledTimes(1);
-  });
-
-  it('persists the upstream request ID before receiving image bytes', async () => {
-    const h = harness(); await h.service.quote(claims, quoteInput);
-    h.adapter.execute.mockImplementationOnce(async (_input, _bytes, onRequestId) => {
-      await onRequestId('early-upstream');
-      expect(h.record().upstreamRequestId).toBe('early-upstream');
-      expect(h.record().receipt.outputs).toEqual([]);
-      throw new ImageDispatchError('early-upstream', false);
+  it('quotes without dispatch, returns a pending async receipt and saves the correlation before POST', async () => {
+    const h = imageHarness();
+    h.adapter.submitAsync.mockImplementationOnce(async (_input, _refs, _model, id) => {
+      const persisted = [...h.records.values()][0];
+      expect(persisted.upstreamRequestId).toBe(id);
+      expect(persisted.configuration).toMatchObject({ dispatchState: 'DISPATCHING' });
+      return contractResult(id, { status: 'processing' }, 202);
     });
-    expect(await h.service.submit(claims, request)).toMatchObject({ status: 'SUBMISSION_UNKNOWN' });
-    expect(h.record().upstreamRequestId).toBe('early-upstream');
+    const { receipt } = await h.submit();
+    expect(receipt).toMatchObject({ executionMode: 'async-query', status: 'RUNNING', receiptVersion: 2, outputs: [],
+      clientActions: { shouldPoll: true, pollPurpose: 'generation', canStartNewRequest: false } });
+    expect(h.billing.reserve).toHaveBeenCalledTimes(1);
+    expect(h.adapter.queryAsync).not.toHaveBeenCalled();
+    expect(h.adapter.contentAsync).not.toHaveBeenCalled();
+    expect(h.billing.settleNegotiated).not.toHaveBeenCalled();
+    expect(h.records.get(receipt.receiptId)!.submissionDeadline.getTime() - Date.now()).toBeLessThanOrEqual(70000);
   });
 
-  it('keeps history authorized and downloadable after new execution is disabled', async () => {
-    const h = harness(); await h.service.quote(claims, quoteInput); await h.service.submit(claims, request);
+  it.each(['not_submitted', 'rejected', 'failed'])('closes %s with a complete receipt and releases funds before allowing a new request', async submission_status => {
+    const h = imageHarness();
+    h.adapter.submitAsync.mockImplementation(async (_i, _r, _m, id) => contractResult(id, { task_id: null, status: 'failed',
+      submission_status, billing: { status: 'not_charged', actual_cost_usd: '0' }, error: { message: 'original provider failure', details: { reason: 'connection closed' } } }, 502));
+    const { receipt, request } = await h.submit();
+    expect(MediaRealAnyReceiptSchema.parse(receipt)).toMatchObject({ status: 'FAILED', billingStatus: 'RELEASED',
+      clientActions: { submissionFinished: true, generationFinished: true, canStartNewRequest: true, shouldPoll: false },
+      upstreamError: { status: 502, body: { error: { message: 'original provider failure', details: { reason: 'connection closed' } } } } });
+    await h.service.submit(imageClaims, request);
+    expect(h.adapter.submitAsync).toHaveBeenCalledTimes(1);
+    expect(h.billing.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns refund failure separately and does not report released funds prematurely', async () => {
+    const h = imageHarness();
+    h.adapter.submitAsync.mockImplementation(async (_i, _r, _m, id) => contractResult(id, { task_id: null,
+      submission_status: 'failed', status: null, billing: { status: 'not_charged', actual_cost_usd: '0' }, error: { message: 'EOF' } }, 502));
+    h.billing.release.mockRejectedValueOnce(new HttpException('database unavailable', 503));
+    const { receipt } = await h.submit();
+    expect(receipt).toMatchObject({ status: 'FAILED', billingStatus: 'RECONCILING',
+      billingError: { status: 503 }, clientActions: { generationFinished: true, canStartNewRequest: true, pollPurpose: 'billing' } });
+    const recovered = await h.service.receipt(imageClaims, receipt.receiptId);
+    // The query is the authoritative retry of the original closed request.
+    expect(recovered.execution!.requestId).toBe(receipt.execution!.requestId);
+  });
+
+  it('keeps a closed creation separate from Longdao billing unknown', async () => {
+    const h = imageHarness();
+    h.adapter.submitAsync.mockImplementation(async (_i, _r, _m, id) => contractResult(id, { task_id: null,
+      submission_status: 'failed', status: 'failed', billing: { status: 'unknown', actual_cost_usd: null,
+        error: { source: 'platform', message: 'ledger unavailable' } } }, 503));
+    const { receipt } = await h.submit();
+    expect(receipt).toMatchObject({ status: 'FAILED', billingStatus: 'RECONCILING', execution: { billing: { status: 'unknown' } },
+      clientActions: { generationFinished: true, canStartNewRequest: true, pollPurpose: 'billing' } });
+    expect(h.billing.release).not.toHaveBeenCalled();
+    expect(h.billing.settleNegotiated).not.toHaveBeenCalled();
+  });
+
+  it('recovers a lost POST response by original request ID without a second POST', async () => {
+    const h = imageHarness();
+    h.adapter.submitAsync.mockRejectedValueOnce(new Error('socket closed'));
+    const { receipt, request } = await h.submit();
+    expect(receipt.status).toBe('SUBMISSION_UNKNOWN');
+    const recovered = await h.service.findByClientId(imageClaims, request.clientRequestId);
+    expect(h.adapter.queryAsync).toHaveBeenCalledWith(expect.anything(), receipt.execution!.requestId, null);
+    expect(recovered).toMatchObject({ status: 'SUCCEEDED', billingStatus: 'SETTLED', fileStatus: 'available',
+      clientActions: { canStartNewRequest: true, shouldPoll: false } });
+    expect(h.adapter.submitAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not interpret a lookup 404 or Redis failure as free failure', async () => {
+    const h = imageHarness();
+    const { receipt } = await h.submit();
+    h.adapter.queryAsync.mockRejectedValue(new MediaUpstreamException({ status: 404, body: { error: { message: 'request expired' } } }));
+    const result = await h.service.receipt(imageClaims, receipt.receiptId);
+    expect(result).toMatchObject({ status: 'RUNNING', execution: { generationStatus: 'in_progress', operationError: { status: 404 } } });
+    expect(h.billing.release).not.toHaveBeenCalled();
+  });
+
+  it('clears submission-unknown after finding the accepted task without claiming generation success', async () => {
+    const h = imageHarness(); h.adapter.submitAsync.mockRejectedValueOnce(new Error('socket closed'));
+    h.adapter.queryAsync.mockImplementationOnce(async (_c, id) => contractResult(id, { status: 'processing' }));
+    const { receipt } = await h.submit();
+    expect(await h.service.receipt(imageClaims, receipt.receiptId)).toMatchObject({ status: 'RUNNING', errorCode: null,
+      execution: { submissionStatus: 'accepted' }, clientActions: { pollPurpose: 'generation', canStartNewRequest: false } });
+  });
+
+  it.each(['image/png', 'image/jpeg', 'image/webp'])('saves and returns original %s bytes and measured metadata', async mimeType => {
+    const h = imageHarness();
+    const bytes = mimeType === 'image/png' ? MEDIA_MOCK_PNG : await referenceFixture(mimeType === 'image/jpeg' ? 'jpeg' : 'webp');
+    h.adapter.contentAsync.mockResolvedValue({ bytes, metadata: { mimeType, width: 1, height: 1 } });
+    const { receipt } = await h.submit();
+    const complete = await h.service.receipt(imageClaims, receipt.receiptId);
+    expect(complete.outputs[0].mimeType).toBe(mimeType);
+    expect(h.cache.put).toHaveBeenCalledWith('output', expect.any(String), expect.any(String), bytes, expect.any(String));
+    expect(h.billing.settleNegotiated).toHaveBeenCalledWith(receipt.receiptId, '0.576000', '0.080000', 'gpt-image-2', 'gpt-image-2');
+    await h.service.receipt(imageClaims, receipt.receiptId);
+    expect(h.billing.settleNegotiated).toHaveBeenCalledTimes(1);
+    expect(h.adapter.contentAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves completed generation when download fails, then retries only download', async () => {
+    const h = imageHarness();
+    h.adapter.contentAsync.mockRejectedValueOnce(new HttpException({ error: { message: 'content expired' } }, 502));
+    const { receipt } = await h.submit();
+    const failed = await h.service.receipt(imageClaims, receipt.receiptId);
+    expect(failed).toMatchObject({ fileStatus: 'download_failed', execution: { generationStatus: 'completed' },
+      clientActions: { generationFinished: true, canRetryDownload: true, canStartNewRequest: true, pollPurpose: 'delivery' } });
+    await h.service.receipt(imageClaims, receipt.receiptId);
+    expect(h.adapter.submitAsync).toHaveBeenCalledTimes(1);
+    expect(h.adapter.contentAsync).toHaveBeenCalledTimes(2);
+  });
+
+  it('delivers completed images even when Longdao settlement is unavailable', async () => {
+    const h = imageHarness();
+    h.adapter.queryAsync.mockImplementation(async (_c, id) => contractResult(id, { status: 'completed', is_final: true,
+      billing: { status: 'unknown', actual_cost_usd: null, error: { source: 'platform', message: 'settlement failed' } } }));
+    const { receipt } = await h.submit();
+    const complete = await h.service.receipt(imageClaims, receipt.receiptId);
+    expect(complete).toMatchObject({ status: 'SUCCEEDED', fileStatus: 'available', billingStatus: 'RECONCILING',
+      recovery: { canDownload: true }, clientActions: { generationFinished: true, canStartNewRequest: true, pollPurpose: 'billing' } });
+    expect(h.billing.settleNegotiated).not.toHaveBeenCalled();
+  });
+
+  it('retries upstream task query to drive a failed upstream settlement', async () => {
+    const h = imageHarness();
+    h.adapter.queryAsync.mockImplementationOnce(async (_c, id) => contractResult(id, { status: 'completed',
+      billing: { status: 'unknown', actual_cost_usd: null } }));
+    const { receipt } = await h.submit();
+    await h.service.receipt(imageClaims, receipt.receiptId);
+    expect((await h.service.receipt(imageClaims, receipt.receiptId)).billingStatus).toBe('SETTLED');
+    expect(h.adapter.queryAsync).toHaveBeenCalledTimes(2);
+    expect(h.adapter.contentAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it('deduplicates concurrent creation and query/download within a process', async () => {
+    const h = imageHarness();
+    const quote = await h.service.quote(imageClaims, imageInput);
+    const req = { ...imageInput, quoteId: quote.quoteId, clientRequestId: 'same' };
+    const results = await Promise.all([h.service.submit(imageClaims, req), h.service.submit(imageClaims, req)]);
+    expect(h.adapter.submitAsync).toHaveBeenCalledTimes(1);
+    await Promise.all([h.service.receipt(imageClaims, results[0].receiptId), h.service.receipt(imageClaims, results[0].receiptId)]);
+    expect(h.adapter.contentAsync).toHaveBeenCalledTimes(1);
+    expect(h.billing.settleNegotiated).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects changed payload under an existing client ID without dispatching', async () => {
+    const h = imageHarness(); const { request } = await h.submit();
+    await expect(h.service.submit(imageClaims, { ...request, creativeBrief: 'different' })).rejects.toMatchObject({ status: 409 });
+    expect(h.adapter.submitAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects unsupported counts and references before quoting or reserving', async () => {
+    const h = imageHarness();
+    await expect(h.service.quote(imageClaims, { ...imageInput, requestedSpec: { ...imageInput.requestedSpec, count: 2 } })).rejects.toMatchObject({ status: 400 });
+    await expect(h.service.quote(imageClaims, { ...imageInput, operation: 'edit', referenceIds: ['1', '2', '3', '4', '5'] })).rejects.toMatchObject({ status: 422 });
+    expect(h.adapter.pricing).not.toHaveBeenCalled();
+    expect(h.billing.reserve).not.toHaveBeenCalled();
+  });
+
+  it('keeps recovery authorized and available after disabling creation; another scope is denied', async () => {
+    const h = imageHarness(); const { receipt, request } = await h.submit();
     h.config.get.mockReturnValue('false');
-    expect((await h.service.receipt(claims, 'receipt')).status).toBe('SUCCEEDED');
-    expect((await h.service.content(claims, 'receipt', 'receipt_0')).bytes).toEqual(MEDIA_MOCK_PNG);
-    await expect(h.service.quote(claims, quoteInput)).rejects.toMatchObject({ status: 503 });
-    h.prisma.subscription.findFirst.mockResolvedValue(null);
-    await expect(h.service.receipt(claims, 'receipt')).rejects.toMatchObject({ status: 403 });
+    await expect(h.service.submit(imageClaims, request)).resolves.toMatchObject({ receiptId: receipt.receiptId });
+    await expect(h.service.receipt({ ...imageClaims, sub: 'other' }, receipt.receiptId)).rejects.toMatchObject({ status: 404 });
+    await expect(h.service.submit(imageClaims, { ...request, clientRequestId: 'new' })).rejects.toMatchObject({ status: 503 });
   });
 
-  it('retries a definite rejection refund after a transient release failure, never dispatching again', async () => {
-    const h = harness(); await h.service.quote(claims, quoteInput);
-    h.adapter.execute.mockRejectedValueOnce(new ImageDispatchError(null, true));
-    h.billing.release.mockRejectedValueOnce(new Error('commit unknown'));
-    expect(await h.service.submit(claims, request)).toMatchObject({ status: 'FAILED', billingStatus: 'RECONCILING' });
-    expect(await h.service.receipt(claims, 'receipt')).toMatchObject({ status: 'FAILED', billingStatus: 'RELEASED' });
-    expect(h.adapter.execute).toHaveBeenCalledTimes(1);
+  it('keeps uncommitted reservation outcomes from causing dispatch', async () => {
+    const h = imageHarness();
+    h.billing.reserve.mockRejectedValueOnce(new HttpException('database unavailable', 503));
+    const { receipt } = await h.submit();
+    expect(receipt).toMatchObject({ status: 'FAILED', billingStatus: 'RECONCILING', billingError: { status: 503 },
+      execution: { submissionStatus: 'not_submitted' },
+      clientActions: { generationFinished: true, canStartNewRequest: true, pollPurpose: 'billing' } });
+    expect(h.adapter.submitAsync).not.toHaveBeenCalled();
   });
 
-  it('repairs a receipt from an already committed ledger without re-settling', async () => {
-    const h = harness(); await h.service.quote(claims, quoteInput);
-    h.adapter.usage.mockResolvedValueOnce({ status: 'pending', actual_cost_usd: null, model: null, image_count: 0 } as any);
-    await h.service.submit(claims, request);
-    h.billing.status.mockResolvedValueOnce('SETTLED');
-    expect(await h.service.receipt(claims, 'receipt')).toMatchObject({ billingStatus: 'SETTLED' });
-    expect(h.billing.settle).not.toHaveBeenCalled();
+  it('never calls async upstream from the legacy periodic reconciliation scan', async () => {
+    const h = imageHarness(); await h.submit(); await h.service.reconcilePending();
+    expect(h.adapter.queryAsync).not.toHaveBeenCalled();
   });
 
-  it('background reconciliation works without client queries or enabling new execution', async () => {
-    const h = harness(); await h.service.quote(claims, quoteInput);
-    h.adapter.usage.mockResolvedValueOnce({ status: 'pending', actual_cost_usd: null, model: null, image_count: 0 } as any);
-    await h.service.submit(claims, request); h.config.get.mockReturnValue('false');
-    await h.service.reconcilePending();
-    expect(h.record().receipt.billingStatus).toBe('SETTLED');
-    expect(h.adapter.execute).toHaveBeenCalledTimes(1);
-    expect(h.store.pendingRequests).toHaveBeenCalledWith(20, undefined);
+  it('retains legacy finalized synchronous receipts without a new upstream submission', async () => {
+    const h = imageHarness(); const { receipt } = await h.submit();
+    const record = h.records.get(receipt.receiptId)!;
+    delete record.receipt.execution; delete record.receipt.clientActions;
+    record.receipt.executionMode = 'sync-response'; record.receipt.status = 'FAILED'; record.receipt.billingStatus = 'RELEASED';
+    expect((await h.service.receipt(imageClaims, receipt.receiptId)).status).toBe('FAILED');
+    expect(h.adapter.submitAsync).toHaveBeenCalledTimes(1);
   });
 
-  it('releases a confirmed reservation when reserve acknowledgement was lost before dispatch', async () => {
-    const h = harness(); await h.service.quote(claims, quoteInput);
-    h.billing.reserve.mockRejectedValueOnce(new Error('commit unknown'));
-    await expect(h.service.submit(claims, request)).rejects.toThrow();
-    expect(await h.service.receipt(claims, 'receipt')).toMatchObject({ status: 'FAILED', billingStatus: 'RELEASED' });
-    expect(h.billing.release).toHaveBeenCalledWith('receipt');
-    expect(h.adapter.execute).not.toHaveBeenCalled();
+  it.each(['jpeg', 'webp'] as const)('uploads and preserves original %s reference metadata', async format => {
+    const h = imageHarness(); const bytes = await referenceFixture(format);
+    const reference = await h.service.uploadReference(imageClaims, { buffer: bytes, size: bytes.length,
+      mimetype: `image/${format}`, originalname: `source.${format}` } as Express.Multer.File);
+    expect(reference).toMatchObject({ referenceId: 'reference', mimeType: `image/${format}`, width: 3, height: 2,
+      byteLength: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') });
+    expect(h.cache.put).toHaveBeenCalledWith('reference', expect.any(String), 'reference', bytes, reference.expiresAt);
+    expect(h.adapter.submitAsync).not.toHaveBeenCalled();
   });
 
-  it('preserves late successful outputs when a timeout sweep wins the receipt CAS', async () => {
-    const h = harness(); await h.service.quote(claims, quoteInput);
-    h.cache.put.mockImplementationOnce(async () => {
-      h.record().submissionDeadline = new Date(Date.now() - 1);
-      await h.service.reconcilePending();
-      expect(h.record().receipt.status).toBe('SUBMISSION_UNKNOWN');
+  it('rejects a mismatched reference MIME before writing bytes or metadata', async () => {
+    const h = imageHarness(); const bytes = await referenceFixture('jpeg');
+    await expect(h.service.uploadReference(imageClaims, { buffer: bytes, size: bytes.length, mimetype: 'image/png' } as Express.Multer.File))
+      .rejects.toMatchObject({ status: 400 });
+    expect(h.store.saveReference).not.toHaveBeenCalled(); expect(h.cache.put).not.toHaveBeenCalled();
+  });
+
+  it.each(['subscription', 'profile', 'model', 'switch'] as const)('rechecks %s after reserving and closes locally before dispatch', async change => {
+    const h = imageHarness();
+    h.billing.reserve.mockImplementationOnce(async (_c, id) => {
+      h.journals.set(id, 'RESERVED');
+      if (change === 'subscription') h.prisma.subscription.findFirst.mockResolvedValue(null);
+      if (change === 'profile') h.profile.enabled = false;
+      if (change === 'model') h.profile.modelId = 'another-model';
+      if (change === 'switch') h.config.get.mockReturnValue('false');
     });
-    expect(await h.service.submit(claims, request)).toMatchObject({
-      status: 'SUCCEEDED', billingStatus: 'SETTLED', outputs: [{ outputId: 'receipt_0' }], errorCode: null,
-    });
-    expect(h.record().upstreamRequestId).toBe('upstream');
-    expect(h.adapter.execute).toHaveBeenCalledTimes(1);
-    expect(h.billing.settle).toHaveBeenCalledTimes(1);
+    const { receipt } = await h.submit();
+    expect(receipt).toMatchObject({ status: 'FAILED', billingStatus: 'RELEASED',
+      execution: { submissionStatus: 'not_submitted' }, clientActions: { generationFinished: true, canStartNewRequest: true, shouldPoll: false } });
+    expect(h.adapter.submitAsync).not.toHaveBeenCalled(); expect(h.billing.release).toHaveBeenCalledTimes(1);
   });
 
-  it('persists an early upstream ID even when a timeout sweep wins its first CAS', async () => {
-    const h = harness(); await h.service.quote(claims, quoteInput);
-    h.adapter.execute.mockImplementationOnce(async (_input, _bytes, onRequestId) => {
-      h.record().submissionDeadline = new Date(Date.now() - 1);
-      await h.service.reconcilePending();
-      await onRequestId('early-upstream');
-      expect(h.record().upstreamRequestId).toBe('early-upstream');
-      expect(h.record().receipt.status).toBe('SUBMISSION_UNKNOWN');
-      return { requestId: 'early-upstream', images: [MEDIA_MOCK_PNG] };
-    });
-    expect(await h.service.submit(claims, request)).toMatchObject({ status: 'SUCCEEDED', billingStatus: 'SETTLED', errorCode: null });
-    expect(h.record().upstreamRequestId).toBe('early-upstream');
-    expect(h.adapter.execute).toHaveBeenCalledTimes(1);
-    expect(h.billing.release).not.toHaveBeenCalled();
+  it('retries a local refund without requiring provider lookup or a fresh POST', async () => {
+    const h = imageHarness();
+    h.billing.reserve.mockImplementationOnce(async (_c, id) => { h.journals.set(id, 'RESERVED'); h.profile.enabled = false; });
+    h.billing.release.mockRejectedValueOnce(new HttpException('refund database unavailable', 503));
+    const { receipt } = await h.submit();
+    expect(receipt).toMatchObject({ billingStatus: 'RECONCILING', billingError: { status: 503 },
+      clientActions: { generationFinished: true, canStartNewRequest: true, pollPurpose: 'billing' } });
+    expect(await h.service.receipt(imageClaims, receipt.receiptId)).toMatchObject({ billingStatus: 'RELEASED' });
+    expect(h.adapter.submitAsync).not.toHaveBeenCalled(); expect(h.adapter.queryAsync).not.toHaveBeenCalled();
+  });
+
+  it('enforces changed configured reference limits at quote and submit', async () => {
+    const h = imageHarness();
+    const input = { ...imageInput, operation: 'edit' as const, referenceIds: ['front', 'side', 'scene'] };
+    const quote = await h.service.quote(imageClaims, input); h.profile.capabilities.maxReferenceCount = 2;
+    await expect(h.service.quote(imageClaims, input)).rejects.toMatchObject({ status: 422 });
+    await expect(h.service.submit(imageClaims, { ...input, quoteId: quote.quoteId, clientRequestId: 'three' })).rejects.toMatchObject({ status: 422 });
+    expect(h.billing.reserve).not.toHaveBeenCalled(); expect(h.adapter.submitAsync).not.toHaveBeenCalled();
+  });
+
+  it('checks model and original amount for usage v2 that omits image_count', async () => {
+    const h = imageHarness(); h.adapter.usage.mockImplementation(async request_id => ({ schema_version: 2, request_id,
+      status: 'settled', model: 'gpt-image-2', actual_cost_usd: '0.08' } as any));
+    const { receipt } = await h.submit();
+    expect(await h.service.receipt(imageClaims, receipt.receiptId)).toMatchObject({ billingStatus: 'SETTLED' });
+    expect(h.billing.settleNegotiated).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['model', 'request_id', 'actual_cost_usd'] as const)('keeps invalid %s billing evidence pending while delivering the original', async field => {
+    const h = imageHarness(); h.adapter.usage.mockImplementation(async request_id => ({ request_id, status: 'settled',
+      model: 'gpt-image-2', actual_cost_usd: '0.08', image_count: 1, [field]: field === 'actual_cost_usd' ? '0.2' : 'wrong' }));
+    const { receipt } = await h.submit();
+    expect(await h.service.receipt(imageClaims, receipt.receiptId)).toMatchObject({ status: 'SUCCEEDED', billingStatus: 'RECONCILING',
+      billingError: { status: 409 }, clientActions: { canStartNewRequest: true, pollPurpose: 'billing' } });
+    expect(h.billing.settleNegotiated).not.toHaveBeenCalled();
+  });
+
+  it('preserves measured size mismatch, allows original download and leaves quality unverified', async () => {
+    const h = imageHarness(); h.adapter.contentAsync.mockResolvedValue({ bytes: MEDIA_MOCK_PNG,
+      metadata: { mimeType: 'image/png', width: 2, height: 2 } });
+    const { receipt } = await h.submit();
+    const done = await h.service.receipt(imageClaims, receipt.receiptId);
+    expect(done).toMatchObject({ status: 'SUCCEEDED', actualSpec: { size: '2x2', count: 1 },
+      acceptance: { status: 'mismatched', mismatchedFields: ['size'], unknownFields: ['quality'] } });
+    await expect(h.service.content(imageClaims, receipt.receiptId, done.outputs[0].outputId)).resolves.toMatchObject({ bytes: MEDIA_MOCK_PNG });
+  });
+
+  it('bounds download retries to the frozen expiry and does not depend on later task lookup', async () => {
+    const h = imageHarness(); h.adapter.contentAsync.mockRejectedValueOnce(new Error('download failed'));
+    const { receipt } = await h.submit(); await h.service.receipt(imageClaims, receipt.receiptId);
+    (h.records.get(receipt.receiptId)!.configuration as any).outputExpiresAt = new Date(Date.now() - 1000).toISOString();
+    h.adapter.queryAsync.mockRejectedValue(new Error('task record expired'));
+    expect(await h.service.receipt(imageClaims, receipt.receiptId)).toMatchObject({ status: 'RESULT_EXPIRED', fileStatus: 'expired',
+      clientActions: { shouldPoll: false, canRetryDownload: false, canStartNewRequest: true } });
+    expect(h.adapter.queryAsync).toHaveBeenCalledTimes(1); expect(h.adapter.contentAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps terminal generation from reverting when a cached billing query has an older status', async () => {
+    const h = imageHarness(); h.adapter.queryAsync
+      .mockImplementationOnce(async (_c, id) => contractResult(id, { status: 'failed', is_final: true, task_error: { message: 'reference rejected' } }))
+      .mockImplementationOnce(async (_c, id) => contractResult(id, { status: 'processing', is_final: false }));
+    const { receipt } = await h.submit(); await h.service.receipt(imageClaims, receipt.receiptId);
+    expect(await h.service.receipt(imageClaims, receipt.receiptId)).toMatchObject({ status: 'FAILED',
+      execution: { generationStatus: 'failed', taskError: { message: 'reference rejected' } }, clientActions: { generationFinished: true } });
+    expect(h.adapter.contentAsync).not.toHaveBeenCalled();
   });
 });

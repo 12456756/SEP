@@ -96,6 +96,17 @@ describe('Gateway execution journal and recovery', () => {
     expect(credit.getBillingSnapshot).not.toHaveBeenCalled();
   });
 
+  it('recovers with the original personal-only mode rather than a newly selected mode', async () => {
+    execution.billingSnapshot = { ...billingSnapshot, paymentMode: 'PERSONAL_ONLY' };
+    credit.getBillingSnapshot.mockResolvedValue({ ...billingSnapshot, paymentMode: 'ENTERPRISE_ONLY' });
+    const restarted = new GatewayExecutionService(prisma, credit, new ConfigService());
+    await restarted.reconcile();
+    expect(credit.chargeUsage).toHaveBeenCalledWith(expect.objectContaining({
+      billingSnapshot: expect.objectContaining({ paymentMode: 'PERSONAL_ONLY' }),
+    }));
+    expect(credit.getBillingSnapshot).not.toHaveBeenCalled();
+  });
+
   it('persists observed usage without making an active stream ready to settle', async () => {
     await service.saveUsage(execution.id, usage);
     expect(prisma.gatewayExecution.updateMany).toHaveBeenCalledWith(expect.objectContaining({

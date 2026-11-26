@@ -181,6 +181,7 @@ async function sumByUser(
     where: {
       enterpriseId,
       userId: { in: [...userIds] },
+      paymentMode: { not: 'PERSONAL_ONLY' },
       createdAt: { gte: window.start, lt: window.end },
     },
     _sum: USED_SUM_SELECT,

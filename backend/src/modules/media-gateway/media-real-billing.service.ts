@@ -7,8 +7,10 @@ import { resolveWindow, USED_SUM_SELECT } from '../compute-credit/member-allowan
 import { computeAvailability, allocateTopUps, sumTopUpRemaining } from '../compute-credit/allowance-carryover';
 import { resolvePeriodWindow } from '../compute-credit/allowance-period';
 import { isSupportedImageModel } from './image-model-contract';
+import type { PaymentMode } from 'shared';
+import { readPaymentMode } from '../compute-credit/payment-preference';
 
-export interface MediaFunding { creditCny: string; memberWalletCny: string; personalCny: string }
+export interface MediaFunding { creditCny: string; memberWalletCny: string; personalCny: string; paymentMode?: PaymentMode }
 
 type MutableJsonObject = { [key: string]: Prisma.InputJsonValue | null };
 
@@ -39,10 +41,10 @@ export class MediaRealBillingService {
   async quoteFunding(claims: ClientEmploymentClaims, amountCny: string): Promise<MediaFunding> {
     const amount = this.amount(amountCny);
     const split = await this.transaction(tx => this.allocate(tx, claims, amount));
-    return { creditCny: split.creditCny.toFixed(6), memberWalletCny: split.memberWalletCny.toFixed(6), personalCny: split.personalCny.toFixed(6) };
+    return { creditCny: split.creditCny.toFixed(6), memberWalletCny: split.memberWalletCny.toFixed(6), personalCny: split.personalCny.toFixed(6), paymentMode: split.paymentMode };
   }
 
-  async reserve(claims: ClientEmploymentClaims, receiptId: string, amountCny: string, usdToCnyRate: number): Promise<void> {
+  async reserve(claims: ClientEmploymentClaims, receiptId: string, amountCny: string, usdToCnyRate: number, paymentMode: PaymentMode = 'AUTO'): Promise<void> {
     const amount = this.amount(amountCny);
     if (!Number.isFinite(usdToCnyRate) || usdToCnyRate <= 0) forbidden('INVALID_PARAMETER');
     const rate = new Decimal(usdToCnyRate);
@@ -60,7 +62,7 @@ export class MediaRealBillingService {
         if (prior.status !== 'RESERVED') forbidden('BILLING_PENDING');
         return;
       }
-      const split = await this.allocate(tx, claims, amount, receiptId);
+      const split = await this.allocate(tx, claims, amount, receiptId, paymentMode);
       await tx.mediaRealBillingReservation.create({ data: {
         receiptId, enterpriseId: claims.enterpriseId, userId: claims.sub, subscriptionId: claims.subscriptionId,
         creditId: split.creditId, reservedCny: amount, creditCny: split.creditCny,
@@ -109,6 +111,7 @@ export class MediaRealBillingService {
       const snapshot = this.snapshot(row);
       const refund = await this.refundDifference(tx, row, row.reservedCny.sub(cny));
       await tx.computeUsageRecord.create({ data: {
+        paymentMode: snapshot.paymentMode === 'PERSONAL_ONLY' ? 'PERSONAL_ONLY' : snapshot.paymentMode === 'ENTERPRISE_ONLY' ? 'ENTERPRISE_ONLY' : 'AUTO',
         enterpriseId: row.enterpriseId, subscriptionId: row.subscriptionId, creditId: row.creditId,
         employeeId: subscription?.employeeId ?? null,
         userId: row.userId, modelId: verifiedModel, inputTokens: 0, outputTokens: 0,
@@ -143,7 +146,12 @@ export class MediaRealBillingService {
     return row.status as Status;
   }
 
-  private async allocate(tx: Prisma.TransactionClient, claims: ClientEmploymentClaims, amount: Decimal, receiptId?: string) {
+  private async allocate(tx: Prisma.TransactionClient, claims: ClientEmploymentClaims, amount: Decimal, receiptId?: string, expectedMode?: PaymentMode) {
+    const paymentMode = await readPaymentMode(tx, claims.enterpriseId, claims.sub);
+    if (expectedMode !== undefined && paymentMode !== expectedMode) {
+      throw new HttpException({ error: { code: 'PAYMENT_MODE_CHANGED', message: '付款方式已变化，请重新报价',
+        type: 'invalid_request_error', source: 'platform', param: 'quoteId' } }, 409);
+    }
     const credit = await tx.subscriptionCredit.findUnique({ where: { subscriptionId: claims.subscriptionId } });
     const creditAvailable = credit?.enterpriseId === claims.enterpriseId && credit.status === 'ACTIVE'
       ? Decimal.max(0, credit.grantedCNY.sub(credit.usedCNY)) : zero();
@@ -153,7 +161,7 @@ export class MediaRealBillingService {
     const memberAvailable = sumTopUpRemaining(topUps);
     let enterpriseCap: Decimal | null = null;
     let allowanceWindowId: string | null = null;
-    if (allowance?.enabled && (allowance.limitCNY || allowance.dailyLimitCNY || allowance.monthlyLimitCNY)) {
+    if (paymentMode !== 'PERSONAL_ONLY' && allowance?.enabled && (allowance.limitCNY || allowance.dailyLimitCNY || allowance.monthlyLimitCNY)) {
       const now = new Date();
       const window = await resolveWindow(tx, allowance, now, receiptId !== undefined);
       allowanceWindowId = window.windowId;
@@ -167,7 +175,7 @@ export class MediaRealBillingService {
       const usedFor = async (period: 'DAY' | 'MONTH') => {
         const { start, end } = resolvePeriodWindow(period, now);
         const usage = await tx.computeUsageRecord.aggregate({
-          where: { enterpriseId: claims.enterpriseId, userId: claims.sub, createdAt: { gte: start, lt: end } }, _sum: USED_SUM_SELECT,
+          where: { enterpriseId: claims.enterpriseId, userId: claims.sub, paymentMode: { not: 'PERSONAL_ONLY' }, createdAt: { gte: start, lt: end } }, _sum: USED_SUM_SELECT,
         });
         return Object.values(usage._sum).reduce((sum, value) => sum.add(value ?? 0), frozen);
       };
@@ -186,15 +194,20 @@ export class MediaRealBillingService {
       if (enterpriseCap !== null) enterpriseCap = Decimal.max(0, enterpriseCap);
     }
     // Both gift credit and member top-ups are enterprise funds subject to the same cap.
-    const enterpriseAmount = enterpriseCap === null ? amount : Decimal.min(amount, enterpriseCap);
+    const enterpriseAmount = paymentMode === 'PERSONAL_ONLY' ? zero() : enterpriseCap === null ? amount : Decimal.min(amount, enterpriseCap);
     const creditCny = Decimal.min(enterpriseAmount, creditAvailable);
     const memberWalletCny = Decimal.min(enterpriseAmount.sub(creditCny), memberAvailable);
     const personalCny = amount.sub(creditCny).sub(memberWalletCny);
+    if (paymentMode === 'ENTERPRISE_ONLY' && personalCny.gt(0)) {
+      throw new HttpException({ error: { code: 'INSUFFICIENT_FUNDS', message: '已选择仅企业余额，当前可用企业资金或分配限额不足，请充值或切换付款方式',
+        type: 'invalid_request_error', source: 'platform', paymentMode } }, 402);
+    }
     const personal = await tx.personalWallet.findUnique({ where: { userId: claims.sub } });
     if (personalCny.greaterThan(personal?.balance ?? 0)) forbidden('INSUFFICIENT_FUNDS');
     const topUpAllocations = allocateTopUps(topUps, memberWalletCny).allocations;
     const creditId = creditCny.greaterThan(0) && credit ? credit.id : null;
     const sourceSnapshot: MutableJsonObject = {
+      paymentMode,
       creditId, creditBefore: creditId ? credit!.usedCNY.toFixed(6) : null,
       creditAfter: creditId ? credit!.usedCNY.add(creditCny).toFixed(6) : null,
       memberWalletAllocations: topUpAllocations.map(a => {
@@ -225,7 +238,7 @@ export class MediaRealBillingService {
         sourceSnapshot.personalWalletTransactionId = entry.id;
       }
     }
-    return { creditId, creditCny, memberWalletCny, personalCny, sourceSnapshot };
+    return { creditId, creditCny, memberWalletCny, personalCny, sourceSnapshot, paymentMode };
   }
 
   private async refundDifference(tx: Prisma.TransactionClient, row: MediaRealBillingReservation, amount: Decimal): Promise<Prisma.InputJsonObject> {

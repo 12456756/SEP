@@ -137,7 +137,7 @@ x-web-defaults: &web-defaults
   mem_limit: 512m
   environment: &web-environment
     NODE_ENV: production
-    SEP_API_PROXY_TIMEOUT_MS: ${SEP_API_PROXY_TIMEOUT_MS:-180000}
+    SEP_API_PROXY_TIMEOUT_MS: ${SEP_API_PROXY_TIMEOUT_MS:-330000}
     NEXT_TELEMETRY_DISABLED: "1"
     TZ: Asia/Shanghai
   networks:

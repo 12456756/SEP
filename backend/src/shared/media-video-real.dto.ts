@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { PaymentModeSchema } from './payment-preference.dto';
+import { MediaExecutionReceiptFields } from './media-execution.dto';
 import { MediaUpstreamErrorSchema, MediaReferenceMimeTypeSchema } from './media-reference.dto';
 import { MediaFundingSchema, MediaMoneySchema } from './media-real.dto';
 import {
@@ -61,6 +63,8 @@ export type MediaVideoRealQuote = z.infer<typeof MediaVideoRealQuoteSchema>;
 
 export const MediaVideoRealBillingStatusSchema = z.enum(['NOT_RESERVED', 'RESERVED', 'SETTLED', 'RELEASED', 'RECONCILING']);
 export const MediaVideoRealReceiptBaseSchema = MediaVideoGatewayReceiptSchema.innerType().extend({
+  paymentMode: PaymentModeSchema.optional(),
+  ...MediaExecutionReceiptFields,
   mock: z.literal(false),
   upstreamError: MediaUpstreamErrorSchema.optional(),
   billingStatus: MediaVideoRealBillingStatusSchema,
@@ -71,10 +75,12 @@ export const MediaVideoRealReceiptBaseSchema = MediaVideoGatewayReceiptSchema.in
   const delivered = value.status === 'SUCCEEDED' || value.status === 'PARTIAL_SUCCEEDED';
   const taskTerminal = delivered || ['FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(value.status);
   const billingPending = value.billingStatus === 'RESERVED' || value.billingStatus === 'RECONCILING';
+  const pollingInvalid = value.clientActions
+    ? (value.pollAfterMs !== null) !== value.clientActions.shouldPoll || value.recovery.canQuery !== value.clientActions.shouldPoll
+    : taskTerminal ? value.pollAfterMs !== null || value.recovery.canQuery !== billingPending : !value.recovery.canQuery;
   if (new Set(value.outputs.map(output => output.outputId)).size !== value.outputs.length ||
     delivered && value.outputs.length === 0 || value.recovery.canDownload && (!delivered || value.outputs.length === 0) ||
-    taskTerminal && (value.pollAfterMs !== null || value.recovery.canQuery !== billingPending) ||
-    !taskTerminal && !value.recovery.canQuery || value.recovery.canCancel) {
+    pollingInvalid || taskTerminal && value.recovery.canCancel) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Inconsistent real video receipt state.' });
   }
 });
@@ -87,7 +93,9 @@ const MediaVideoV3OutputSchema = z.object({
   expiresAt: z.string().datetime({ offset: true }).nullable(),
 }).strict();
 export const MediaVideoRealReceiptV3Schema = MediaVideoGatewayReceiptSchema.innerType().omit({ outputs: true }).extend({
+  paymentMode: PaymentModeSchema.optional(),
   operation: MediaVideoOperationSchema,
+  ...MediaExecutionReceiptFields,
   upstreamError: MediaUpstreamErrorSchema.optional(),
   profileId: MediaProfileIdV3Schema, configVersion: MediaConfigVersionV3Schema,
   mock: z.literal(false), billingStatus: MediaVideoRealBillingStatusSchema,
@@ -110,10 +118,12 @@ export const MediaVideoRealReceiptV3Schema = MediaVideoGatewayReceiptSchema.inne
   const taskTerminal = delivered || ['FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(value.status);
   const billingPending = value.billingStatus === 'RESERVED' || value.billingStatus === 'RECONCILING';
   const terminalCanQuery = taskTerminal && billingPending;
+  const pollingInvalid = value.clientActions
+    ? (value.pollAfterMs !== null) !== value.clientActions.shouldPoll || value.recovery.canQuery !== value.clientActions.shouldPoll
+    : taskTerminal ? value.pollAfterMs !== null || value.recovery.canQuery !== terminalCanQuery : !value.recovery.canQuery;
   if (new Set(value.outputs.map(output => output.outputId)).size !== value.outputs.length ||
     delivered && (value.outputs.length === 0 || !value.actualSpec) || value.recovery.canDownload && (!delivered || value.outputs.length === 0) ||
-    taskTerminal && (value.pollAfterMs !== null || value.recovery.canQuery !== terminalCanQuery) ||
-    !taskTerminal && !value.recovery.canQuery || value.recovery.canCancel) {
+    pollingInvalid || taskTerminal && value.recovery.canCancel) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Inconsistent real video receipt state.' });
   }
 });

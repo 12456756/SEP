@@ -1,8 +1,8 @@
-import { HttpException, Injectable } from '@nestjs/common';
+import { HttpException, Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Decimal } from '@prisma/client/runtime/library';
-import { createHash } from 'node:crypto';
-import { MAX_MEDIA_REFERENCE_TOTAL_BYTES, MediaVideoCapabilitiesSchema, MediaVideoReferenceUploadQuerySchema } from 'shared';
+import { createHash, randomUUID } from 'node:crypto';
+import { MAX_MEDIA_REFERENCE_TOTAL_BYTES, MediaVideoCapabilitiesSchema, MediaVideoReferenceUploadQuerySchema, MediaJsonValueSchema } from 'shared';
 import { MediaUpstreamException, mediaFailure, retainMediaFailure } from '../../common/errors/media-upstream.exception';
 import { exceptionDetails } from '../../common/errors/error-diagnostics';
 import { z } from 'zod';
@@ -26,15 +26,21 @@ import type { Sub2apiVideoConnection } from './sub2api-video.adapter';
 import { VideoFileCacheService } from './video-file-cache.service';
 import { videoGatewayError as fail, videoStorageUnavailable } from './media-video-gateway.store';
 import type { InspectedVideoReference } from './video-reference-upload.service';
+import { closedSubmission, executionEvidence, executionFailure, mediaClientActions, mergeExecutionEvidence, recoverableTaskId, VIDEO_SUBMISSION_BUDGET_MS, MEDIA_SAVE_GRACE_MS,
+  type LongdaoMediaResult } from './longdao-media-contract';
+import { MediaVideoRecoveryLeaseService, type VideoRecoveryLease } from './media-video-recovery-lease.service';
+
+type VideoRecoveryOwner = Pick<ClientEmploymentClaims, 'enterpriseId' | 'subscriptionId' | 'memberId' | 'sub'>;
 
 const hash = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
 const ResourceIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
 const REFERENCE_TTL = 15 * 60_000;
 const OUTPUT_TTL = 24 * 60 * 60_000;
-const SUBMISSION_TTL = 3 * 60_000;
+const SUBMISSION_TTL = VIDEO_SUBMISSION_BUDGET_MS + MEDIA_SAVE_GRACE_MS;
 
 @Injectable()
 export class MediaVideoRealService {
+  private readonly recovering = new Map<string, Promise<VideoRealRecord>>();
   constructor(
     private readonly config: ConfigService,
     private readonly prisma: PrismaService,
@@ -44,6 +50,7 @@ export class MediaVideoRealService {
     private readonly cache: VideoFileCacheService,
     private readonly billing: MediaRealBillingService,
     private readonly store: MediaVideoRealStore,
+    @Optional() private readonly recoveryLease?: MediaVideoRecoveryLeaseService,
   ) {}
 
   assertRealEnabled(): void {
@@ -192,33 +199,48 @@ export class MediaVideoRealService {
     const connection = await this.frozenConnection(quote.configuration.connectionFingerprint);
     const bytes = await Promise.all(references.map(r => this.cache.readReference(scope, r.referenceId,
       { sha256: r.sha256, byteLength: r.byteLength, expiresAt: r.expiresAt })));
+    const requestId = `sep-video-${randomUUID()}`;
     const claim = await this.store.claim({ enterpriseId: claims.enterpriseId, clientRequestId: input.clientRequestId, scope,
       semanticSha256, referenceIds: allIds, referenceHashes: allHashes,
       submissionDeadline: new Date(Date.now() + SUBMISSION_TTL),
-      configuration: { ...quote.configuration, quoteId: input.quoteId, upstreamTaskId: null, upstreamRequestId: null,
+      configuration: { ...quote.configuration, quoteId: input.quoteId, contractVersion: 2, cancelSupported: profile.capabilities.supportsCancel,
+        upstreamTaskId: null, upstreamRequestId: requestId,
         dispatchState: 'NOT_DISPATCHED', outputExpiresAt: null },
       receipt: { mock: false, clientRequestId: input.clientRequestId, profileId: input.profileId, configVersion: input.configVersion,
+        paymentMode: quote.value.funding.paymentMode ?? 'AUTO',
         operation: input.operation, status: 'SUBMITTING', pollAfterMs: 2000, outputs: [], billingStatus: 'NOT_RESERVED',
         amountCny: quote.value.amountCny, amountUsd: quote.value.amountUsd, errorCode: null,
         ...('protocolVersion' in input ? { protocolVersion: 3 as const, specRevision: input.specRevision,
           semanticHashVersion: 3 as const, effectiveSpec: input.requestedSpec, deliveryStatus: 'unknown' as const,
           billingDimensions: { model: profile.modelId, operation: input.operation, ...this.billingDimensions(input) } } : {}),
+        receiptVersion: 2, fileStatus: 'pending', execution: { requestId, taskId: null, submissionStatus: 'submitting',
+          generationStatus: null, isFinal: null, observedAt: null, statusSource: null, billing: { status: 'pending', actualCostUsd: null } },
         recovery: { canQuery: true, canCancel: false, canDownload: false } },
     });
     this.assertReplay(input, claim.record);
     if (!claim.created) return this.snapshot(claim.record);
     let record = claim.record;
     try {
-      await this.billing.reserve(claims, record.receipt.receiptId, quote.value.amountCny, quote.value.usdToCnyRate);
+      await this.billing.reserve(claims, record.receipt.receiptId, quote.value.amountCny, quote.value.usdToCnyRate, quote.value.funding.paymentMode ?? 'AUTO');
     } catch (error) {
       const insufficient = error instanceof HttpException && error.getStatus() === 402;
-      record.receipt.status = insufficient ? 'FAILED' : 'SUBMISSION_UNKNOWN';
-      record.receipt.billingStatus = insufficient ? 'NOT_RESERVED' : 'RECONCILING';
-      record.receipt.errorCode = insufficient ? 'INSUFFICIENT_FUNDS' : 'BILLING_PENDING';
+      const changed = error instanceof HttpException && (error.getResponse() as { error?: { code?: string } }).error?.code === 'PAYMENT_MODE_CHANGED';
+      const notReserved = insufficient || changed;
+      record.receipt.status = notReserved || record.receipt.execution ? 'FAILED' : 'SUBMISSION_UNKNOWN';
+      record.receipt.billingStatus = notReserved ? 'NOT_RESERVED' : 'RECONCILING';
+      record.receipt.errorCode = changed ? 'CONFIG_CHANGED' : insufficient ? 'INSUFFICIENT_FUNDS' : 'BILLING_PENDING';
+      record.receipt.billingError = mediaFailure(error);
+      if (record.receipt.execution) {
+        record.receipt.execution.submissionStatus = 'not_submitted'; record.receipt.execution.operation = 'create';
+        record.receipt.fileStatus = 'unavailable';
+      }
+      if (notReserved && record.receipt.execution) {
+        record.receipt.execution.submissionStatus = 'not_submitted'; record.receipt.fileStatus = 'unavailable';
+        record.receipt.execution.billing = { status: 'not_charged', actualCostUsd: '0' };
+      }
       const failedSave = await this.store.save(this.normalize(record));
       record = failedSave.record;
       if (!failedSave.updated && record.receipt.status === 'FAILED') await this.releaseUnsubmitted(record);
-      if (insufficient) throw error;
       return this.snapshot(record);
     }
     record.receipt.billingStatus = 'RESERVED';
@@ -237,18 +259,28 @@ export class MediaVideoRealService {
       await this.videoReferences(claims, input, profile.capabilities, connection.fingerprint);
     } catch (error) {
       record.receipt.status = 'FAILED'; record.receipt.errorCode = 'CONFIG_CHANGED';
+      if (record.receipt.execution) {
+        record.receipt.execution.submissionStatus = 'not_submitted'; record.receipt.execution.operationError = mediaFailure(error);
+        record.receipt.execution.billing = { status: 'not_charged', actualCostUsd: '0' };
+        record.receipt.fileStatus = 'unavailable';
+      }
       saved = await this.store.save(this.normalize(record));
       if (saved.updated) {
         record = saved.record;
         await this.releaseUnsubmitted(record);
       }
-      throw error;
+      return this.snapshot((await this.store.findRequest(scope, record.receipt.receiptId)) ?? record);
     }
     record.configuration.dispatchState = 'DISPATCHING';
     saved = await this.store.save(this.normalize(record));
     if (!saved.updated) return this.snapshot(saved.record);
     record = saved.record;
     try {
+      if (record.configuration.contractVersion === 2) {
+        const result = await this.adapter.submitContract(connection, generationInput, profile.modelId, bytes, requestId,
+          record.configuration.pricingVersion, ...(videos.length ? [videos.map(r => r.upstreamReferenceId)] : []));
+        return this.snapshot(await this.applyContract(record, result));
+      }
       const result = await this.adapter.submit(connection, generationInput, profile.modelId, bytes, clientRequestId,
         record.configuration.pricingVersion, ...(videos.length ? [videos.map(r => r.upstreamReferenceId)] : []));
       record.configuration.upstreamTaskId = result.taskId;
@@ -270,12 +302,20 @@ export class MediaVideoRealService {
         if (error.upstreamError) throw new MediaUpstreamException(error.upstreamError);
         return this.snapshot((await this.store.findRequest(scope, record.receipt.receiptId)) ?? record);
       }
-      record.configuration.upstreamRequestId = error instanceof VideoDispatchError ? error.requestId : record.configuration.upstreamRequestId;
+      if (record.configuration.contractVersion !== 2) record.configuration.upstreamRequestId = error instanceof VideoDispatchError ? error.requestId : record.configuration.upstreamRequestId;
       record.receipt.status = 'SUBMISSION_UNKNOWN';
       record.receipt.errorCode = error instanceof VideoDispatchError && error.specUnsupported ? 'UPSTREAM_SPEC_UNSUPPORTED' : 'SUBMISSION_UNKNOWN';
       record.receipt.billingStatus = 'RECONCILING';
       record = await this.saveDispatch(record);
-      if (error instanceof VideoDispatchError && error.upstreamError) throw new MediaUpstreamException(error.upstreamError);
+      if (record.receipt.execution) {
+        record.receipt.execution.operation = 'create';
+        record.receipt.execution.submissionStatus = 'unknown';
+        record.receipt.execution.operationError = mediaFailure(error);
+        record.receipt.execution.taskId ??= recoverableTaskId(error, requestId);
+        record.configuration.upstreamTaskId ??= record.receipt.execution.taskId;
+        record = (await this.store.save(record)).record;
+      }
+      if (record.configuration.contractVersion !== 2 && error instanceof VideoDispatchError && error.upstreamError) throw new MediaUpstreamException(error.upstreamError);
       return this.snapshot(record);
     }
     return this.snapshot(record);
@@ -317,12 +357,73 @@ export class MediaVideoRealService {
     } catch (error) { stream.destroy(); throw error; }
   }
 
-  async cancel(claims: ClientEmploymentClaims, receiptId: string): Promise<never> {
-    await this.owned(claims, receiptId);
-    fail(409, 'CANCEL_UNSUPPORTED', '真实视频当前不支持取消');
+  async cancel(claims: ClientEmploymentClaims, receiptId: string): Promise<MediaVideoRealReceipt> {
+    const record = await this.owned(claims, receiptId);
+    if (record.configuration.contractVersion !== 2 || !record.configuration.cancelSupported || !record.configuration.upstreamTaskId) fail(409, 'CANCEL_UNSUPPORTED', '原视频不支持取消或尚无可取消的任务编号');
+    if (record.receipt.execution?.isFinal || closedSubmission(record.receipt.execution!)) return this.snapshot(record);
+    const connection = await this.frozenConnection(record.configuration.connectionFingerprint);
+    try {
+      const result = await this.adapter.cancelContract(connection, record.receipt.execution!.requestId, record.configuration.upstreamTaskId);
+      return this.snapshot(await this.applyContract(record, result));
+    } catch (error) {
+      record.receipt.execution!.operation = 'cancel';
+      record.receipt.execution!.operationError = mediaFailure(error); record.receipt.upstreamError = mediaFailure(error);
+      return this.snapshot((await this.store.save(record)).record);
+    }
   }
 
-  private async recover(claims: ClientEmploymentClaims, initial: VideoRealRecord): Promise<VideoRealRecord> {
+  async recoverPending(scope: string, receiptId: string): Promise<void> {
+    const record = await this.store.findRequest(scope, receiptId);
+    if (!record) return;
+    if (record.receipt.status === 'SUBMITTING' && !record.receipt.upstreamError
+      && record.submissionDeadline.getTime() > Date.now()) return;
+    const [enterpriseId, subscriptionId, memberId, sub] = this.parse(
+      z.string().transform((value, ctx) => {
+        try { return JSON.parse(value) as unknown; }
+        catch { ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Invalid video owner scope' }); return z.NEVER; }
+      }).pipe(z.tuple([z.string().min(1), z.string().min(1), z.string().min(1), z.string().min(1)])), record.scope);
+    if (enterpriseId !== record.enterpriseId) videoStorageUnavailable();
+    await this.recover({ enterpriseId, subscriptionId, memberId, sub }, record);
+  }
+
+  private async recover(claims: VideoRecoveryOwner, initial: VideoRealRecord): Promise<VideoRealRecord> {
+    const execution = initial.receipt.execution;
+    const billingFinal = ['SETTLED', 'RELEASED', 'NOT_RESERVED'].includes(initial.receipt.billingStatus);
+    if (execution ? billingFinal && (initial.receipt.fileStatus === 'available' || initial.receipt.fileStatus === 'expired'
+      || closedSubmission(execution) || ['failed', 'cancelled'].includes(execution.generationStatus!))
+      : ['SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(initial.receipt.status) && billingFinal) return initial;
+    const id = initial.receipt.receiptId;
+    const pending = this.recovering.get(id);
+    if (pending) return pending;
+    const work = (async () => {
+      let lease: VideoRecoveryLease | null | undefined;
+      try { lease = this.recoveryLease ? await this.recoveryLease.acquire(id) : undefined; }
+      catch (error) {
+        const current = (await this.store.findRequest(initial.scope, id)) ?? initial;
+        const failure = mediaFailure(error);
+        current.receipt.upstreamError = failure;
+        if (current.receipt.execution) {
+          current.receipt.execution.operation = 'query'; current.receipt.execution.operationError = failure;
+        }
+        return (await this.store.save(this.normalize(current))).record;
+      }
+      if (lease === null) return (await this.store.findRequest(initial.scope, id)) ?? initial;
+      try {
+        const current = await this.store.findRequest(initial.scope, id);
+        if (!current) return initial;
+        if (current.receipt.status === 'SUBMITTING' && !current.receipt.upstreamError
+          && current.submissionDeadline.getTime() > Date.now()) return current;
+        const assertHeld = () => lease?.assertHeld();
+        return current.configuration.contractVersion === 2
+          ? await this.recoverContract(claims, current, assertHeld)
+          : await this.recoverLegacy(claims, current);
+      } finally { await lease?.release(); }
+    })();
+    this.recovering.set(id, work);
+    try { return await work; } finally { this.recovering.delete(id); }
+  }
+
+  private async recoverLegacy(claims: VideoRecoveryOwner, initial: VideoRealRecord): Promise<VideoRealRecord> {
     let record = structuredClone(initial);
     const terminal = ['SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(record.receipt.status);
     // Owned/profile authorization runs before recovery; finalized local results
@@ -458,7 +559,8 @@ export class MediaVideoRealService {
       record.receipt.billingStatus = 'RELEASED';
     } catch (error) {
       record.receipt.billingStatus = 'RECONCILING';
-      record.receipt.upstreamError = retainMediaFailure(record.receipt.upstreamError, error, 'release');
+      if (record.receipt.execution) record.receipt.billingError = mediaFailure(error);
+      else record.receipt.upstreamError = retainMediaFailure(record.receipt.upstreamError, error, 'release');
     }
     await this.store.save(this.normalize(record));
   }
@@ -500,7 +602,7 @@ export class MediaVideoRealService {
     return record;
   }
 
-  private async authorize(claims: ClientEmploymentClaims, execution: boolean) {
+  private async authorize(claims: VideoRecoveryOwner, execution: boolean) {
     if (execution) this.assertRealEnabled();
     const member = await this.prisma.enterpriseMember.findFirst({
       where: { id: claims.memberId, enterpriseId: claims.enterpriseId, userId: claims.sub, user: { status: 'ACTIVE' }, enterprise: { status: 'ACTIVE' } }, select: { departmentId: true },
@@ -512,7 +614,7 @@ export class MediaVideoRealService {
     if (!subscription) fail(403, 'MEDIA_FORBIDDEN', '订阅已失效或视频授权已撤销');
   }
 
-  private async requireProfile(claims: ClientEmploymentClaims,
+  private async requireProfile(claims: VideoRecoveryOwner,
     input: (Pick<MediaVideoGatewayQuoteRequest, 'profileId' | 'configVersion' | 'operation' | 'parameters'> |
       Pick<MediaVideoGatewayQuoteRequestV3, 'protocolVersion' | 'profileId' | 'configVersion' | 'operation' | 'requestedSpec'>) & { referenceIds?: string[]; videoReferenceIds?: string[] }, execution: boolean,
     stage: 'video-upload' | 'video-quote' | 'video-submit' | 'video-query' | 'video-content', frozenModelId?: string) {
@@ -613,13 +715,164 @@ export class MediaVideoRealService {
     record.receipt.pollAfterMs = active ? 2000 : null;
     record.receipt.recovery = { canCancel: false, canQuery: active || ['RESERVED', 'RECONCILING'].includes(record.receipt.billingStatus),
       canDownload: ['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(record.receipt.status) && record.receipt.outputs.some(o => !!o.expiresAt && Date.parse(o.expiresAt) > Date.now()) };
+    if (record.receipt.execution) {
+      record.receipt.clientActions = mediaClientActions(record.receipt.execution, record.receipt.fileStatus ?? 'pending',
+        ['RESERVED', 'RECONCILING'].includes(record.receipt.billingStatus));
+      record.receipt.recovery.canQuery = record.receipt.clientActions.shouldPoll;
+      record.receipt.recovery.canCancel = !!record.configuration.cancelSupported && active && !!record.configuration.upstreamTaskId && record.receipt.execution.isFinal !== true;
+      record.receipt.pollAfterMs = record.receipt.clientActions.shouldPoll
+        ? record.receipt.clientActions.pollPurpose === 'billing' ? 15000 : 3000 : null;
+    }
+    return record;
+  }
+
+  private async applyContract(initial: VideoRealRecord, result: LongdaoMediaResult, assertHeld = () => {}): Promise<VideoRealRecord> {
+    assertHeld();
+    let record = structuredClone(initial);
+    const incoming = executionEvidence(result);
+    if (incoming.submissionStatus === 'unobserved') {
+      record.receipt.execution = mergeExecutionEvidence(record.receipt.execution!, incoming);
+      record.receipt.upstreamError = incoming.operationError;
+      return (await this.store.save(this.normalize(record))).record;
+    }
+    const execution = mergeExecutionEvidence(record.receipt.execution!, incoming);
+    if (!closedSubmission(execution) && result.contract.model && result.contract.model !== record.configuration.modelId ||
+        execution.submissionStatus === 'accepted' && !execution.taskId) {
+      record.configuration.upstreamTaskId ??= execution.taskId;
+      record.receipt.execution!.taskId ??= execution.taskId;
+      record.receipt.execution!.operationError = { status: 502, body: MediaJsonValueSchema.parse({ error: { code: 'UPSTREAM_FAILED', message: '视频回执模型或任务编号无效', details: result.contract } }) };
+      record.receipt.upstreamError = record.receipt.execution!.operationError;
+      return (await this.store.save(this.normalize(record))).record;
+    }
+    record.receipt.execution = execution;
+    if (execution.taskId) record.configuration.upstreamTaskId = execution.taskId;
+    record.receipt.upstreamError = executionFailure(execution, result.httpStatus);
+    if (closedSubmission(execution)) {
+      record.configuration.dispatchState = 'REJECTED'; record.receipt.status = 'FAILED';
+      record.receipt.fileStatus = 'unavailable'; record.receipt.errorCode = 'UPSTREAM_FAILED';
+    } else if (execution.generationStatus === 'failed' || execution.generationStatus === 'cancelled') {
+      record.receipt.status = execution.generationStatus === 'failed' ? 'FAILED' : 'CANCELLED';
+      record.receipt.fileStatus = 'unavailable'; record.receipt.errorCode = 'UPSTREAM_FAILED';
+    } else if (!record.receipt.outputs.length) {
+      record.receipt.status = execution.submissionStatus === 'submitting' ? 'SUBMITTING'
+        : execution.submissionStatus === 'unknown' ? 'SUBMISSION_UNKNOWN' : execution.generationStatus === 'queued' ? 'QUEUED' : 'RUNNING';
+      if (execution.submissionStatus === 'accepted') {
+        record.configuration.dispatchState = 'ACCEPTED';
+        if (record.receipt.errorCode === 'SUBMISSION_UNKNOWN') record.receipt.errorCode = null;
+      }
+    }
+    const revision = record.revision;
+    const saved = await this.store.save(this.normalize(record));
+    record = saved.record;
+    if (!saved.updated || record.revision !== revision + 1) return record;
+    try {
+      const billingStatus = await this.billing.status(record.receipt.receiptId);
+      if (billingStatus === 'SETTLED' || billingStatus === 'RELEASED') {
+        record.receipt.billingStatus = billingStatus; delete record.receipt.billingError;
+        return (await this.store.save(this.normalize(record))).record;
+      }
+      if (execution.billing.status === 'not_charged') {
+        assertHeld();
+        await this.billing.release(record.receipt.receiptId); record.receipt.billingStatus = 'RELEASED';
+      } else if (execution.billing.status === 'settled') {
+        if (execution.generationStatus !== 'completed' || !await this.store.hasUniqueUpstreamRequest(record)) fail(409, 'BILLING_PENDING', '视频收费证据与原任务不一致');
+        const usage = await this.adapter.usage(await this.frozenConnection(record.configuration.connectionFingerprint), execution.requestId);
+        const dimensions = this.configurationBillingDimensions(record.configuration);
+        if (usage.status !== 'settled' || usage.request_id !== execution.requestId || usage.model !== record.configuration.modelId ||
+            usage.video_count !== 1 || usage.actual_cost_usd === null || usage.duration_seconds !== dimensions.durationSeconds ||
+            usage.resolution !== dimensions.resolution || !new Decimal(usage.actual_cost_usd).eq(execution.billing.actualCostUsd!)) fail(409, 'BILLING_PENDING', '视频金额证据与冻结规格不一致');
+        const usd = new Decimal(usage.actual_cost_usd);
+        const cny = usd.mul(record.configuration.usdToCnyRate).toDecimalPlaces(6, Decimal.ROUND_HALF_UP).toFixed(6);
+        assertHeld();
+        record.receipt.billingStatus = await this.billing.settleNegotiated(record.receipt.receiptId, cny,
+          usd.toDecimalPlaces(6, Decimal.ROUND_HALF_UP).toFixed(6), usage.model, record.configuration.modelId);
+        if (record.receipt.billingStatus === 'SETTLED') record.receipt.actualCostCny = cny;
+      } else record.receipt.billingStatus = 'RECONCILING';
+      delete record.receipt.billingError;
+    } catch (error) { record.receipt.billingStatus = 'RECONCILING'; record.receipt.billingError = mediaFailure(error); }
+    return (await this.store.save(this.normalize(record))).record;
+  }
+
+  private async recoverContract(claims: VideoRecoveryOwner, initial: VideoRealRecord, assertHeld = () => {}): Promise<VideoRealRecord> {
+    assertHeld();
+    let record = structuredClone(initial);
+    if ((closedSubmission(record.receipt.execution!) || ['failed', 'cancelled'].includes(record.receipt.execution!.generationStatus!)) && record.receipt.billingStatus === 'RELEASED' ||
+        ['available', 'expired'].includes(record.receipt.fileStatus!) && ['SETTLED', 'RELEASED'].includes(record.receipt.billingStatus)) return record;
+    if (record.configuration.dispatchState === 'NOT_DISPATCHED') {
+      if (record.submissionDeadline.getTime() > Date.now()) return record;
+      record.receipt.status = 'FAILED'; record.receipt.errorCode = 'BILLING_PENDING';
+      record.receipt.execution!.submissionStatus = 'not_submitted';
+      record.receipt.fileStatus = 'unavailable'; record.receipt.execution!.billing = { status: 'not_charged', actualCostUsd: '0' };
+      const closed = await this.store.save(this.normalize(record));
+      if (closed.updated) await this.releaseUnsubmitted(closed.record);
+      return (await this.store.findRequest(record.scope, record.receipt.receiptId)) ?? closed.record;
+    }
+    try {
+      if (record.receipt.execution!.billing.status === 'not_charged' && record.receipt.execution!.generationStatus !== 'completed') {
+        try {
+          assertHeld();
+          await this.billing.release(record.receipt.receiptId);
+          record.receipt.billingStatus = 'RELEASED'; delete record.receipt.billingError;
+        } catch (error) { record.receipt.billingStatus = 'RECONCILING'; record.receipt.billingError = mediaFailure(error); }
+        return (await this.store.save(this.normalize(record))).record;
+      }
+      const connection = await this.frozenConnection(record.configuration.connectionFingerprint);
+      if (record.receipt.execution!.generationStatus !== 'completed' || !['SETTLED', 'RELEASED'].includes(record.receipt.billingStatus)) {
+        assertHeld();
+        const result = await this.adapter.queryContract(connection, record.receipt.execution!.requestId,
+          closedSubmission(record.receipt.execution!) ? null : record.configuration.upstreamTaskId);
+        record = await this.applyContract(record, result, assertHeld);
+      }
+      if (record.receipt.execution?.generationStatus === 'completed' && record.configuration.upstreamTaskId && !record.receipt.outputs.length) {
+        try {
+          await this.authorize(claims, false);
+          await this.requireProfile(claims, record.configuration, false, 'video-content', record.configuration.modelId);
+          const outputId = `${record.receipt.receiptId}-output-1`;
+          record.configuration.outputExpiresAt ??= new Date(Date.now() + OUTPUT_TTL).toISOString();
+          record = (await this.store.save(this.normalize(record))).record;
+          if (Date.parse(record.configuration.outputExpiresAt) <= Date.now()) {
+            record.receipt.status = 'RESULT_EXPIRED'; record.receipt.fileStatus = 'expired';
+          } else {
+            assertHeld();
+            const { hasAudio, ...metadata } = await this.cache.saveOutput(record.scope, outputId,
+              await this.adapter.rawContent(connection, record.configuration.upstreamTaskId!, this.outputFormat(record.configuration)), record.configuration.outputExpiresAt);
+            record.receipt.outputs = [{ ...metadata, outputId, kind: 'video', thumbnailOutputId: null, expiresAt: record.configuration.outputExpiresAt }];
+            if (!('protocolVersion' in record.receipt) && this.outputMatches(record.configuration, metadata, hasAudio) !== 'matched') {
+              record.receipt.outputs = []; fail(502, 'OUTPUT_SPEC_MISMATCH', '视频成品规格与请求不一致');
+            }
+            record.receipt.status = 'SUCCEEDED'; record.receipt.fileStatus = 'available'; record.receipt.errorCode = null;
+            if (record.receipt.execution!.operation === 'download') {
+              delete record.receipt.execution!.operationError;
+              record.receipt.upstreamError = executionFailure(record.receipt.execution!, 200);
+            }
+            if ('protocolVersion' in record.receipt) {
+              record.receipt.actualSpec = { durationSeconds: metadata.durationSeconds, width: metadata.width, height: metadata.height,
+                frameRate: metadata.frameRate, mimeType: metadata.mimeType, hasAudio, source: 'measured' };
+              record.receipt.deliveryStatus = this.outputMatches(record.configuration, metadata, hasAudio);
+              if (record.receipt.deliveryStatus === 'mismatched') record.receipt.errorCode = 'OUTPUT_SPEC_MISMATCH';
+            }
+          }
+        } catch (error) {
+          record.receipt.fileStatus = 'download_failed'; record.receipt.errorCode = 'OUTPUT_FAILED';
+          record.receipt.execution!.operation = 'download';
+          record.receipt.execution!.operationError = mediaFailure(error); record.receipt.upstreamError = mediaFailure(error);
+        }
+        record = (await this.store.save(this.normalize(record))).record;
+      }
+    } catch (error) {
+      record.receipt.execution!.operation = 'query';
+      record.receipt.execution!.operationError = mediaFailure(error); record.receipt.upstreamError = mediaFailure(error);
+      record = (await this.store.save(this.normalize(record))).record;
+    }
     return record;
   }
 
   private snapshot(input: VideoRealRecord): MediaVideoRealReceipt {
     const record = this.normalize(structuredClone(input));
     if (['SUCCEEDED', 'PARTIAL_SUCCEEDED'].includes(record.receipt.status) && record.receipt.outputs.length && record.receipt.outputs.every(o => !o.expiresAt || Date.parse(o.expiresAt) <= Date.now())) {
-      record.receipt.status = 'RESULT_EXPIRED'; record.receipt.errorCode = 'RESULT_EXPIRED'; this.normalize(record);
+      record.receipt.status = 'RESULT_EXPIRED'; record.receipt.errorCode = 'RESULT_EXPIRED';
+      if (record.receipt.execution) record.receipt.fileStatus = 'expired';
+      this.normalize(record);
     }
     return MediaVideoRealReceiptSchema.parse(record.receipt);
   }
@@ -706,7 +959,7 @@ export class MediaVideoRealService {
     return metadata.byteLength > 0 && metadata.byteLength <= 256 * 1024 * 1024 && metadata.mimeType === 'video/mp4' &&
       durationMatches && dimensionsMatch && Math.abs(metadata.frameRate - 24) <= 0.1;
   }
-  private scope(claims: ClientEmploymentClaims) { return JSON.stringify([claims.enterpriseId, claims.subscriptionId, claims.memberId, claims.sub]); }
+  private scope(claims: VideoRecoveryOwner) { return JSON.stringify([claims.enterpriseId, claims.subscriptionId, claims.memberId, claims.sub]); }
   private parse<T>(schema: z.ZodType<T, z.ZodTypeDef, unknown>, raw: unknown): T {
     const parsed = schema.safeParse(raw);
     if (!parsed.success) fail(400, 'INVALID_PARAMETER', '视频参数无效', { cause: exceptionDetails(parsed.error) });

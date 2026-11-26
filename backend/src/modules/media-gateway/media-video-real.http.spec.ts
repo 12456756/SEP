@@ -192,12 +192,17 @@ describe('real video controller and guard HTTP', () => {
     }
     const requestId = `actual-submit-${code}`;
     const response = await post('/requests').set('X-Request-ID', requestId)
-      .send({ ...input, quoteId, clientRequestId: 'rejected-request' }).expect(status);
+      .send({ ...input, quoteId, clientRequestId: 'rejected-request' }).expect(code === 'INSUFFICIENT_FUNDS' ? 200 : status);
     expect(response.headers['x-request-id']).toBe(requestId);
-    expect(response.body).toMatchObject({ statusCode: status, requestId,
-      error: { code, source: 'platform', requestId, type: 'invalid_request_error', param: null } });
-    expect(typeof response.body.message).toBe('string');
-    expect(response.body.error.message).toBe(response.body.message);
+    if (code === 'INSUFFICIENT_FUNDS') {
+      expect(response.body).toMatchObject({ status: 'FAILED', billingStatus: 'NOT_RESERVED', billingError: { status: 402,
+        body: { error: { code } } }, clientActions: { canStartNewRequest: true, shouldPoll: false } });
+    } else {
+      expect(response.body).toMatchObject({ statusCode: status, requestId,
+        error: { code, source: 'platform', requestId, type: 'invalid_request_error', param: null } });
+      expect(typeof response.body.message).toBe('string');
+      expect(response.body.error.message).toBe(response.body.message);
+    }
     expect(JSON.stringify(response.body)).not.toContain(input.creativeBrief);
     expect(adapter.submit).not.toHaveBeenCalled();
     expect(adapter.query).not.toHaveBeenCalled();

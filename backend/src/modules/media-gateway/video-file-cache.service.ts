@@ -1,9 +1,10 @@
-import { HttpException, Injectable } from '@nestjs/common';
+import { HttpException, Injectable, Logger } from '@nestjs/common';
 import { constants } from 'node:fs';
 import type { ReadStream } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, mkdir, open, readdir, rename, rm, rmdir } from 'node:fs/promises';
+import { lstat, mkdir, open, opendir, rename, rm, rmdir } from 'node:fs/promises';
+import type { Dir } from 'node:fs';
 import { join, parse, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { z } from 'zod';
@@ -39,7 +40,15 @@ const fail = (code: string, status = 503, cause?: unknown): never => {
 /** Private persistent volume, never served as a public upload directory. */
 @Injectable()
 export class VideoFileCacheService {
+  private readonly logger = new Logger(VideoFileCacheService.name);
   private readonly root = resolve(process.env.MEDIA_VIDEO_CACHE_DIR ?? join(process.env.UPLOAD_PATH ?? 'uploads', 'media-video'));
+  private cleanupDirectory?: Dir;
+  private pruning = false;
+
+  async onModuleDestroy(): Promise<void> {
+    await this.cleanupDirectory?.close();
+    this.cleanupDirectory = undefined;
+  }
 
   async assertAvailable(): Promise<void> {
     try { await run(process.env.MEDIA_VIDEO_FFPROBE_PATH || 'ffprobe', ['-version'], { timeout: 5000, maxBuffer: 64 * 1024 }); }
@@ -310,22 +319,32 @@ export class VideoFileCacheService {
 
   /** Explicit bounded maintenance; never traverses another upload directory. */
   async pruneExpired(limit = 100): Promise<number> {
-    await this.directory();
+    if (this.pruning || limit <= 0) return 0;
+    this.pruning = true;
     let deleted = 0;
-    for (const name of (await readdir(this.root)).slice(0, 10_000)) {
-      if (deleted >= Math.max(0, Math.min(1000, limit))) break;
-      if (!/^[a-f0-9]{64}$/.test(name)) continue;
-      const target = join(this.root, name);
-      try {
-        const info = await lstat(target);
-        if (!info.isDirectory() || info.isSymbolicLink()) continue;
-        const metadata = MetadataSchema.parse(JSON.parse((await this.bytes(join(target, 'manifest.json'), 4096)).toString('utf8')));
-        if (Date.parse(metadata.expiresAt) > Date.now()) continue;
-        const data = await lstat(join(target, 'data'));
-        if (!data.isFile() || data.nlink !== 1) continue;
-        await rm(join(target, 'data')); await rm(join(target, 'manifest.json')); await rmdir(target); deleted++;
-      } catch { /* Invalid evidence is retained for explicit repair. */ }
-    }
+    try {
+      await this.directory();
+      this.cleanupDirectory ??= await opendir(this.root);
+      for (let scanned = 0; scanned < 1000 && deleted < Math.min(1000, limit); scanned++) {
+        const entry = await this.cleanupDirectory.read();
+        if (!entry) { await this.cleanupDirectory.close(); this.cleanupDirectory = undefined; break; }
+        if (!/^[a-f0-9]{64}$/.test(entry.name)) continue;
+        const target = join(this.root, entry.name);
+        try {
+          const info = await lstat(target);
+          if (!info.isDirectory() || info.isSymbolicLink()) continue;
+          const metadata = MetadataSchema.parse(JSON.parse((await this.bytes(join(target, 'manifest.json'), 4096)).toString('utf8')));
+          if (Date.parse(metadata.expiresAt) > Date.now()) continue;
+          const data = await lstat(join(target, 'data'));
+          if (!data.isFile() || data.isSymbolicLink() || data.nlink !== 1) continue;
+          await rm(join(target, 'data')); await rm(join(target, 'manifest.json')); await rmdir(target); deleted++;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') this.logger.warn({
+            event: 'video_expired_entry_cleanup_failed', cacheEntry: entry.name, details: exceptionDetails(error),
+          });
+        }
+      }
+    } finally { this.pruning = false; }
     return deleted;
   }
 }

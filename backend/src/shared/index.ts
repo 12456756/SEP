@@ -2169,9 +2169,11 @@ export type CostAlert = z.infer<typeof CostAlertSchema>;
 
 export * from './client-employee.dto';
 export * from './subscription-usage.dto';
+export * from './payment-preference.dto';
 export * from './client-skill-artifact.dto';
 export * from './media-gateway.dto';
 export * from './media-real.dto';
+export * from './media-execution.dto';
 export * from './media-reference.dto';
 export * from './skill-import-schema';
 export * from './employee-copy.dto';

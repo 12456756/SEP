@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { PaymentModeSchema } from './payment-preference.dto';
+import { MediaExecutionReceiptFields } from './media-execution.dto';
 import { MAX_MEDIA_REFERENCE_COUNT, MediaUpstreamErrorSchema, MediaReferenceMimeTypeSchema } from './media-reference.dto';
 import { IMAGE_ADAPTER_MAX_OUTPUTS } from './media-runtime-parameters';
 import { MediaGatewayIdSchema, MediaGatewayOutputSchema, MediaGatewayErrorCodeSchema } from './media-gateway.dto';
@@ -42,6 +44,7 @@ export type MediaRealAnyQuoteRequest = z.infer<typeof MediaRealAnyQuoteRequestSc
 export type MediaRealAnyRequest = z.infer<typeof MediaRealAnyRequestSchema>;
 export const MediaMoneySchema = z.string().regex(/^\d+\.\d{6}$/);
 export const MediaFundingSchema = z.object({
+  paymentMode: PaymentModeSchema.optional(),
   creditCny: MediaMoneySchema, memberWalletCny: MediaMoneySchema, personalCny: MediaMoneySchema,
 }).strict();
 export const MediaRealReferenceSchema = z.object({
@@ -71,11 +74,13 @@ export const MediaRealErrorCodeSchema = z.union([MediaGatewayErrorCodeSchema, z.
 ])]);
 export type MediaRealErrorCode = z.infer<typeof MediaRealErrorCodeSchema>;
 export const MediaRealReceiptSchema = z.object({
+  paymentMode: PaymentModeSchema.optional(),
   mock: z.literal(false), receiptId: MediaGatewayIdSchema, clientRequestId: MediaGatewayIdSchema,
-  profileId: MediaGatewayIdSchema, configVersion: MediaGatewayIdSchema, executionMode: z.literal('sync-response'),
+  profileId: MediaGatewayIdSchema, configVersion: MediaGatewayIdSchema, executionMode: z.enum(['sync-response', 'async-query']),
   status: z.enum(['SUBMITTING', 'QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN', 'SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED']),
-  pollAfterMs: z.number().int().nonnegative().nullable(), outputs: z.array(MediaGatewayOutputSchema).max(4),
-  billingStatus: z.enum(['RESERVED', 'SETTLED', 'RELEASED', 'RECONCILING']), errorCode: MediaRealErrorCodeSchema.nullable(),
+  pollAfterMs: z.number().int().nonnegative().nullable(), outputs: z.array(MediaGatewayOutputSchema.extend({ mimeType: MediaReferenceMimeTypeSchema })).max(4),
+  ...MediaExecutionReceiptFields,
+  billingStatus: z.enum(['NOT_RESERVED', 'RESERVED', 'SETTLED', 'RELEASED', 'RECONCILING']), errorCode: MediaRealErrorCodeSchema.nullable(),
   upstreamError: MediaUpstreamErrorSchema.optional(),
   outputErrors: z.array(z.object({ index: z.number().int().min(0).max(3), code: MediaRealErrorCodeSchema }).strict()).max(4),
   recovery: z.object({ canQuery: z.boolean(), canCancel: z.boolean(), canDownload: z.boolean() }).strict(),

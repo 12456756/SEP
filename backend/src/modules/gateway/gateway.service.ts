@@ -85,7 +85,7 @@ export class GatewayService {
 
     // 3. 使用统一算力账本检查余额。不要读取已废弃的 ComputeAccount，
     // 否则 Web 展示的钱包余额与客户端网关会继续使用两套账本。
-    const billingSnapshot = modelId ? await this.computeCreditService.getBillingSnapshot(modelId) : undefined;
+    const billingSnapshot = modelId ? await this.computeCreditService.getBillingSnapshot(modelId, enterpriseId, claims.sub) : undefined;
     const balance = await this.computeCreditService.checkBalanceBeforeConversation(
       enterpriseId,
       subscriptionId,
@@ -96,6 +96,7 @@ export class GatewayService {
       const message = balance.reason || '企业算力余额不足，请联系管理员充值';
       throw new ForbiddenException({ message, error: {
         message, code: 'INSUFFICIENT_BALANCE', type: 'permission_error', source: 'platform', param: null,
+        paymentMode: billingSnapshot?.paymentMode ?? 'AUTO',
       } });
     }
 

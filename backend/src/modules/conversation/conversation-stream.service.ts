@@ -185,7 +185,7 @@ export class ConversationStreamService {
       employeeTemplateModel: employee.modelId, departmentId: enterpriseCtx.departmentId ?? undefined,
     });
     const modelId = effective.chatModel;
-    const billingSnapshot = await this.computeCredit.getBillingSnapshot(modelId);
+    const billingSnapshot = await this.computeCredit.getBillingSnapshot(modelId, enterpriseCtx.enterpriseId, userId);
     Object.assign(handledByMetadata, { billingSnapshot });
 
     // 1c. 额度 / 余额闸门 —— **每条消息**都要过，不能只在建会话时过一次。

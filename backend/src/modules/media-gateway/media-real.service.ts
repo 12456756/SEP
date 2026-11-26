@@ -2,7 +2,7 @@ import { HttpException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
 import { Decimal } from '@prisma/client/runtime/library';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -12,8 +12,7 @@ import { clientSubscriptionAccessWhere } from '../client/client-subscription-acc
 import type { ClientEmploymentClaims } from '../client/client-employment.guard';
 import { MAX_MEDIA_REFERENCE_TOTAL_BYTES, effectiveImageLimits, IMAGE_REFERENCE_MAX_BYTES, MediaAuthorizationSchema, MediaCapabilitiesSchema, parseUsdToCnyRate, SETTING_KEYS } from 'shared';
 import type { MediaImageSpecV3, MediaRealAnyQuoteRequest, MediaRealAnyRequest, MediaRealQuoteRequestV3, MediaRealReceipt, MediaRealErrorCode } from 'shared';
-import { MediaRealAnyQuoteRequestSchema, MediaRealAnyRequestSchema, MediaRealAnyReceiptSchema } from 'shared';
-import { inspectMediaPng } from './media-png';
+import { MediaJsonValueSchema, MediaRealAnyQuoteRequestSchema, MediaRealAnyRequestSchema, MediaRealAnyReceiptSchema } from 'shared';
 import { inspectReferenceImage } from './media-reference-image';
 import { MediaByteCacheService } from './media-byte-cache.service';
 import { MediaRealBillingService } from './media-real-billing.service';
@@ -23,6 +22,8 @@ import { isSupportedImageModel } from './image-model-contract';
 import { mediaRealSemanticHash } from './media-real-semantics';
 import { MediaUpstreamException, mediaFailure, retainMediaFailure } from '../../common/errors/media-upstream.exception';
 import { exceptionDetails } from '../../common/errors/error-diagnostics';
+import { closedSubmission, executionEvidence, executionFailure, IMAGE_SUBMISSION_BUDGET_MS, MEDIA_SAVE_GRACE_MS, mediaClientActions, mergeExecutionEvidence, recoverableTaskId,
+  type LongdaoMediaResult } from './longdao-media-contract';
 
 const REFERENCE_TTL = 15 * 60_000;
 const QUOTE_TTL = 60_000;
@@ -36,6 +37,7 @@ const sha = (value: string | Buffer) => createHash('sha256').update(value).diges
 
 @Injectable()
 export class MediaRealService {
+  private readonly recovering = new Map<string, Promise<RealRequestRecord>>();
   private reconciling = false;
   private reconcileAfterId: string | undefined;
   constructor(
@@ -105,7 +107,7 @@ export class MediaRealService {
   }
 
   async submit(claims: ClientEmploymentClaims, raw: MediaRealAnyRequest): Promise<MediaRealReceipt> {
-    await this.authorize(claims);
+    await this.authorize(claims, false);
     const dto = this.parse(MediaRealAnyRequestSchema, raw);
     const effectiveSpec = resolveSub2apiImageSpec(dto, 'submit');
     const adapterInput = this.adapterInput(dto, effectiveSpec);
@@ -114,6 +116,7 @@ export class MediaRealService {
       if (prior.scope !== this.scope(claims) || prior.semanticSha256 !== this.semanticHash(dto, prior.referenceHashes, this.scope(claims)) || JSON.stringify(prior.referenceIds) !== JSON.stringify(dto.referenceIds) || prior.quoteId !== dto.quoteId) error(409, 'IDEMPOTENCY_CONFLICT', '幂等键已用于不同图片请求');
       return this.snapshot(await this.reconcile(prior));
     }
+    await this.authorize(claims);
     const hashes = await this.referenceHashes(claims, dto.referenceIds);
     const semanticSha256 = this.semanticHash(dto, hashes, this.scope(claims));
     const profile = await this.requireProfile(claims.enterpriseId, dto, 'image-submit');
@@ -148,13 +151,17 @@ export class MediaRealService {
     })));
     const rate = quote.usdToCnyRate;
     const nowReceipt: Omit<MediaRealReceipt, 'receiptId'> = {
+      paymentMode: quote.value.funding.paymentMode ?? 'AUTO',
       mock: false, clientRequestId: dto.clientRequestId, profileId: dto.profileId, configVersion: dto.configVersion,
-      executionMode: 'sync-response', status: 'SUBMITTING', pollAfterMs: null, outputs: [], billingStatus: 'RESERVED',
+      executionMode: 'async-query', status: 'SUBMITTING', pollAfterMs: 3000, outputs: [], billingStatus: 'NOT_RESERVED',
       errorCode: null, outputErrors: [], recovery: { canQuery: true, canCancel: false, canDownload: false },
       ...(!('parameters' in dto) ? { protocolVersion: 3 as const, semanticHashVersion: 3 as const, effectiveSpec,
         specRevision: (dto as MediaRealQuoteRequestV3).specRevision,
         acceptance: { status: 'unknown' as const, mismatchedFields: [], unknownFields: ['actualSpec'] } } : {}),
     };
+    const requestId = `sep-image-${randomUUID()}`;
+    const connectionSnapshot = await this.adapter.connectionSnapshot();
+    if (quote.connectionFingerprint && quote.connectionFingerprint !== connectionSnapshot.fingerprint) error(409, 'CONFIG_CHANGED', '图片连接已变化，请重新报价');
     const claim = await this.store.claim({
       enterpriseId: claims.enterpriseId, clientRequestId: dto.clientRequestId, quoteId: dto.quoteId,
       scope: this.scope(claims), semanticSha256, referenceIds: dto.referenceIds, referenceHashes: hashes,
@@ -164,10 +171,15 @@ export class MediaRealService {
         operation: dto.operation, requestedSpec: (dto as MediaRealQuoteRequestV3).requestedSpec, effectiveSpec,
         parameterSources: (dto as MediaRealQuoteRequestV3).parameterSources,
         connectionFingerprint: quote.connectionFingerprint, adapterVersion: SUB2API_IMAGE_ADAPTER_VERSION,
+        asyncProtocol: 'longdao-image-v2', dispatchState: 'NOT_DISPATCHED',
       } : { profileId: profile.profileId, configVersion: profile.configVersion,
-        modelId: profile.modelId, operation: dto.operation, parameters: dto.parameters },
-      receipt: { ...nowReceipt, receiptId: 'pending' }, upstreamRequestId: null,
-      submissionDeadline: new Date(Date.now() + 3 * 60_000),
+        modelId: profile.modelId, operation: dto.operation, parameters: dto.parameters, asyncProtocol: 'longdao-image-v2',
+        dispatchState: 'NOT_DISPATCHED', connectionFingerprint: connectionSnapshot.fingerprint },
+      receipt: { ...nowReceipt, receiptId: 'pending', receiptVersion: 2, fileStatus: 'pending', execution: {
+        requestId, taskId: null, submissionStatus: 'submitting', generationStatus: null, isFinal: null,
+        observedAt: null, statusSource: null, billing: { status: 'pending', actualCostUsd: null },
+      } }, upstreamRequestId: requestId,
+      submissionDeadline: new Date(Date.now() + IMAGE_SUBMISSION_BUDGET_MS + MEDIA_SAVE_GRACE_MS),
     });
     if (!claim.created) {
       if (claim.record.scope !== this.scope(claims) || claim.record.semanticSha256 !== semanticSha256 || claim.record.quoteId !== dto.quoteId) error(409, 'IDEMPOTENCY_CONFLICT', '幂等键已用于不同图片请求');
@@ -176,15 +188,34 @@ export class MediaRealService {
     let record = claim.record;
     const receiptId = record.id;
     try {
-      await this.billing.reserve(claims, receiptId, quote.value.amountCny, rate);
+      await this.billing.reserve(claims, receiptId, quote.value.amountCny, rate, quote.value.funding.paymentMode ?? 'AUTO');
     } catch (failure) {
       const insufficient = failure instanceof HttpException && failure.getStatus() === 402;
-      record.receipt.status = insufficient ? 'FAILED' : 'SUBMISSION_UNKNOWN';
-      record.receipt.billingStatus = insufficient ? 'RELEASED' : 'RECONCILING';
-      record.receipt.errorCode = insufficient ? 'INSUFFICIENT_FUNDS' : 'BILLING_PENDING';
-      record.receipt.recovery = { canQuery: !insufficient, canCancel: false, canDownload: false };
-      await this.store.save(record);
-      throw failure;
+      const changed = failure instanceof HttpException && (failure.getResponse() as { error?: { code?: string } }).error?.code === 'PAYMENT_MODE_CHANGED';
+      const notReserved = insufficient || changed;
+      record.receipt.status = 'FAILED';
+      record.receipt.billingStatus = notReserved ? 'NOT_RESERVED' : 'RECONCILING';
+      record.receipt.errorCode = changed ? 'CONFIG_CHANGED' : insufficient ? 'INSUFFICIENT_FUNDS' : 'BILLING_PENDING';
+      record.receipt.recovery = { canQuery: !notReserved, canCancel: false, canDownload: false };
+      record.receipt.billingError = mediaFailure(failure);
+      record.receipt.execution!.submissionStatus = 'not_submitted';
+      record.receipt.execution!.operation = 'create'; record.receipt.fileStatus = 'unavailable';
+      if (notReserved && record.receipt.execution) {
+        record.receipt.execution.submissionStatus = 'not_submitted'; record.receipt.fileStatus = 'unavailable';
+        record.receipt.execution.billing = { status: 'not_charged', actualCostUsd: '0' };
+      }
+      return this.snapshot(await this.store.save(record));
+    }
+    record.receipt.billingStatus = 'RESERVED';
+    const reserved = await this.store.saveGuarded(record);
+    record = reserved.record;
+    if (!reserved.updated) {
+      if (closedSubmission(record.receipt.execution!)) {
+        try { await this.billing.release(record.id); record.receipt.billingStatus = 'RELEASED'; }
+        catch (failure) { record.receipt.billingStatus = 'RECONCILING'; record.receipt.billingError = mediaFailure(failure); }
+        record = await this.store.save(record);
+      }
+      return this.snapshot(record);
     }
     let dispatchStarted = false;
     try {
@@ -197,40 +228,26 @@ export class MediaRealService {
       if (!('parameters' in dto) && dispatchConnection!.fingerprint !== quote.connectionFingerprint) {
         error(409, 'CONFIG_CHANGED', '图片连接已变化，请重新报价', { field: 'connectionFingerprint', stage: 'image-submit', recovery: 'revise_request' });
       }
-      const onRequestId = async (requestId: string) => {
-        record.upstreamRequestId = requestId;
-        record = await this.saveExecution(record);
-      };
+      (record.configuration as Record<string, unknown>).dispatchState = 'DISPATCHING';
+      const dispatch = await this.store.saveGuarded(record);
+      record = dispatch.record;
+      if (!dispatch.updated || record.receipt.status !== 'SUBMITTING') return this.snapshot(record);
       dispatchStarted = true;
-      const result = dispatchConnection
-        ? await this.adapter.execute(adapterInput, referenceBytes, onRequestId, profile.modelId, dispatchConnection.connection)
-        : await this.adapter.execute(adapterInput, referenceBytes, onRequestId, profile.modelId);
-      record.upstreamRequestId = result.requestId;
-      const expiresAt = new Date(Date.now() + OUTPUT_TTL).toISOString();
-      for (const [index, bytes] of result.images.entries()) {
-        const dimensions = inspectMediaPng(bytes);
-        const outputId = `${receiptId}_${index}`;
-        const digest = sha(bytes);
-        await this.cache.put('output', this.scope(claims), outputId, bytes, expiresAt);
-        record.receipt.outputs.push({ outputId, kind: 'image', mimeType: 'image/png', byteLength: bytes.length, ...dimensions, sha256: digest, expiresAt });
-      }
-      record.receipt.status = record.receipt.outputs.length < effectiveSpec.count! ? 'PARTIAL_SUCCEEDED' : 'SUCCEEDED';
-      record.receipt.errorCode = null;
-      if (record.receipt.status === 'PARTIAL_SUCCEEDED') record.receipt.outputErrors = Array.from({ length: effectiveSpec.count! - record.receipt.outputs.length }, (_, i) => ({ index: record.receipt.outputs.length + i, code: 'OUTPUT_FAILED' as const }));
-      if (!('parameters' in dto)) this.applyActualSpec(record, effectiveSpec);
-      record.receipt.recovery = { canQuery: true, canCancel: false, canDownload: record.receipt.outputs.length > 0 };
-      record = await this.saveExecution(record);
+      const result = await this.adapter.submitAsync(adapterInput, referenceBytes, profile.modelId, requestId,
+        dispatchConnection?.connection ?? connectionSnapshot.connection);
+      record = await this.applyAsyncResult(record, result);
     } catch (failure) {
       if (failure instanceof ImageDispatchError && failure.upstreamError) record.receipt.upstreamError = failure.upstreamError;
       else record.receipt.upstreamError = mediaFailure(failure);
       if (!dispatchStarted || failure instanceof ImageDispatchError && failure.definitelyRejected) {
         record.receipt.status = 'FAILED'; record.receipt.errorCode = !dispatchStarted ? 'CONFIG_CHANGED' : (failure as ImageDispatchError).safeCode;
+        record.receipt.fileStatus = 'unavailable';
         try {
           await this.billing.release(receiptId);
           record.receipt.billingStatus = 'RELEASED';
         } catch (releaseError) {
           record.receipt.billingStatus = 'RECONCILING';
-          record.receipt.upstreamError = retainMediaFailure(record.receipt.upstreamError, releaseError, 'release');
+          record.receipt.billingError = mediaFailure(releaseError);
         }
         record.receipt.recovery = { canQuery: record.receipt.billingStatus === 'RECONCILING', canCancel: false, canDownload: false };
       } else {
@@ -240,12 +257,18 @@ export class MediaRealService {
         record.receipt.recovery = { canQuery: true, canCancel: false, canDownload: record.receipt.outputs.length > 0 };
         if (failure instanceof ImageDispatchError) record.upstreamRequestId = failure.requestId;
       }
+      if (record.receipt.execution) {
+        record.receipt.execution.operation = 'create';
+        record.receipt.execution.submissionStatus = dispatchStarted ? 'unknown' : 'not_submitted';
+        record.receipt.execution.operationError = mediaFailure(failure);
+        record.receipt.execution.taskId ??= recoverableTaskId(failure, requestId);
+        if (!dispatchStarted) record.receipt.execution.billing = { status: 'not_charged', actualCostUsd: '0' };
+      }
       record = await this.saveExecution(record);
-      if (failure instanceof ImageDispatchError && failure.upstreamError) throw new MediaUpstreamException(failure.upstreamError);
       return this.snapshot(record);
     }
 
-    return this.snapshot(await this.reconcile(record));
+    return this.snapshot(record);
   }
 
   async findByClientId(claims: ClientEmploymentClaims, id: string) {
@@ -274,8 +297,8 @@ export class MediaRealService {
   }
 
   async cancel(claims: ClientEmploymentClaims, id: string) {
-    await this.authorize(claims); await this.owned(claims, id);
-    error(409, 'CANCEL_UNSUPPORTED', '真实同步图片请求不支持取消');
+    await this.authorize(claims, false); await this.owned(claims, id);
+    error(409, 'CANCEL_UNSUPPORTED', '当前真实图片协议不支持取消');
   }
 
   private async authorize(claims: ClientEmploymentClaims, execution = true) {
@@ -296,7 +319,7 @@ export class MediaRealService {
       ? await this.mediaConfig.getRuntimeMediaV3(enterpriseId)
       : await this.mediaConfig.getRuntimeMedia(enterpriseId);
     if (!runtime.executionAvailable) return [];
-    return runtime.profiles.filter(profile => profile.executionMode === 'sync-response' && profile.operations.some(op => ['generate', 'edit'].includes(op)));
+    return runtime.profiles.filter(profile => profile.operations.some(op => ['generate', 'edit'].includes(op)));
   }
 
   private async requireProfile(enterpriseId: string, dto: MediaRealAnyQuoteRequest, stage: 'image-quote' | 'image-submit') {
@@ -327,14 +350,14 @@ export class MediaRealService {
     if (!capabilities.success) error(503, 'ADAPTER_UNAVAILABLE', '图片能力配置无效，请联系管理员', { field: 'profileId', stage });
     const limits = effectiveImageLimits(capabilities.data);
     const count = 'parameters' in dto ? dto.parameters.count : (dto as MediaRealQuoteRequestV3).requestedSpec.count;
-    if (count !== undefined && count > limits.maxOutputs) {
-      error(400, 'UNSUPPORTED_MEDIA_PARAMETERS', `生成数量不能超过当前配置上限 ${limits.maxOutputs} 张`, {
+    if (count !== undefined && count > Math.min(1, limits.maxOutputs)) {
+        error(400, 'UNSUPPORTED_MEDIA_PARAMETERS', `生成数量不能超过当前配置上限 ${Math.min(1, limits.maxOutputs)} 张`, {
         field: v3 ? 'requestedSpec.count' : 'parameters.count', stage, recovery: 'revise_request',
         submissionState: 'not_submitted', billingState: 'not_reserved',
       });
     }
-    if (dto.operation === 'edit' && (dto.referenceIds.length < 1 || dto.referenceIds.length > limits.maxReferenceCount)) {
-      error(422, 'INVALID_REFERENCE', `当前配置需要 1 至 ${limits.maxReferenceCount} 张参考图`, {
+    if (dto.operation === 'edit' && (dto.referenceIds.length < 1 || dto.referenceIds.length > Math.min(4, limits.maxReferenceCount))) {
+      error(422, 'INVALID_REFERENCE', `当前配置需要 1 至 ${Math.min(4, limits.maxReferenceCount)} 张参考图`, {
         field: 'referenceIds', stage, recovery: 'revise_request', submissionState: 'not_submitted', billingState: 'not_reserved',
       });
     }
@@ -392,12 +415,20 @@ export class MediaRealService {
 
   private snapshot(record: RealRequestRecord): MediaRealReceipt {
     const result = structuredClone(record.receipt);
-    if (result.status === 'SUBMITTING' && record.submissionDeadline.getTime() <= Date.now()) {
+    if (!result.execution && result.status === 'SUBMITTING' && record.submissionDeadline.getTime() <= Date.now()) {
       result.status = 'SUBMISSION_UNKNOWN'; result.errorCode = 'SUBMISSION_UNKNOWN'; result.billingStatus = 'RECONCILING';
     }
     result.recovery.canQuery = ['RESERVED', 'RECONCILING'].includes(result.billingStatus) || result.status === 'SUBMISSION_UNKNOWN';
     if (result.outputs.length && result.outputs.every(output => !output.expiresAt || Date.parse(output.expiresAt) <= Date.now())) {
       result.status = 'RESULT_EXPIRED'; result.errorCode = 'RESULT_EXPIRED'; result.recovery.canDownload = false;
+      if (result.execution) result.fileStatus = 'expired';
+    }
+    if (result.execution) {
+      result.receiptVersion = 2;
+      result.clientActions = mediaClientActions(result.execution, result.fileStatus ?? 'pending', ['RESERVED', 'RECONCILING'].includes(result.billingStatus));
+      result.recovery.canQuery = result.clientActions.shouldPoll;
+      result.recovery.canDownload = result.fileStatus === 'available' && result.outputs.length > 0;
+      result.pollAfterMs = result.clientActions.shouldPoll ? result.clientActions.pollPurpose === 'billing' ? 15000 : 3000 : null;
     }
     return MediaRealAnyReceiptSchema.parse(result);
   }
@@ -420,6 +451,13 @@ export class MediaRealService {
   }
 
   private async reconcile(record: RealRequestRecord): Promise<RealRequestRecord> {
+    if (record.receipt.execution) {
+      const pending = this.recovering.get(record.id);
+      if (pending) return pending;
+      const work = this.recoverAsync(record);
+      this.recovering.set(record.id, work);
+      try { return await work; } finally { this.recovering.delete(record.id); }
+    }
     if (!['RESERVED', 'RECONCILING'].includes(record.receipt.billingStatus) || record.receipt.status === 'SUBMITTING') return record;
     try {
       const billingStatus = await this.billing.status(record.id);
@@ -478,6 +516,8 @@ export class MediaRealService {
       this.reconcileAfterId = page.afterId;
       for (let record of candidates) {
         try {
+          // Async generation is driven by explicit client queries, never a cron POST/poll.
+          if (record.receipt.execution) continue;
           if (record.receipt.status === 'SUBMITTING') {
             if (record.submissionDeadline.getTime() > Date.now()) continue;
             record.receipt = this.snapshot(record);
@@ -495,6 +535,132 @@ export class MediaRealService {
     } finally {
       this.reconciling = false;
     }
+  }
+
+  private async recoverAsync(record: RealRequestRecord): Promise<RealRequestRecord> {
+    if ((closedSubmission(record.receipt.execution!) || ['failed', 'cancelled'].includes(record.receipt.execution!.generationStatus!)) && record.receipt.billingStatus === 'RELEASED' ||
+        ['available', 'expired'].includes(record.receipt.fileStatus!) && ['SETTLED', 'RELEASED'].includes(record.receipt.billingStatus)) return record;
+    try {
+      if (record.receipt.execution!.billing.status === 'not_charged' && record.receipt.execution!.generationStatus !== 'completed') {
+        try {
+          await this.billing.release(record.id);
+          record.receipt.billingStatus = 'RELEASED'; delete record.receipt.billingError;
+        } catch (failure) { record.receipt.billingStatus = 'RECONCILING'; record.receipt.billingError = mediaFailure(failure); }
+        return this.store.save(record);
+      }
+      const configuration = record.configuration as { connectionFingerprint?: string; dispatchState?: string };
+      if (configuration.dispatchState === 'NOT_DISPATCHED') {
+        if (record.submissionDeadline.getTime() > Date.now()) return record;
+        record.receipt.status = 'FAILED'; record.receipt.execution!.submissionStatus = 'not_submitted';
+        record.receipt.fileStatus = 'unavailable'; record.receipt.execution!.billing = { status: 'not_charged', actualCostUsd: '0' };
+        const closed = await this.store.saveGuarded(record);
+        if (!closed.updated) return closed.record;
+        record = closed.record;
+        await this.billing.release(record.id);
+        record.receipt.billingStatus = 'RELEASED';
+        return this.store.save(record);
+      }
+      const snapshot = await this.adapter.connectionSnapshot();
+      if (!configuration.connectionFingerprint || configuration.connectionFingerprint !== snapshot.fingerprint) error(409, 'CONFIG_CHANGED', '原图片连接已变更，不能使用其他 Key 恢复任务');
+      if (record.receipt.execution!.generationStatus !== 'completed' || !['SETTLED', 'RELEASED'].includes(record.receipt.billingStatus)) {
+        const result = await this.adapter.queryAsync(snapshot.connection, record.receipt.execution!.requestId,
+          closedSubmission(record.receipt.execution!) ? null : record.receipt.execution!.taskId);
+        record = await this.applyAsyncResult(record, result);
+      }
+      if (record.receipt.execution?.generationStatus === 'completed' && record.receipt.execution.taskId && !record.receipt.outputs.length) {
+        try {
+          const config = record.configuration as { outputExpiresAt?: string };
+          config.outputExpiresAt ??= new Date(Date.now() + OUTPUT_TTL).toISOString();
+          record = await this.store.save(record);
+          if (Date.parse(config.outputExpiresAt) <= Date.now()) {
+            record.receipt.status = 'RESULT_EXPIRED'; record.receipt.fileStatus = 'expired';
+            return this.store.save(record);
+          }
+          const { bytes, metadata } = await this.adapter.contentAsync(snapshot.connection, record.receipt.execution!.taskId!);
+          const outputId = `${record.id}_0`;
+          const expiresAt = config.outputExpiresAt;
+          await this.cache.put('output', record.scope, outputId, bytes, expiresAt);
+          record.receipt.outputs = [{ outputId, kind: 'image', mimeType: metadata.mimeType, width: metadata.width,
+            height: metadata.height, byteLength: bytes.length, sha256: sha(bytes), expiresAt }];
+          record.receipt.status = 'SUCCEEDED'; record.receipt.fileStatus = 'available'; record.receipt.errorCode = null;
+          const spec = (record.configuration as { effectiveSpec?: ReturnType<typeof resolveSub2apiImageSpec> }).effectiveSpec;
+          if (spec) this.applyActualSpec(record, spec);
+        } catch (failure) {
+          record.receipt.fileStatus = 'download_failed'; record.receipt.errorCode = 'OUTPUT_FAILED';
+          record.receipt.execution!.operationError = mediaFailure(failure);
+          record.receipt.execution!.operation = 'download';
+          record.receipt.upstreamError = mediaFailure(failure);
+        }
+        record = await this.store.save(record);
+      }
+    } catch (failure) {
+      record.receipt.execution!.operation = 'query';
+      record.receipt.execution!.operationError = mediaFailure(failure);
+      record.receipt.upstreamError = mediaFailure(failure);
+      record = await this.store.save(record);
+    }
+    return record;
+  }
+
+  private async applyAsyncResult(record: RealRequestRecord, result: LongdaoMediaResult): Promise<RealRequestRecord> {
+    const incoming = executionEvidence(result);
+    if (incoming.submissionStatus === 'unobserved') {
+      record.receipt.execution = mergeExecutionEvidence(record.receipt.execution!, incoming);
+      record.receipt.upstreamError = incoming.operationError;
+      return this.store.save(record);
+    }
+    const execution = mergeExecutionEvidence(record.receipt.execution!, incoming);
+    const expectedModel = (record.configuration as { modelId?: string }).modelId;
+    if (!closedSubmission(execution) && result.contract.model && result.contract.model !== expectedModel ||
+        execution.submissionStatus === 'accepted' && !execution.taskId) {
+      record.receipt.execution!.taskId ??= execution.taskId;
+      record.receipt.execution!.operationError = { status: 502, body: MediaJsonValueSchema.parse({ error: { code: 'UPSTREAM_FAILED', message: '图片回执模型或任务编号无效', details: result.contract } }) };
+      record.receipt.upstreamError = record.receipt.execution!.operationError;
+      return this.store.save(record);
+    }
+    record.receipt.execution = execution;
+    record.receipt.upstreamError = executionFailure(execution, result.httpStatus);
+    if (closedSubmission(execution) || execution.generationStatus === 'failed' || execution.generationStatus === 'cancelled') {
+      record.receipt.status = execution.generationStatus === 'cancelled' ? 'CANCELLED' : 'FAILED';
+      record.receipt.fileStatus = 'unavailable'; record.receipt.errorCode = 'UPSTREAM_FAILED';
+    } else if (execution.submissionStatus === 'submitting') record.receipt.status = 'SUBMITTING';
+    else if (execution.submissionStatus === 'unknown') record.receipt.status = 'SUBMISSION_UNKNOWN';
+    else {
+      record.receipt.status = record.receipt.outputs.length ? 'SUCCEEDED' : 'RUNNING';
+      if (record.receipt.errorCode === 'SUBMISSION_UNKNOWN') record.receipt.errorCode = null;
+    }
+    const observed = await this.store.saveGuarded(record);
+    record = observed.record;
+    if (!observed.updated) return record;
+    try {
+      const billingStatus = await this.billing.status(record.id);
+      if (billingStatus === 'SETTLED' || billingStatus === 'RELEASED') {
+        record.receipt.billingStatus = billingStatus;
+        delete record.receipt.billingError;
+        return this.store.save(record);
+      }
+      if (execution.billing.status === 'not_charged') {
+        await this.billing.release(record.id);
+        record.receipt.billingStatus = 'RELEASED';
+      } else if (execution.billing.status === 'settled') {
+        if (execution.generationStatus !== 'completed') error(409, 'BILLING_PENDING', '图片收费证据与生成结果不一致');
+        const snapshot = await this.adapter.connectionSnapshot();
+        if (snapshot.fingerprint !== (record.configuration as { connectionFingerprint?: string }).connectionFingerprint) error(409, 'CONFIG_CHANGED', '原图片计费连接已变化');
+        const usage = await this.adapter.usage(execution.requestId, snapshot.connection);
+        if (usage.status !== 'settled' || usage.request_id !== execution.requestId || usage.model !== expectedModel ||
+            (usage.schema_version === 2 ? usage.image_count != null && usage.image_count !== 1 : usage.image_count !== 1) ||
+            usage.actual_cost_usd === null || !new Decimal(usage.actual_cost_usd).eq(execution.billing.actualCostUsd!)) error(409, 'BILLING_PENDING', '图片金额证据与原请求不一致');
+        const quote = await this.store.findQuote(record.quoteId);
+        if (!quote || quote.scope !== record.scope) error(409, 'BILLING_PENDING', '原图片报价不可用');
+        const usd = new Decimal(execution.billing.actualCostUsd!);
+        record.receipt.billingStatus = await this.billing.settleNegotiated(record.id,
+          usd.mul(quote.usdToCnyRate).toDecimalPlaces(6).toFixed(6), usd.toDecimalPlaces(6).toFixed(6), expectedModel!, expectedModel!);
+      } else record.receipt.billingStatus = 'RECONCILING';
+      delete record.receipt.billingError;
+    } catch (failure) {
+      record.receipt.billingStatus = 'RECONCILING'; record.receipt.billingError = mediaFailure(failure);
+    }
+    return this.store.save(record);
   }
 
   private scope(claims: ClientEmploymentClaims) { return JSON.stringify([claims.enterpriseId, claims.sub, claims.memberId, claims.subscriptionId]); }

@@ -55,6 +55,8 @@ const VideoInputMetadataSchema = z.object({
 }).strict();
 export type VideoInputMetadata = z.infer<typeof VideoInputMetadataSchema>;
 const DispatchSchema = z.object({
+  contractVersion: z.literal(2).optional(),
+  cancelSupported: z.boolean().optional(),
   quoteId: id,
   upstreamTaskId: z.string().regex(/^[A-Za-z0-9_.-]{1,256}$/).nullable(),
   upstreamRequestId: z.string().regex(/^[A-Za-z0-9_.:-]{1,256}$/).nullable(),
@@ -146,6 +148,34 @@ export class MediaVideoRealStore {
     });
   }
 
+  async pendingRequests(limit = 20, afterId?: string): Promise<{
+    records: Array<{ receiptId: string; scope: string }>; afterId?: string;
+  }> {
+    return this.safe(async () => {
+      const take = Math.max(1, Math.min(100, limit));
+      const rows = await this.prisma.mediaGatewayRequest.findMany({
+        where: { ...(afterId ? { id: { gt: afterId } } : {}), AND: [
+          { configuration: { path: ['adapter'], equals: VIDEO_REAL_ADAPTER } },
+          { OR: [
+            { status: { in: ['SUBMITTING', 'SUBMISSION_UNKNOWN', 'QUEUED', 'RUNNING'] } },
+            { receipt: { path: ['billingStatus'], equals: 'RESERVED' } },
+            { receipt: { path: ['billingStatus'], equals: 'RECONCILING' } },
+            { AND: [
+              { receipt: { path: ['execution', 'generationStatus'], equals: 'completed' } },
+              { OR: [
+                { receipt: { path: ['fileStatus'], equals: 'pending' } },
+                { receipt: { path: ['fileStatus'], equals: 'download_failed' } },
+              ] },
+            ] },
+          ] },
+        ] },
+        orderBy: { id: 'asc' }, take, select: { id: true, scope: true },
+      });
+      return { records: rows.map(row => ({ receiptId: row.id, scope: row.scope })),
+        afterId: rows.length === take ? rows[rows.length - 1].id : undefined };
+    });
+  }
+
   async findByClientId(enterpriseId: string, clientRequestId: string, scope: string, forReplay = false): Promise<VideoRealRecord | null> {
     return this.safe(async () => {
       const row = await this.prisma.mediaGatewayRequest.findUnique({ where: { enterpriseId_clientRequestId: { enterpriseId, clientRequestId } } });
@@ -182,7 +212,7 @@ export class MediaVideoRealStore {
       const configuration = ConfigurationSchema.parse(input.configuration);
       const { receiptId: _, ...receipt } = MediaVideoRealReceiptSchema.parse({ ...input.receipt, receiptId: 'pending' });
       if (receipt.status !== 'SUBMITTING' || receipt.billingStatus !== 'NOT_RESERVED' || configuration.dispatchState !== 'NOT_DISPATCHED' ||
-        configuration.upstreamTaskId || configuration.upstreamRequestId) videoStorageUnavailable();
+        configuration.upstreamTaskId || !configuration.contractVersion && configuration.upstreamRequestId) videoStorageUnavailable();
       hash.parse(input.semanticSha256);
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
@@ -199,7 +229,7 @@ export class MediaVideoRealStore {
             const metadata = this.quoteMetadata(quote.metadata);
             if (quote.expiresAt.getTime() <= Date.now() || quote.expiresAt.getTime() !== Date.parse(metadata.value.expiresAt)) videoGatewayError(409, 'QUOTE_EXPIRED', '视频报价已过期');
             if (metadata.consumedByClientRequestId !== null) videoGatewayError(409, 'QUOTE_ALREADY_USED', '视频报价已消费');
-            const { quoteId: _q, upstreamTaskId: _t, upstreamRequestId: _r, dispatchState: _d, outputExpiresAt: _e, ...frozen } = configuration;
+            const { quoteId: _q, upstreamTaskId: _t, upstreamRequestId: _r, dispatchState: _d, outputExpiresAt: _e, contractVersion: _c, cancelSupported: _s, ...frozen } = configuration;
             if (JSON.stringify(metadata.configuration) !== JSON.stringify(frozen) || metadata.value.semanticSha256 !== input.semanticSha256 ||
               JSON.stringify(metadata.referenceIds) !== JSON.stringify(input.referenceIds) || JSON.stringify(metadata.referenceHashes) !== JSON.stringify(input.referenceHashes)) {
               videoGatewayError(409, 'IDEMPOTENCY_CONFLICT', '视频报价与请求不一致');

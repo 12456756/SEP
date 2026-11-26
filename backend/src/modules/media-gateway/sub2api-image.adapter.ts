@@ -11,6 +11,7 @@ import { MediaUpstreamException, mediaFailure, mediaDispatchFailure, readMediaUp
 import type { MediaUpstreamError } from 'shared';
 import { errorMessage, hasBusinessError, sanitizeError } from '../../common/errors/error-diagnostics';
 import { upstreamHeaders } from '../../common/errors/upstream-http.exception';
+import { IMAGE_CREATE_TIMEOUT_MS, LongdaoReceiptMetadataFields, longdaoMediaFetch, readLongdaoMedia } from './longdao-media-contract';
 
 const ModelIdSchema = z.string().min(1).max(160).regex(/^[^\s\p{Cc}\p{Cf}]+$/u);
 const ModelsSchema = z.object({
@@ -20,7 +21,8 @@ const ModelsSchema = z.object({
   })).max(2000),
 });
 const PricingSchema = z.object({
-  object: z.literal('sub2api.image_pricing'), schema_version: z.literal(1), currency: z.literal('USD'),
+  ...LongdaoReceiptMetadataFields,
+  object: z.literal('sub2api.image_pricing'), schema_version: z.union([z.literal(1), z.literal(2)]), currency: z.literal('USD'),
   model: ModelIdSchema, operation: z.enum(['generate', 'edit']), size: z.string(), n: z.number().int(),
   quality: z.string().min(1).max(128), billing_mode: z.enum(['image', 'per_request', 'token']),
   pricing_status: z.enum(['quoted', 'unavailable']), pricing_source: z.string().min(1),
@@ -31,14 +33,15 @@ const PricingSchema = z.object({
 });
 export type Sub2apiImagePrice = z.infer<typeof PricingSchema>;
 const UsageSchema = z.object({
-  object: z.literal('sub2api.request_usage'), schema_version: z.literal(1), currency: z.literal('USD'),
-  request_id: z.string().min(1).max(256), status: z.enum(['settled', 'pending']),
+  ...LongdaoReceiptMetadataFields,
+  object: z.literal('sub2api.request_usage'), schema_version: z.union([z.literal(1), z.literal(2)]), currency: z.literal('USD'),
+  request_id: z.string().min(1).max(256), status: z.enum(['settled', 'pending', 'not_charged', 'unknown']),
   model: ModelIdSchema.nullable().optional(), actual_cost_usd: z.string().regex(/^\d+(?:\.\d{1,12})?$/).nullable(),
   image_count: z.number().int().nonnegative().nullable().optional(),
 });
 export type Sub2apiImageUsage = z.infer<typeof UsageSchema>;
 export interface Sub2apiImageConnection { base: string; key: string }
-export const SUB2API_IMAGE_ADAPTER_VERSION = 'sub2api-image-v3';
+export const SUB2API_IMAGE_ADAPTER_VERSION = 'sub2api-image-async-v1';
 export class ImageDispatchError extends HttpException {
   readonly upstreamError?: MediaUpstreamError;
   constructor(readonly requestId: string | null, readonly definitelyRejected: boolean,
@@ -136,11 +139,72 @@ export class Sub2apiImageAdapter {
     const parsed = UsageSchema.safeParse(result.value);
     if (!parsed.success || parsed.data.request_id !== requestId ||
       (parsed.data.status === 'settled' && (parsed.data.actual_cost_usd === null || parsed.data.model == null ||
-        parsed.data.image_count == null || parsed.data.image_count < 1 || parsed.data.image_count > 4)) ||
-      (parsed.data.status === 'pending' && parsed.data.actual_cost_usd !== null)) unavailable('BILLING_PENDING', {
+        (parsed.data.schema_version === 1 && parsed.data.image_count == null) ||
+        (parsed.data.image_count != null && (parsed.data.image_count < 1 || parsed.data.image_count > 4)))) ||
+      (['pending', 'unknown'].includes(parsed.data.status) && parsed.data.actual_cost_usd !== null) ||
+      (parsed.data.status === 'not_charged' && !/^0(?:\.0+)?$/.test(parsed.data.actual_cost_usd ?? ''))) unavailable('BILLING_PENDING', {
         message: 'Image usage response is invalid or does not match the original request/settlement state',
         details: parsed.success ? parsed.data : parsed.error.issues });
     return parsed.data;
+  }
+
+  async submitAsync(input: MediaRealAnyQuoteRequest, references: Buffer[], modelId: string,
+    requestId: string, connection: Sub2apiImageConnection) {
+    const spec = resolveSub2apiImageSpec(input, 'submit');
+    if (spec.count !== 1 || input.referenceIds.length > 4) unavailable('UNSUPPORTED_MEDIA_PARAMETERS', 'Asynchronous images require n=1 and at most four references');
+    let body: BodyInit;
+    const headers = { 'X-Client-Request-ID': requestId, 'Idempotency-Key': requestId };
+    const fields = { model: modelId, prompt: input.creativeBrief, n: 1, size: spec.size, quality: spec.quality, response_format: 'url' };
+    if (input.operation === 'generate') {
+      body = JSON.stringify(fields);
+      headers['Content-Type'] = 'application/json';
+    } else {
+      if (!references.length || references.length !== input.referenceIds.length) unavailable('INVALID_REFERENCE');
+      const form = new FormData();
+      for (const [index, bytes] of references.entries()) {
+        const { mimeType, extension } = await inspectReferenceImage(bytes, IMAGE_REFERENCE_MAX_BYTES);
+        form.append('image[]', new Blob([new Uint8Array(bytes)], { type: mimeType }), `reference-${index}.${extension}`);
+      }
+      for (const [field, value] of Object.entries(fields)) form.append(field, String(value));
+      body = form;
+    }
+    const response = await longdaoMediaFetch(this.normalizeConnection(connection),
+      `/images/${input.operation === 'generate' ? 'generations' : 'edits'}/async`, { method: 'POST', headers, body }, IMAGE_CREATE_TIMEOUT_MS);
+    return readLongdaoMedia(response, connection.key, requestId, undefined, true);
+  }
+
+  async queryAsync(connection: Sub2apiImageConnection, requestId: string, taskId?: string | null) {
+    if (!/^[A-Za-z0-9_.:-]{1,256}$/.test(requestId) || taskId && !/^[A-Za-z0-9_.:-]{1,256}$/.test(taskId)) unavailable('INVALID_PARAMETER');
+    const path = `/images/tasks/${encodeURIComponent(taskId ?? requestId)}${taskId ? '' : '?id_type=request_id'}`;
+    const response = await longdaoMediaFetch(this.normalizeConnection(connection), path, { method: 'GET' }, IMAGE_CREATE_TIMEOUT_MS);
+    return readLongdaoMedia(response, connection.key, requestId, taskId);
+  }
+
+  async contentAsync(connection: Sub2apiImageConnection, taskId: string) {
+    if (!/^[A-Za-z0-9_.:-]{1,256}$/.test(taskId)) unavailable('OUTPUT_FAILED');
+    const response = await longdaoMediaFetch(this.normalizeConnection(connection), `/images/tasks/${encodeURIComponent(taskId)}/content`,
+      { method: 'GET' }, IMAGE_CREATE_TIMEOUT_MS);
+    if (!response.ok) throw new MediaUpstreamException(protectMediaCredential(await readMediaUpstreamError(response), connection.key));
+    const mimeType = response.headers.get('content-type')?.split(';')[0].trim().toLowerCase();
+    const expectedLength = response.headers.get('content-length');
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(mimeType ?? '') || !response.body ||
+        expectedLength !== null && (!/^\d+$/.test(expectedLength) || !Number.isSafeInteger(Number(expectedLength)) ||
+          Number(expectedLength) < 1 || Number(expectedLength) > 20 * 1024 * 1024)) {
+      await response.body?.cancel(); unavailable('OUTPUT_FAILED', 'Longdao image content has an invalid MIME type');
+    }
+    const reader = response.body.getReader(); const chunks: Buffer[] = []; let length = 0;
+    try {
+      while (true) {
+        const part = await reader.read(); if (part.done) break;
+        length += part.value.byteLength;
+        if (length > 20 * 1024 * 1024) unavailable('OUTPUT_FAILED', 'Image output exceeds 20 MiB');
+        chunks.push(Buffer.from(part.value));
+      }
+    } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+    const bytes = Buffer.concat(chunks);
+    if (expectedLength !== null && length !== Number(expectedLength)) unavailable('OUTPUT_FAILED', 'Longdao image content length does not match the response header');
+    const metadata = await inspectReferenceImage(bytes, 20 * 1024 * 1024, mimeType);
+    return { bytes, metadata };
   }
 
   async execute(

@@ -7,7 +7,7 @@ const proxyTimeout = /^\d+$/.test(proxyTimeoutValue)
   && Number(proxyTimeoutValue) > 0
   && Number(proxyTimeoutValue) <= 2147483647
   ? Number(proxyTimeoutValue)
-  : 180000;
+  : 330000;
 
 const nextConfig = {
   reactStrictMode: true,

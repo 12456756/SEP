@@ -7,7 +7,14 @@ import { MAX_MEDIA_REFERENCE_COUNT } from 'shared';
 import { PrismaService } from '../../prisma/prisma.service';
 import { exceptionDetails } from '../../common/errors/error-diagnostics';
 
+const asyncConfiguration = {
+  asyncProtocol: z.literal('longdao-image-v2').optional(),
+  dispatchState: z.enum(['NOT_DISPATCHED', 'DISPATCHING']).optional(),
+  connectionFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  outputExpiresAt: z.string().datetime().optional(),
+};
 const legacyConfigurationSchema = z.object({
+  ...asyncConfiguration,
   profileId: z.string().min(1),
   configVersion: z.string().min(1),
   modelId: z.string().min(1).max(160).optional(),
@@ -19,6 +26,7 @@ const legacyConfigurationSchema = z.object({
   }).strict(),
 }).strict();
 const configurationV3Schema = z.object({
+  ...asyncConfiguration,
   protocolVersion: z.literal(3), semanticHashVersion: z.literal(3), specRevision: z.number().int().positive(),
   profileId: MediaProfileIdV3Schema, configVersion: MediaConfigVersionV3Schema, modelId: z.string().min(1).max(160),
   operation: z.enum(['generate', 'edit']), requestedSpec: z.record(z.unknown()), effectiveSpec: z.object({
@@ -152,6 +160,10 @@ export class MediaRealStore {
   }
 
   async save(record: RealRequestRecord, upstreamRequestId = record.upstreamRequestId): Promise<RealRequestRecord> {
+    return (await this.saveGuarded(record, upstreamRequestId)).record;
+  }
+
+  async saveGuarded(record: RealRequestRecord, upstreamRequestId = record.upstreamRequestId): Promise<{ updated: boolean; record: RealRequestRecord }> {
     return this.safe(async () => {
       MediaRealAnyReceiptSchema.parse(record.receipt);
       configurationSchema.parse(record.configuration);
@@ -160,13 +172,13 @@ export class MediaRealStore {
         || record.receipt.configVersion !== (record.configuration as z.infer<typeof configurationSchema>).configVersion
         || record.referenceIds.length !== record.referenceHashes.length) realMediaStorageUnavailable();
       const { receiptId: _id, ...receipt } = record.receipt;
-      await this.prisma.mediaRealRequest.updateMany({
+      const result = await this.prisma.mediaRealRequest.updateMany({
         where: { id: record.id, revision: record.revision },
-        data: { receipt, status: receipt.status, upstreamRequestId, revision: { increment: 1 } },
+        data: { receipt, status: receipt.status, configuration: record.configuration as Prisma.InputJsonValue, upstreamRequestId, revision: { increment: 1 } },
       });
       const current = await this.findRequest(record.id);
       if (!current) realMediaStorageUnavailable();
-      return current;
+      return { updated: result.count === 1, record: current };
     });
   }
 

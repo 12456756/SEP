@@ -33,9 +33,9 @@ async function loadConfig(env = {}) {
   }
 }
 
-test('defaults the external API proxy timeout to 180000ms', async () => {
+test('defaults the external API proxy timeout to 330000ms', async () => {
   const config = await loadConfig();
-  assert.equal(config.experimental.proxyTimeout, 180000);
+  assert.equal(config.experimental.proxyTimeout, 330000);
 });
 
 test('accepts positive integer timeout overrides', async (t) => {
@@ -47,7 +47,7 @@ test('accepts positive integer timeout overrides', async (t) => {
   }
 });
 
-test('falls back to 180000ms for invalid timeout overrides', async (t) => {
+test('falls back to 330000ms for invalid timeout overrides', async (t) => {
   for (const value of [
     '', ' ', '0', '000', '-1', '1.5', '180000ms', '1e5', '0x10',
     'Infinity', 'NaN', ' 180000 ', '+180000', '9007199254740992',
@@ -56,7 +56,7 @@ test('falls back to 180000ms for invalid timeout overrides', async (t) => {
   ]) {
     await t.test(JSON.stringify(value), async () => {
       const config = await loadConfig({ SEP_API_PROXY_TIMEOUT_MS: value });
-      assert.equal(config.experimental.proxyTimeout, 180000);
+      assert.equal(config.experimental.proxyTimeout, 330000);
     });
   }
 });
@@ -64,7 +64,7 @@ test('falls back to 180000ms for invalid timeout overrides', async (t) => {
 test('installed Next schema accepts and retains the experimental timeout', async () => {
   const config = await loadConfig();
   const parsed = configSchema.parse(config);
-  assert.equal(parsed.experimental.proxyTimeout, 180000);
+  assert.equal(parsed.experimental.proxyTimeout, 330000);
   assert.equal(parsed.experimental.proxyClientMaxBodySize, '110mb');
 });
 
@@ -94,7 +94,7 @@ test('preserves all other config and development output isolation', async (t) =>
     await t.test(String(nodeEnv), async () => {
       const config = await loadConfig({ NODE_ENV: nodeEnv });
       const { experimental, rewrites, redirects, ...unchanged } = config;
-      assert.deepEqual(experimental, { proxyTimeout: 180000, proxyClientMaxBodySize: '110mb' });
+      assert.deepEqual(experimental, { proxyTimeout: 330000, proxyClientMaxBodySize: '110mb' });
       assert.equal(typeof rewrites, 'function');
       assert.deepEqual(unchanged, {
         reactStrictMode: true,

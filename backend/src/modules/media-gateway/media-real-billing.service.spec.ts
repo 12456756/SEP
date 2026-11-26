@@ -23,6 +23,7 @@ const allowance = () => ({ id: 'allowance-1', enterpriseId: claims.enterpriseId,
   enabled: true, limitCNY: d(5), period: 'MONTH', carryOver: false,
   dailyLimitCNY: null as Decimal | null, monthlyLimitCNY: null as Decimal | null, dailyBypassUntil: null as Date | null });
 const txMock = () => ({
+  enterpriseMember: { findUnique: jest.fn().mockResolvedValue({ paymentMode: 'AUTO' }) },
   $queryRaw: jest.fn().mockResolvedValue([{ id: claims.sub, status: 'ACTIVE' }]),
   mediaRealBillingReservation: {
     findUnique: jest.fn(), create: jest.fn(), update: jest.fn(), updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -50,8 +51,54 @@ describe('MediaRealBillingService', () => {
   });
   afterEach(() => jest.restoreAllMocks());
 
+  it('personal-only ignores company caps and gifts, and freezes the source for later refund', async () => {
+    tx.enterpriseMember.findUnique.mockResolvedValue({ paymentMode: 'PERSONAL_ONLY' });
+    tx.subscriptionCredit.findUnique.mockResolvedValue(credit());
+    tx.memberAllowanceTopUp.findMany.mockResolvedValue([topUp()]);
+    tx.memberComputeAllowance.findUnique.mockResolvedValue({ ...allowance(), dailyLimitCNY: d(0) });
+    expect(await service.quoteFunding(claims, '5.000000')).toEqual({
+      paymentMode: 'PERSONAL_ONLY', creditCny: '0.000000', memberWalletCny: '0.000000', personalCny: '5.000000',
+    });
+    await service.reserve(claims, 'receipt-personal', '5.000000', 7, 'PERSONAL_ONLY');
+    expect(tx.subscriptionCredit.updateMany).not.toHaveBeenCalled();
+    expect(tx.memberAllowanceTopUp.updateMany).not.toHaveBeenCalled();
+    expect(tx.memberAllowanceWindow.create).not.toHaveBeenCalled();
+    expect(tx.mediaRealBillingReservation.create).toHaveBeenCalledWith({ data: expect.objectContaining({
+      personalCny: d(5), sourceSnapshot: expect.objectContaining({ paymentMode: 'PERSONAL_ONLY', allowanceWindowId: null }),
+    }) });
+    tx.enterpriseMember.findUnique.mockResolvedValue({ paymentMode: 'ENTERPRISE_ONLY' });
+    const row = { ...reservation(), sourceSnapshot: { ...reservation().sourceSnapshot, paymentMode: 'PERSONAL_ONLY' } };
+    tx.mediaRealBillingReservation.findUnique.mockResolvedValue(row);
+    await service.release('receipt-1');
+    expect(tx.personalWallet.updateMany).toHaveBeenLastCalledWith(expect.objectContaining({ data: expect.objectContaining({ balance: { increment: d(5) } }) }));
+  });
+
+  it('enterprise-only rejects insufficient company funding before touching personal funds', async () => {
+    tx.enterpriseMember.findUnique.mockResolvedValue({ paymentMode: 'ENTERPRISE_ONLY' });
+    await expect(service.quoteFunding(claims, '5.000000')).rejects.toMatchObject({ status: 402 });
+    await expect(service.reserve(claims, 'receipt-company', '5.000000', 7, 'ENTERPRISE_ONLY')).rejects.toMatchObject({ status: 402 });
+    expect(tx.personalWallet.updateMany).not.toHaveBeenCalled();
+    expect(tx.mediaRealBillingReservation.create).not.toHaveBeenCalled();
+  });
+
+  it('requires a fresh quote after changing preference, without reserving or debiting', async () => {
+    tx.enterpriseMember.findUnique.mockResolvedValue({ paymentMode: 'PERSONAL_ONLY' });
+    await expect(service.reserve(claims, 'receipt-change', '5.000000', 7, 'AUTO'))
+      .rejects.toMatchObject({ status: 409, response: { error: { code: 'PAYMENT_MODE_CHANGED', message: '付款方式已变化，请重新报价' } } });
+    expect(tx.personalWallet.updateMany).not.toHaveBeenCalled();
+    expect(tx.subscriptionCredit.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('replays an existing reservation after switching without allocating again', async () => {
+    tx.enterpriseMember.findUnique.mockResolvedValue({ paymentMode: 'PERSONAL_ONLY' });
+    tx.mediaRealBillingReservation.findUnique.mockResolvedValue(reservation());
+    await service.reserve(claims, 'receipt-1', '5.000000', 7, 'AUTO');
+    expect(tx.enterpriseMember.findUnique).not.toHaveBeenCalled();
+    expect(tx.personalWallet.updateMany).not.toHaveBeenCalled();
+  });
+
   it('quotes without mutations and reserves the same receipt only once', async () => {
-    await expect(service.quoteFunding(claims, '3.500000')).resolves.toEqual({ creditCny: '0.000000', memberWalletCny: '0.000000', personalCny: '3.500000' });
+    await expect(service.quoteFunding(claims, '3.500000')).resolves.toEqual({ creditCny: '0.000000', memberWalletCny: '0.000000', personalCny: '3.500000', paymentMode: 'AUTO' });
     expect(tx.personalWallet.updateMany).not.toHaveBeenCalled();
     tx.mediaRealBillingReservation.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce({
       ...reservation(), reservedCny: d('3.5'), usdToCnyRate: d('7.1234'),
@@ -121,7 +168,7 @@ describe('MediaRealBillingService', () => {
     tx.memberAllowanceTopUp.findMany.mockResolvedValue([topUp()]);
     tx.computeUsageRecord.aggregate.mockResolvedValue({ _sum: { creditPaidCNY: d(1), memberWalletPaidCNY: d(0), walletPaidCNY: d(0), unpaidCNY: d(0) } });
     tx.mediaRealBillingReservation.aggregate.mockResolvedValue({ _sum: { creditCny: d(1), memberWalletCny: d(1) } });
-    await expect(service.quoteFunding(claims, '6.000000')).resolves.toEqual({ creditCny: '1.000000', memberWalletCny: '1.000000', personalCny: '4.000000' });
+    await expect(service.quoteFunding(claims, '6.000000')).resolves.toEqual({ creditCny: '1.000000', memberWalletCny: '1.000000', personalCny: '4.000000', paymentMode: 'AUTO' });
     expect(tx.mediaRealBillingReservation.aggregate).toHaveBeenCalledWith({ where: {
       enterpriseId: claims.enterpriseId, userId: claims.sub, status: { in: ['RESERVED', 'RECONCILING'] },
     }, _sum: { creditCny: true, memberWalletCny: true } });
@@ -142,7 +189,7 @@ describe('MediaRealBillingService', () => {
       limitCNY: d(5), carriedInCNY: d(0), usedCNY: d(3), dailyUsedCNY: d(3), monthlyUsedCNY: d(3),
     });
     await expect(service.quoteFunding(claims, '6.000000')).resolves.toEqual({
-      creditCny: '1.000000', memberWalletCny: '1.000000', personalCny: '4.000000',
+      creditCny: '1.000000', memberWalletCny: '1.000000', personalCny: '4.000000', paymentMode: 'AUTO',
     });
     await service.reserve(claims, 'receipt-shared', '6.000000', 7);
     expect(sharedWindow.mock.calls.map(call => call[3])).toEqual([false, true]);
@@ -155,13 +202,13 @@ describe('MediaRealBillingService', () => {
   it('does not let gift alone bypass an exhausted daily allowance', async () => {
     tx.subscriptionCredit.findUnique.mockResolvedValue(credit());
     tx.memberComputeAllowance.findUnique.mockResolvedValue({ ...allowance(), dailyLimitCNY: d(0) });
-    await expect(service.quoteFunding(claims, '3.000000')).resolves.toEqual({ creditCny: '0.000000', memberWalletCny: '0.000000', personalCny: '3.000000' });
+    await expect(service.quoteFunding(claims, '3.000000')).resolves.toEqual({ creditCny: '0.000000', memberWalletCny: '0.000000', personalCny: '3.000000', paymentMode: 'AUTO' });
   });
 
   it('keeps monthly limit while daily bypass is active and ignores legacy cap when parallel limits configured', async () => {
     tx.memberComputeAllowance.findUnique.mockResolvedValue({ ...allowance(), limitCNY: d(1), period: 'WEEK', dailyLimitCNY: d(0), monthlyLimitCNY: d(4), dailyBypassUntil: new Date(Date.now() + 60000) });
     tx.subscriptionCredit.findUnique.mockResolvedValue(credit());
-    await expect(service.quoteFunding(claims, '6.000000')).resolves.toEqual({ creditCny: '4.000000', memberWalletCny: '0.000000', personalCny: '2.000000' });
+    await expect(service.quoteFunding(claims, '6.000000')).resolves.toEqual({ creditCny: '4.000000', memberWalletCny: '0.000000', personalCny: '2.000000', paymentMode: 'AUTO' });
   });
 
   it('creates an allowance window only when reserving and attaches it to frozen sources', async () => {

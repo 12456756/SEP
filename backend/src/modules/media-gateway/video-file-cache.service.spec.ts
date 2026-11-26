@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -26,6 +26,7 @@ describe('VideoFileCacheService', () => {
     cache = new VideoFileCacheService();
   });
   afterEach(async () => {
+    await cache.onModuleDestroy();
     if (original === undefined) delete process.env.MEDIA_VIDEO_CACHE_DIR;
     else process.env.MEDIA_VIDEO_CACHE_DIR = original;
     await rm(root, { recursive: true, force: true });
@@ -118,5 +119,37 @@ describe('VideoFileCacheService', () => {
     expect(failure.getStatus()).toBe(410);
     expect(failure.getResponse()).toMatchObject({ error: { code: 'RESULT_EXPIRED', cause: { code: 'ENOENT' } } });
     expect(JSON.stringify(failure.getResponse())).not.toContain(root);
+  });
+
+  it('continues bounded cleanup past earlier live entries and leaves unrelated upload files intact', async () => {
+    const expiresAt = new Date(Date.now() + 3600_000).toISOString();
+    const saved = await cache.saveOutput('scope', 'template', new Response(bytes, { headers: { 'content-type': 'video/mp4' } }), expiresAt);
+    const manifest = { ...saved, expiresAt };
+    // Zero-padded names provide enough entries to require more than one scan.
+    for (let i = 0; i < 1005; i++) {
+      const target = join(root, i.toString(16).padStart(64, '0'));
+      await mkdir(target);
+      await writeFile(join(target, 'manifest.json'), JSON.stringify({ ...manifest,
+        expiresAt: i < 1000 ? expiresAt : new Date(Date.now() - 1000).toISOString() }));
+      await writeFile(join(target, 'data'), bytes);
+    }
+    const staging = join(root, 'incoming'); await mkdir(staging); await writeFile(join(staging, 'keep'), 'unrelated');
+    let removed = 0;
+    for (let i = 0; i < 4; i++) removed += await cache.pruneExpired(2);
+    expect(removed).toBe(5);
+    expect(await readFile(join(staging, 'keep'), 'utf8')).toBe('unrelated');
+    expect((await readdir(root)).filter(name => /^[a-f0-9]{64}$/.test(name))).toHaveLength(1001);
+  }, 30_000);
+
+  it('logs invalid cleanup evidence and retains the entry rather than deleting it', async () => {
+    const { Logger } = await import('@nestjs/common');
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+    try {
+      const target = join(root, 'a'.repeat(64)); await mkdir(target);
+      await writeFile(join(target, 'manifest.json'), '{invalid'); await writeFile(join(target, 'data'), bytes);
+      expect(await cache.pruneExpired(100)).toBe(0);
+      expect(await readFile(join(target, 'data'))).toEqual(bytes);
+      expect(warn).toHaveBeenCalledWith(expect.objectContaining({ event: 'video_expired_entry_cleanup_failed' }));
+    } finally { warn.mockRestore(); }
   });
 });

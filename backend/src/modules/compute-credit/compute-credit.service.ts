@@ -4,6 +4,7 @@ import {
   BadRequestException,
   ConflictException,
   NotFoundException,
+  ForbiddenException,
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
@@ -21,9 +22,11 @@ import {
   SETTING_KEYS,
   parseCnyAmount,
   type ModelBillingSnapshot,
+  type PaymentMode,
 } from "shared";
 import { calculateBilledCost, ModelBillingService } from '../model/model-billing.service';
 import { ModelBillingSnapshotSchema } from 'shared';
+import { readPaymentMode } from './payment-preference';
 import type {
   BalanceCheckResult,
   ChargeUsageParams,
@@ -67,6 +70,18 @@ export class ComputeCreditService {
     private readonly allowanceNotifier: AllowanceNotifierService,
     private readonly modelBilling: ModelBillingService,
   ) {}
+
+  async getPaymentPreference(enterpriseId: string, userId: string) {
+    return { paymentMode: await readPaymentMode(this.prisma, enterpriseId, userId) };
+  }
+
+  async setPaymentPreference(enterpriseId: string, userId: string, paymentMode: PaymentMode) {
+    const result = await this.prisma.enterpriseMember.updateMany({
+      where: { enterpriseId, userId }, data: { paymentMode },
+    });
+    if (!result.count) throw new ForbiddenException('你已不属于该企业');
+    return { paymentMode };
+  }
 
   // ── 赠送额度配置与发放 ─────────────────────────────────────────────────────
 
@@ -191,6 +206,8 @@ export class ComputeCreditService {
     userId?: string | null,
     model?: string | ModelBillingSnapshot,
   ): Promise<BalanceCheckResult> {
+    const paymentMode = typeof model === 'object' ? model.paymentMode ?? 'AUTO'
+      : userId ? await readPaymentMode(this.prisma, enterpriseId, userId) : 'AUTO';
     if (model) {
       const free = typeof model === 'string'
         ? (await this.prisma.platformModel.findUnique({ where: { modelId: model }, select: { isFree: true } }))?.isFree === true
@@ -203,13 +220,22 @@ export class ComputeCreditService {
         };
       }
     }
+    if (paymentMode === 'PERSONAL_ONLY') {
+      const balance = userId ? await this.personalWallet.getBalance(userId) : new Decimal(0);
+      return {
+        allowed: balance.gt(0), enterpriseFundsAllowed: false, creditRemainingCNY: 0,
+        walletBalanceCNY: 0, memberWalletBalanceCNY: 0, totalAvailableCNY: 0,
+        personalBalanceCNY: balance.toNumber(),
+        reason: balance.gt(0) ? '本次调用使用你的个人余额支付' : '已选择仅个人余额，但个人余额不足，请充值或切换付款方式',
+      };
+    }
     // 算力分配的闸门排在余额之前：额度用尽是「这个人不能再花公司的钱」，
     // 与「企业没钱了」是两件事，话术和出路都不同，不能合并成一句「余额不足」。
     const allowance = await this.memberAllowance.check(enterpriseId, userId);
     if (!allowance.enterpriseFundsAllowed) {
       // 闸门已经查过个人余额并把结论写进了 reason，这里不重复查库
       return {
-        allowed: allowance.allowed,
+        allowed: paymentMode === 'AUTO' && allowance.allowed,
         enterpriseFundsAllowed: false,
         creditRemainingCNY: 0,
         walletBalanceCNY: 0,
@@ -217,7 +243,7 @@ export class ComputeCreditService {
         totalAvailableCNY: 0,
         personalBalanceCNY: Number(allowance.personalBalanceCNY ?? 0),
         enterpriseFundsBlockedBy: "ALLOWANCE",
-        reason: allowance.reason,
+        reason: paymentMode === 'ENTERPRISE_ONLY' ? '已选择仅企业余额，但企业分配限额已用尽，请联系管理员或切换付款方式' : allowance.reason,
       };
     }
 
@@ -247,7 +273,7 @@ export class ComputeCreditService {
     if (total.lessThanOrEqualTo(0)) {
       // 企业资金见底 —— 与额度用尽同样是改道，不是拦停。扣费链走到个人钱包那一腿
       // 照样会付款，这里拦死等于凭空拒掉一次能付的对话。
-      const personalBalance = userId
+      const personalBalance = userId && paymentMode === 'AUTO'
         ? await this.personalWallet.getBalance(userId)
         : new Decimal(0);
 
@@ -277,8 +303,9 @@ export class ComputeCreditService {
         personalBalanceCNY: 0,
         enterpriseFundsBlockedBy: "BALANCE",
         reason:
+          (paymentMode === 'ENTERPRISE_ONLY' ? '已选择仅企业余额，当前可用企业资金不足。请充值或切换付款方式。' :
           "该硅基员工的赠送算力余额、成员企业充值余额与企业钱包余额均已用尽，" +
-          "请为企业钱包充值后继续对话；也可为个人余额充值后自费使用。",
+          "请为企业钱包充值后继续对话；也可为个人余额充值后自费使用。"),
       };
     }
 
@@ -320,6 +347,7 @@ export class ComputeCreditService {
     const cost = calculateBilledCost(billingSnapshot, params.inputTokens, params.outputTokens);
     const rate = billingSnapshot.rate;
     const costCNY = money(cost.costCNY);
+    const paymentMode = billingSnapshot.paymentMode ?? 'AUTO';
     const description = `对话算力消费（${params.modelId}，${params.inputTokens}+${params.outputTokens} tokens）`;
 
     // 钱包必须在事务前就位：事务内新建钱包会和乐观锁的版本比对纠缠在一起
@@ -357,7 +385,10 @@ export class ComputeCreditService {
         if (params.userId) await assertActiveUserInTx(tx, params.userId);
         await assertActiveEnterpriseInTx(tx, params.enterpriseId);
         // 2. 额度闸门：这一笔企业最多能出多少（不限额时为 null）
-        const plan = await this.memberAllowance.planCharge(tx, {
+        const plan = paymentMode === 'PERSONAL_ONLY' ? {
+          windowId: null, enterpriseCapCNY: new Decimal(0), regularRemainingCNY: new Decimal(0),
+          limitCNY: null, carriedInCNY: new Decimal(0), topUps: [],
+        } : await this.memberAllowance.planCharge(tx, {
           enterpriseId: params.enterpriseId,
           userId: params.userId,
         });
@@ -411,7 +442,7 @@ export class ComputeCreditService {
               .sub(walletResult.paid),
           ),
         );
-        const personalResult = params.userId
+        const personalResult = params.userId && paymentMode !== 'ENTERPRISE_ONLY'
           ? await this.personalWallet.consumeUpTo(
               tx,
               params.userId,
@@ -452,6 +483,7 @@ export class ComputeCreditService {
         // 7. 落账单。Token 在这里只是明细，不参与任何余额判断。
         const record = await tx.computeUsageRecord.create({
           data: {
+            paymentMode,
             enterpriseId: params.enterpriseId,
             subscriptionId: params.subscriptionId ?? null,
             creditId,
@@ -494,7 +526,7 @@ export class ComputeCreditService {
           },
           // 通知判定所需的一切都在这儿了：闸门刚读出的额度快照 + 这一笔的实际去向。
           // 攒成一个对象带出事务，是为了让「要不要发通知」这一步不必再打库。
-          notify: costCNY.isZero() ? null : {
+          notify: costCNY.isZero() || paymentMode === 'PERSONAL_ONLY' ? null : {
             enterpriseId: params.enterpriseId,
             userId: params.userId,
             windowId: plan.windowId,
@@ -524,8 +556,11 @@ export class ComputeCreditService {
     return result;
   }
 
-  async getBillingSnapshot(modelId: string): Promise<ModelBillingSnapshot> {
-    return this.modelBilling.getSnapshot(modelId);
+  async getBillingSnapshot(modelId: string, enterpriseId?: string, userId?: string): Promise<ModelBillingSnapshot> {
+    const snapshot = await this.modelBilling.getSnapshot(modelId);
+    return enterpriseId && userId
+      ? { ...snapshot, paymentMode: await readPaymentMode(this.prisma, enterpriseId, userId) }
+      : snapshot;
   }
 
   getLegacyBillingSnapshot(modelId: string): Promise<ModelBillingSnapshot> {
@@ -756,6 +791,7 @@ export class ComputeCreditService {
         memberName: r.user?.name ?? r.user?.email ?? null,
         sessionId: r.sessionId,
         modelId: r.modelId,
+        paymentMode: r.paymentMode,
         inputTokens: r.inputTokens,
         outputTokens: r.outputTokens,
         costCNY: r.costCNY.toFixed(4),

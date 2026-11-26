@@ -89,7 +89,7 @@ function MemberView() {
 /**
  * 企业管理员视角。
  *
- * 这一页只回答两件事：**企业为算力留了多少钱、这些钱怎么分给碳基员工、花在哪**。
+ * 展示企业算力管理，以及管理员自己的额度与个人钱包。
  *
  * 两处刻意不放在这里：
  *   · 企业钱包余额与资金流水 → `/wallet`（这一页显示的是从钱包充值进来的算力）
@@ -100,10 +100,15 @@ function AdminView() {
   return (
     <div className="space-y-6 pb-10">
       <PageHeader
-        subtitle="管理企业算力专款、成员余额与消费明细"
+        subtitle="管理企业算力专款、成员余额与消费明细，查看自己的额度与个人余额"
       />
 
       <ComputeBalanceStrip />
+
+      <section id="my-compute" className="scroll-mt-8">
+        <h2 className="mb-3 text-base font-semibold text-foreground">我的算力与个人钱包</h2>
+        <MyComputePanel />
+      </section>
 
       <MemberAllowancePanel />
 

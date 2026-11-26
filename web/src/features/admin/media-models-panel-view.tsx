@@ -40,9 +40,9 @@ function ProfileCapabilities({ profile }: { profile: ProfileStatus }) {
       <div><dt className="inline text-fg-muted">操作：</dt><dd className="inline break-words">{list(profile.operations)}</dd></div>
       <div><dt className="inline text-fg-muted">尺寸：</dt><dd className="inline break-words">{list(capabilities.sizes)}</dd></div>
       <div><dt className="inline text-fg-muted">质量：</dt><dd className="inline break-words">{list(capabilities.qualities)}</dd></div>
-      <div><dt className="inline text-fg-muted">最大输出数量：</dt><dd className="inline">{limits.maxOutputs}</dd></div>
+      <div><dt className="inline text-fg-muted">最大输出数量：</dt><dd className="inline">{Math.min(1, limits.maxOutputs)}</dd></div>
       <div><dt className="inline text-fg-muted">参考图：</dt><dd className="inline">{yesNo(capabilities.supportsReferenceImage)}</dd></div>
-      <div><dt className="inline text-fg-muted">最大参考图数量：</dt><dd className="inline">{limits.maxReferenceCount}</dd></div>
+      <div><dt className="inline text-fg-muted">最大参考图数量：</dt><dd className="inline">{Math.min(4, limits.maxReferenceCount)}</dd></div>
       <div><dt className="inline text-fg-muted">输出尺寸 / 字节上限：</dt><dd className="inline">未提供</dd></div>
     </dl></>;
   }

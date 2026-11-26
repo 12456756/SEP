@@ -326,6 +326,8 @@ model EnterpriseMember {
   /// 企业内角色，与 User.role（全局角色）是两套体系
   role EnterpriseRole @default(MEMBER)
 
+  paymentMode PaymentMode @default(AUTO)
+
   /// 所属部门。为空表示未分配部门（如企业创建者）。
   departmentId String?
   department   Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
@@ -352,6 +354,12 @@ model EnterpriseMember {
   @@index([enterpriseId])
   @@index([departmentId])
   @@map("enterprise_members")
+}
+
+enum PaymentMode {
+  AUTO
+  ENTERPRISE_ONLY
+  PERSONAL_ONLY
 }
 
 enum EnterpriseRole {
@@ -2060,6 +2068,8 @@ model GatewayExecution {
 
 model ComputeUsageRecord {
   id String @id @default(cuid())
+
+  paymentMode PaymentMode @default(AUTO)
 
   enterpriseId String
   enterprise   Enterprise @relation(fields: [enterpriseId], references: [id], onDelete: Cascade)

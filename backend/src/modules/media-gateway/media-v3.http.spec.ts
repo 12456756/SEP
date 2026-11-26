@@ -78,10 +78,15 @@ describe('V3 HTTP with production video adapter, cache and fake upstream', () =>
         const taskId = `task-${clientId}`;
         submissions.push({ fields, clientId });
         taskSpecs.set(taskId, fields);
-        return json({ object: 'video', id: taskId, model: modelId, status: 'queued' }, { 'x-client-request-id': clientId });
+        return json({ schema_version: 2, object: 'video', id: taskId, task_id: taskId, request_id: clientId,
+          submission_status: 'accepted', model: modelId, status: 'queued', is_final: false,
+          billing: { status: 'pending', actual_cost_usd: null } }, { 'x-client-request-id': clientId });
       }
       if (/^\/v1\/videos\/task-[A-Za-z0-9_-]+$/.test(url.pathname)) {
-        return json({ object: 'video', id: url.pathname.split('/').pop(), model: modelId, status: 'completed' });
+        const taskId = url.pathname.split('/').pop()!;
+        return json({ schema_version: 2, object: 'video', id: taskId, task_id: taskId, request_id: taskId.slice(5),
+          submission_status: 'accepted', model: modelId, status: 'completed', is_final: true,
+          billing: { status: 'settled', actual_cost_usd: '0.1' } });
       }
       if (url.pathname.endsWith('/content')) {
         const task = taskSpecs.get(url.pathname.split('/').at(-2)!);
@@ -90,8 +95,8 @@ describe('V3 HTTP with production video adapter, cache and fake upstream', () =>
       }
       if (url.pathname === '/v1/sub2api/videos/usage') {
         const requestId = url.searchParams.get('request_id')!;
-        const task = taskSpecs.get(`task-${requestId.replace(/^client:/, '')}`)!;
-        return json({ object: 'sub2api.video_request_usage', schema_version: 1, currency: 'USD',
+        const task = taskSpecs.get(`task-${requestId}`)!;
+        return json({ object: 'sub2api.video_request_usage', schema_version: 2, currency: 'USD',
           request_id: requestId, status: 'settled', model: modelId, actual_cost_usd: '0.1',
           video_count: 1, duration_seconds: task.seconds, resolution: task.resolution });
       }

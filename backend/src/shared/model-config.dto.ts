@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { PaymentModeSchema } from './payment-preference.dto';
 
 // ── 企业模型配置 ──────────────────────────────────────────────────────────
 
@@ -120,6 +121,7 @@ export type UpdatePlatformModelDto = z.infer<typeof UpdatePlatformModelDtoSchema
 
 /** 仅由服务端生成，冻结调用开始时的单价、倍率和汇率。 */
 export const ModelBillingSnapshotSchema = z.object({
+  paymentMode: PaymentModeSchema.optional(),
   modelId: z.string().min(1),
   isFree: z.boolean(),
   billingMultiplier: z.number().finite().nonnegative(),

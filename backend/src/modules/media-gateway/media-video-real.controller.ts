@@ -15,6 +15,7 @@ import { ZodValidationPipe } from '../../common/pipes/zod-validation.pipe';
 import { MediaSpecValidationPipe } from './media-spec-validation.pipe';
 import { MediaVideoRealGuard } from './media-video-real.guard';
 import { MediaVideoRealService } from './media-video-real.service';
+import { MediaPaymentModeInterceptor } from './media-payment-mode.interceptor';
 import { exceptionDetails } from '../../common/errors/error-diagnostics';
 import { VideoReferenceUploadInterceptor, type VideoReferenceUploadRequest } from './video-reference-upload.interceptor';
 
@@ -36,6 +37,7 @@ import { VideoReferenceUploadInterceptor, type VideoReferenceUploadRequest } fro
 @ApiResponse({ status: 503, description: 'Execution disabled, storage or verified pricing unavailable' })
 @SkipThrottle({ auth: true, chat: true })
 @UseGuards(ClientEmploymentGuard, MediaVideoRealGuard)
+@UseInterceptors(MediaPaymentModeInterceptor)
 @Controller('gateway/v1/media/video-real')
 export class MediaVideoRealController {
   private readonly logger = new Logger(MediaVideoRealController.name);
@@ -120,7 +122,7 @@ export class MediaVideoRealController {
 
   @Post('requests/:receiptId/cancel')
   @Header('Cache-Control', 'no-store')
-  @ApiOperation({ summary: 'Cancellation is unsupported; never promises a refund' })
+  @ApiOperation({ summary: 'Cancel a supported original video task; preserve operation and billing results independently' })
   cancel(@ClientEmployment() claims: ClientEmploymentClaims, @Param('receiptId', new ZodValidationPipe(MediaGatewayIdSchema)) receiptId: string,
     @Body(new ZodValidationPipe(z.object({}).strict().default({}))) _input: Record<string, never>) {
     return this.media.cancel(claims, receiptId);

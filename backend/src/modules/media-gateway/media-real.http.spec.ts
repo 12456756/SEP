@@ -106,13 +106,20 @@ describe('media real controller/guard HTTP contracts', () => {
   });
 
   it.each([
-    ['GET', '/profiles', 'profiles'], ['POST', '/requests', 'submit'],
-    ['POST', '/requests/receipt-original/cancel', 'cancel'],
+    ['GET', '/profiles', 'profiles'],
   ] as const)('gates %s %s when real media is disabled', async (method, path, serviceMethod) => {
     media.assertRealEnabled.mockRejectedValue(businessError(503, 'MEDIA_REAL_DISABLED'));
     const response = await (method === 'GET' ? get(path) : post(path).send({})).expect(503);
     expect(response.body.error.code).toBe('MEDIA_REAL_DISABLED');
     expect(media[serviceMethod]).not.toHaveBeenCalled();
+  });
+
+  it('delegates existing request replay and cancellation when execution is disabled', async () => {
+    media.assertRealEnabled.mockRejectedValue(businessError(503, 'MEDIA_REAL_DISABLED'));
+    await post('/requests').send(submitInput()).expect(202);
+    await post('/requests/receipt-original/cancel').expect(409);
+    expect(media.assertRealEnabled).not.toHaveBeenCalled();
+    expect(media.submit).toHaveBeenCalled(); expect(media.cancel).toHaveBeenCalled();
   });
 
   it.each([

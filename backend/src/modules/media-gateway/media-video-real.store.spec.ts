@@ -9,6 +9,27 @@ describe('MediaVideoRealStore', () => {
   let store: MediaVideoRealStore;
   beforeEach(() => { db = videoRealPrisma(); store = new MediaVideoRealStore(db as never); });
 
+  it('pages only real tasks needing generation, file delivery or billing recovery', async () => {
+    const receipts = [];
+    for (let i = 0; i < 6; i++) receipts.push((await store.claim(await newClaim(store, `scan-${i}`))).record.receipt.receiptId);
+    const [active, billing, delivery, done, failed, foreign] = receipts.map(id => db.state.requests.get(id));
+    billing.status = billing.receipt.status = 'SUCCEEDED'; billing.receipt.billingStatus = 'RECONCILING';
+    delivery.status = delivery.receipt.status = 'SUCCEEDED'; delivery.receipt.billingStatus = 'SETTLED';
+    delivery.receipt.execution = { generationStatus: 'completed' }; delivery.receipt.fileStatus = 'download_failed';
+    done.status = done.receipt.status = 'SUCCEEDED'; done.receipt.billingStatus = 'SETTLED'; done.receipt.fileStatus = 'available';
+    failed.status = failed.receipt.status = 'FAILED'; failed.receipt.billingStatus = 'RELEASED'; failed.receipt.fileStatus = 'unavailable';
+    foreign.configuration.adapter = 'static-video-v1';
+    const expected = [active.id, billing.id, delivery.id].sort();
+    const first = await store.pendingRequests(2);
+    expect(first.records.map(row => row.receiptId)).toEqual(expected.slice(0, 2));
+    const second = await store.pendingRequests(2, first.afterId);
+    expect(second.records.map(row => row.receiptId)).toEqual(expected.slice(2));
+    expect(second.afterId).toBeUndefined();
+    expect(db.mediaGatewayRequest.findMany).toHaveBeenLastCalledWith(expect.objectContaining({
+      select: { id: true, scope: true }, orderBy: { id: 'asc' }, take: 2,
+    }));
+  });
+
   it('persists V3 quotes and pending receipts with expanded IDs without inventing measured output', async () => {
     const legacy = quoteMetadata();
     const requestedSpec = { durationSeconds: 901, resolution: '1080p', audio: false };

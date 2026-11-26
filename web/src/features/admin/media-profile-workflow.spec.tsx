@@ -51,10 +51,10 @@ describe('explicit media profile management', () => {
     expect(screen.getByLabelText('最多参考图数量')).toHaveValue(3);
     fireEvent.change(screen.getByLabelText('质量选项'), { target: { value: 'auto,medium,high,high' } });
     fireEvent.change(screen.getByLabelText('最多参考图数量'), { target: { value: '2' } });
-    fireEvent.change(screen.getByLabelText('最大输出数量'), { target: { value: '2' } });
+    fireEvent.change(screen.getByLabelText('最大输出数量'), { target: { value: '1' } });
     fireEvent.click(screen.getByRole('button', { name: '保存能力配置' }));
     await waitFor(() => expect(api.patch).toHaveBeenCalledWith('/admin/media/profiles/auto-image-example', {
-      expectedConfigVersion: 'cfg_1', capabilities: { sizes: ['2048x2048'], maxOutputs: 2, supportsReferenceImage: true,
+      expectedConfigVersion: 'cfg_1', capabilities: { sizes: ['2048x2048'], maxOutputs: 1, supportsReferenceImage: true,
         qualities: ['auto', 'medium', 'high'], maxReferenceCount: 2 },
     }));
   });
@@ -95,10 +95,10 @@ describe('explicit media profile management', () => {
     fireEvent.change(screen.getByLabelText('显示名称'), { target: { value: profile.displayName } });
     fireEvent.click(screen.getByLabelText('文生图'));
     fireEvent.change(screen.getByLabelText('支持尺寸'), { target: { value: '1024x1024, 1536x1024\n1024x1024' } });
-    fireEvent.change(screen.getByLabelText('最大输出数量'), { target: { value: '2' } });
+    fireEvent.change(screen.getByLabelText('最大输出数量'), { target: { value: '1' } });
     fireEvent.click(screen.getByRole('button', { name: '创建停用 Profile' }));
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/admin/media/profiles', expect.objectContaining({
-      operations: ['generate'], capabilities: { sizes: ['1024x1024', '1536x1024'], maxOutputs: 2, supportsReferenceImage: false, maxReferenceCount: 0 },
+      operations: ['generate'], capabilities: { sizes: ['1024x1024', '1536x1024'], maxOutputs: 1, supportsReferenceImage: false, maxReferenceCount: 0 },
     })));
   });
 
@@ -153,15 +153,15 @@ describe('explicit media profile management', () => {
     fireEvent.click(screen.getByRole('button', { name: '编辑能力配置' }));
     const count = screen.getByLabelText('最多参考图数量');
     expect(count).toHaveValue(4);
-    expect(count).toHaveAttribute('max', '32');
-    fireEvent.change(count, { target: { value: '33' } });
+    expect(count).toHaveAttribute('max', '4');
+    fireEvent.change(count, { target: { value: '5' } });
     fireEvent.submit(screen.getByRole('form', { name: '编辑能力配置' }));
     await screen.findByRole('alert');
     expect(api.patch).not.toHaveBeenCalled();
-    fireEvent.change(count, { target: { value: '8' } });
+    fireEvent.change(count, { target: { value: '3' } });
     fireEvent.submit(screen.getByRole('form', { name: '编辑能力配置' }));
     await waitFor(() => expect(api.patch).toHaveBeenCalledWith('/admin/media/profiles/auto-image-model', expect.objectContaining({
-      expectedConfigVersion: 'cfg_1', capabilities: expect.objectContaining({ maxReferenceCount: 8 }),
+      expectedConfigVersion: 'cfg_1', capabilities: expect.objectContaining({ maxReferenceCount: 3 }),
     })));
   });
 

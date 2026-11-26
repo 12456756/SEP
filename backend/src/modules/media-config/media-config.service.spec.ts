@@ -53,7 +53,7 @@ describe('MediaConfigService', () => {
     row.profileId = 'auto-image-reference';
     Object.assign(row.capabilities, { maxReferenceCount: 7 });
     prisma.enterpriseModelConfig.findUnique.mockResolvedValue({ mediaPolicy: { enabledProfileIds: [row.profileId] } });
-    expect(await service.getRuntimeMediaV3('ent-1')).toMatchObject({ profiles: [{ adapter: { referenceSupport: { maxCount: 7 } } }] });
+    expect(await service.getRuntimeMediaV3('ent-1')).toMatchObject({ profiles: [{ adapter: { referenceSupport: { maxCount: 4 } } }] });
     await service.updateProfile(row.profileId, { expectedConfigVersion: row.configVersion, capabilities: { maxReferenceCount: 3 } });
     expect(prisma.mediaModelProfile.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ capabilities: expect.objectContaining({ maxReferenceCount: 3 }), verified: false }),
@@ -100,7 +100,7 @@ describe('MediaConfigService', () => {
     for (const runtime of [await service.getRuntimeMedia('ent-1'), await service.getRuntimeMediaV2('ent-1')]) {
       expect(runtime).toMatchObject({ executionAvailable: true, defaultProfileId: row.profileId,
         tools: ['image_generate', 'image_edit'], profiles: [{ operations: row.operations,
-          capabilities: { maxOutputs: 4, sizes: row.capabilities.sizes, maxWidth: 1536, maxHeight: 1536 } }] });
+          capabilities: { maxOutputs: 1, sizes: row.capabilities.sizes, maxWidth: 1536, maxHeight: 1536 } }] });
     }
     const preview = await service.previewEnterpriseConfig('admin', { policy });
     expect(preview.profiles[0]).toMatchObject({ status: 'effective', reasons: [] });
@@ -120,7 +120,7 @@ describe('MediaConfigService', () => {
       }] });
     expect(runtime.profiles[0]).toMatchObject({ modelId: row.modelId, modelDisplayName: row.modelId,
       parameters: { size: { values: row.capabilities.sizes, valuesMode: 'suggested', confidence: 'declared' },
-        count: { minimum: 1, maximum: 4, required: true } } });
+        count: { minimum: 1, maximum: 1, required: true } } });
     expect(runtime.profiles[0]).not.toHaveProperty('capabilityHints');
     expect(JSON.stringify(runtime)).not.toContain('defaultSize');
     row.verified = false;
@@ -227,7 +227,7 @@ describe('MediaConfigService', () => {
     prisma.enterpriseModelConfig.findUnique.mockResolvedValue({ mediaPolicy: { enabledProfileIds: [row.profileId] } });
     const runtime = await service.getRuntimeMediaV3('ent-1');
     expect(runtime.profiles[0]).toMatchObject({ unavailableReason: 'PROFILE_UNVERIFIED',
-      parameters: { count: { maximum: 2 }, quality: { values: ['auto', 'high'], valuesMode: 'suggested' } },
+      parameters: { count: { maximum: 1 }, quality: { values: ['auto', 'high'], valuesMode: 'suggested' } },
       adapter: { referenceSupport: { maxCount: 2 } } });
   });
 
@@ -256,8 +256,8 @@ describe('MediaConfigService', () => {
     await expect(service.verifyProfile('product-image', { expectedConfigVersion: 'cfg_1' }))
       .resolves.toMatchObject({ executionTested: false, profile: { verified: true } });
     expect(imageAdapter.discoverModels).toHaveBeenCalledTimes(1);
-    expect(imageAdapter.pricing).toHaveBeenCalledTimes(48);
-    expect(imageAdapter.pricing).toHaveBeenCalledWith(expect.objectContaining({ parameters: expect.objectContaining({ count: 2 }) }), 'gpt-image-2');
+    expect(imageAdapter.pricing).toHaveBeenCalledTimes(12);
+    expect(imageAdapter.pricing).toHaveBeenCalledWith(expect.objectContaining({ parameters: expect.objectContaining({ count: 1 }) }), 'gpt-image-2');
     expect(imageAdapter.pricing).toHaveBeenCalledWith(expect.objectContaining({ operation: 'edit' }), 'gpt-image-2');
     expect(prisma.mediaModelProfile.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       where: { profileId: 'product-image', configVersion: 'cfg_1' }, data: { verified: true, configVersion: expect.stringMatching(/^cfg_/) },
@@ -484,7 +484,7 @@ describe('MediaConfigService', () => {
     expect(runtime).toMatchObject({
       executionAvailable: true, tools: ['image_generate', 'image_edit'], defaultProfileId: 'product-image',
       profiles: [{ operations: ['generate', 'edit'], capabilities: {
-        maxOutputs: 4, sizes: ['1024x1024', '1536x1024', '1024x1536'],
+        maxOutputs: 1, sizes: ['1024x1024', '1536x1024', '1024x1536'],
       } }],
     });
     const json = JSON.stringify(runtime);
@@ -513,7 +513,7 @@ describe('MediaConfigService', () => {
     expect(await service.getRuntimeMedia('ent-1')).toMatchObject({ executionAvailable: false, tools: [], profiles: [] });
     row.modelId = 'gpt-image-2';
     row.executionMode = 'async-query';
-    expect(await service.getRuntimeMedia('ent-1')).toMatchObject({ executionAvailable: false, tools: [], profiles: [] });
+    expect(await service.getRuntimeMedia('ent-1')).toMatchObject({ executionAvailable: true, profiles: [{ executionMode: 'async-query' }] });
 
     row.executionMode = 'sync-response';
     prisma.mediaModelProfile.findMany.mockResolvedValue([]);

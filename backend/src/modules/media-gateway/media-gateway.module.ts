@@ -30,6 +30,8 @@ import { MediaVideoRealStore } from './media-video-real.store';
 import { MediaVideoRealGuard } from './media-video-real.guard';
 import { VideoReferenceUploadService } from './video-reference-upload.service';
 import { VideoReferenceUploadInterceptor } from './video-reference-upload.interceptor';
+import { MediaVideoMaintenanceService } from './media-video-maintenance.service';
+import { MediaVideoRecoveryLeaseService } from './media-video-recovery-lease.service';
 
 @Module({
   imports: [ConfigModule, JwtModule.register({}), PrismaModule, RedisModule, AuthModule, SettingModule, MediaConfigModule],
@@ -37,6 +39,7 @@ import { VideoReferenceUploadInterceptor } from './video-reference-upload.interc
   providers: [ClientEmploymentGuard, GatewayAuthRateLimitService, MediaGatewayMockGuard, MediaGatewayMockAdapter, MediaGatewayStore, MediaGatewayService,
     MediaRealGuard, MediaRealService, MediaRealStore, MediaRealBillingService, MediaByteCacheService, MediaVideoGatewayStore,
     MediaVideoRealService, MediaVideoRealStore, MediaVideoRealGuard, VideoReferenceUploadService, VideoReferenceUploadInterceptor,
+    MediaVideoMaintenanceService, MediaVideoRecoveryLeaseService,
     {
       provide: MediaVideoGatewayService,
       useFactory: (prisma: PrismaService, store: MediaVideoGatewayStore, configuration: MediaVideoConfigService) =>

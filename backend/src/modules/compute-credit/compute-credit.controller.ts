@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Param,
+  Patch,
   Post,
   Put,
   Query,
@@ -27,6 +28,8 @@ import {
   MemberAllowanceTopUpDtoSchema,
   type MemberAllowanceSetDto,
   type MemberAllowanceTopUpDto,
+  PaymentPreferenceSchema,
+  type PaymentPreference,
 } from "shared";
 
 /**
@@ -47,6 +50,27 @@ export class ComputeCreditController {
     private readonly usageAnalytics: UsageAnalyticsService,
     private readonly enterpriseContext: EnterpriseContextService,
   ) {}
+
+  @Get('payment-preference')
+  @ApiOperation({ summary: '读取本人在当前企业的付款方式' })
+  @ApiResponse({ status: 200, description: 'AUTO、ENTERPRISE_ONLY 或 PERSONAL_ONLY' })
+  @ApiResponse({ status: 401, description: '未登录' })
+  @ApiResponse({ status: 403, description: '无当前企业成员身份' })
+  async getPaymentPreference(@Request() req) {
+    const ctx = await this.enterpriseContext.resolve(req.user.id);
+    return this.creditService.getPaymentPreference(ctx.enterpriseId, req.user.id);
+  }
+
+  @Patch('payment-preference')
+  @ApiOperation({ summary: '修改本人付款方式，仅影响新请求' })
+  @ApiResponse({ status: 200, description: '返回已保存的付款方式' })
+  @ApiResponse({ status: 400, description: '付款方式无效' })
+  @ApiResponse({ status: 401, description: '未登录' })
+  @ApiResponse({ status: 403, description: '无当前企业成员身份' })
+  async setPaymentPreference(@Request() req, @Body(new ZodValidationPipe(PaymentPreferenceSchema)) dto: PaymentPreference) {
+    const ctx = await this.enterpriseContext.resolve(req.user.id);
+    return this.creditService.setPaymentPreference(ctx.enterpriseId, req.user.id, dto.paymentMode);
+  }
 
   @Get("overview")
   @ApiOperation({ summary: "企业算力总览（钱包余额 + 赠送余额，单位：元）" })

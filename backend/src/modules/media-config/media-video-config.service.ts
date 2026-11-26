@@ -67,7 +67,7 @@ export class MediaVideoConfigService {
 
   private v3Compatible(profile: MediaVideoProfile): boolean {
     const c = profile.capabilities;
-    return profile.executionMode === 'async-query' && c.supportsTaskQuery && !c.supportsCancel
+    return profile.executionMode === 'async-query' && c.supportsTaskQuery
       && c.maxInputBytes <= 10 * 1024 * 1024
       && c.outputFormats.every(format => ['video/mp4', 'video/webm'].includes(format));
   }
@@ -124,7 +124,7 @@ export class MediaVideoConfigService {
 
   private assertExecutable(profile: MediaVideoProfile): void {
     if (profile.modelId !== 'mock-video-v1' && this.realEnabled()) {
-      if (!this.v3Compatible(profile)) throw new BadRequestException('视频配置超出通用适配器协议边界：异步查询、JPEG/PNG/WebP 参考、MP4/WebM，不支持取消');
+      if (!this.v3Compatible(profile)) throw new BadRequestException('视频配置超出通用适配器协议边界：异步查询、JPEG/PNG/WebP 参考、MP4/WebM');
       return;
     }
     if (!this.mockEnabled()) throw new ServiceUnavailableException('视频仅支持显式启用的 mock，尚未接入真实执行');
@@ -390,7 +390,7 @@ export class MediaVideoConfigService {
         configVersion: profile.configVersion, executionMode: profile.executionMode,
         operations: profile.operations.filter(operation => operation !== 'video-to-video'),
         capabilities: { ...profile.capabilities,
-          supportsCancel: false,
+          supportsCancel: profile.capabilities.supportsCancel,
         },
       })).filter(profile => profile.operations.length && profile.capabilities.durationsSeconds.length
         && profile.capabilities.aspectRatios.length && profile.capabilities.resolutions.length);
@@ -458,7 +458,7 @@ export class MediaVideoConfigService {
           referenceSupport: capabilities.referenceSupport,
           ...(videos ? { videoReferenceSupport: videos.videoReferenceSupport } : {}),
           supportsTaskQuery: true,
-          supportsCancel: false,
+          supportsCancel: profile.capabilities.supportsCancel,
         },
         parameters: capabilities.parameters, constraints: capabilities.constraints, referenceRules: capabilities.referenceRules,
         ...(videos ? { videoReferenceRules: videos.videoReferenceRules } : {}),

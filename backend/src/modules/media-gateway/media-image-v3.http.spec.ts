@@ -17,7 +17,7 @@ const profileId = 'image.future';
 const modelId = 'future-image-native';
 const configVersion = 'cfg:future-image';
 const input = { protocolVersion: 3, specRevision: 1, profileId, configVersion, operation: 'generate',
-  referenceIds: [], creativeBrief: 'Synthetic test image', requestedSpec: { width: 1, height: 1, count: 2, quality: 'studio' },
+  referenceIds: [], creativeBrief: 'Synthetic test image', requestedSpec: { width: 1, height: 1, count: 1, quality: 'studio' },
   parameterSources: { width: 'model', height: 'model', quality: 'user', count: 'user' } };
 
 describe('V3 image HTTP with production adapter, store and cache and fake upstream', () => {
@@ -95,24 +95,30 @@ describe('V3 image HTTP with production adapter, store and cache and fake upstre
         currency: 'USD', ...JSON.parse(String(options?.body)), billing_mode: 'image', pricing_status: 'quoted',
         pricing_source: 'group', pricing_authority: 'sub2api_customer_billing', amount_usd: '0.2', pricing_version: pricingVersion,
         effective_rate_multiplier: 1, observed_at: new Date().toISOString(), expires_at: new Date(Date.now() + 60_000).toISOString() });
-      if (url.pathname === '/v1/images/generations') {
+      if (url.pathname === '/v1/images/generations/async') {
         const fields = JSON.parse(String(options?.body)); dispatches.push(fields);
-        const requestId = 'image-' + dispatches.length; usageCounts.set('client:' + requestId, fields.n);
-        return json({ model: modelId, data: Array.from({ length: fields.n }, () => ({ b64_json: MEDIA_MOCK_PNG.toString('base64') })) },
-          { 'x-client-request-id': requestId });
+        const requestId = new Headers(options?.headers).get('X-Client-Request-ID')!; usageCounts.set(requestId, fields.n);
+        return json({ schema_version: 2, request_id: requestId, task_id: `task-${requestId}`, submission_status: 'accepted',
+          model: modelId, status: 'processing', billing: { status: 'pending', actual_cost_usd: null } });
       }
-      if (url.pathname === '/v1/images/edits') {
+      if (url.pathname === '/v1/images/edits/async') {
         const form = options!.body as FormData;
         const files = form.getAll('image[]') as File[];
         editedReferences.push(files.map(file => file.name));
         for (const file of files) expect(Buffer.from(await file.arrayBuffer())).toEqual(MEDIA_MOCK_PNG);
-        usageCounts.set('client:image-multi-edit', Number(form.get('n')));
-        return json({ model: modelId, data: [{ b64_json: MEDIA_MOCK_PNG.toString('base64') }] },
-          { 'x-client-request-id': 'image-multi-edit' });
+        const requestId = new Headers(options?.headers).get('X-Client-Request-ID')!;
+        usageCounts.set(requestId, Number(form.get('n')));
+        return json({ schema_version: 2, request_id: requestId, task_id: `task-${requestId}`, submission_status: 'accepted',
+          model: modelId, status: 'processing', billing: { status: 'pending', actual_cost_usd: null } });
       }
-      if (url.pathname === '/v1/sub2api/usage') return json({ object: 'sub2api.request_usage', schema_version: 1, currency: 'USD',
-        request_id: url.searchParams.get('request_id'), status: 'settled', model: modelId, actual_cost_usd: '0.1',
-        image_count: usageCounts.get(url.searchParams.get('request_id')!) });
+      if (/^\/v1\/images\/tasks\/task-/.test(url.pathname)) {
+        if (url.pathname.endsWith('/content')) return new Response(MEDIA_MOCK_PNG, { headers: { 'content-type': 'image/png' } });
+        const taskId = url.pathname.split('/').pop()!;
+        return json({ schema_version: 2, request_id: taskId.slice(5), task_id: taskId, submission_status: 'accepted',
+          status: 'completed', is_final: true, model: modelId, billing: { status: 'settled', actual_cost_usd: '0.1' } });
+      }
+      if (url.pathname === '/v1/sub2api/usage') return json({ object: 'sub2api.request_usage', schema_version: 2, currency: 'USD',
+        request_id: url.searchParams.get('request_id'), status: 'settled', model: modelId, actual_cost_usd: '0.1' });
       throw new Error('Unexpected fake upstream path: ' + url.pathname);
     });
     const adapter = new Sub2apiImageAdapter(settings as never);
@@ -141,9 +147,9 @@ describe('V3 image HTTP with production adapter, store and cache and fake upstre
     expect(failed.headers['x-sep-error-source']).toBe('upstream');
   });
 
-  it('uploads eight references and preserves their order through quote, store and one upstream edit', async () => {
+  it('uploads four references and preserves their order through quote, store and one asynchronous edit', async () => {
     const referenceIds: string[] = [];
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 4; i++) {
       const uploaded = await request(app.getHttpServer()).post(prefix + '/references').set('x-test-auth', 'yes')
         .attach('file', MEDIA_MOCK_PNG, { filename: `view-${i}.png`, contentType: 'image/png' }).expect(201);
       referenceIds.push(uploaded.body.referenceId);
@@ -151,21 +157,23 @@ describe('V3 image HTTP with production adapter, store and cache and fake upstre
     const edit = { ...input, operation: 'edit', referenceIds, requestedSpec: { ...input.requestedSpec, count: 1 } };
     const quote = await post('/quotes', edit).expect(201);
     const submission = { ...edit, quoteId: quote.body.quoteId, clientRequestId: 'multi-reference-http' };
-    await post('/requests', submission).expect(200).expect(result => {
+    const created = await post('/requests', submission).expect(202);
+    await get(`/requests/${created.body.receiptId}`).expect(200).expect(result => {
       expect(result.body).toMatchObject({ status: 'SUCCEEDED', billingStatus: 'SETTLED' });
     });
     await post('/requests', submission).expect(200);
-    expect(editedReferences).toEqual([Array.from({ length: 8 }, (_, i) => `reference-${i}.png`)]);
+    expect(editedReferences).toEqual([Array.from({ length: 4 }, (_, i) => `reference-${i}.png`)]);
   });
 
   it('preserves a new model, dot profile ID, custom quality and count through settlement and download', async () => {
     const quote = await post('/quotes', input).expect(response => expect(response.body.error).toBeUndefined()).expect(201);
-    expect(quote.body.effectiveSpec).toMatchObject({ size: '1x1', count: 2, quality: 'studio' });
-    const submitted = await post('/requests', { ...input, quoteId: quote.body.quoteId, clientRequestId: 'image-v3' })
-      .expect(response => expect(response.body.error).toBeUndefined()).expect(200);
+    expect(quote.body.effectiveSpec).toMatchObject({ size: '1x1', count: 1, quality: 'studio' });
+    const created = await post('/requests', { ...input, quoteId: quote.body.quoteId, clientRequestId: 'image-v3' })
+      .expect(response => expect(response.body.error).toBeUndefined()).expect(202);
+    const submitted = await get(`/requests/${created.body.receiptId}`).expect(200);
     expect(submitted.body).toMatchObject({ protocolVersion: 3, profileId, configVersion, status: 'SUCCEEDED', billingStatus: 'SETTLED',
-      actualSpec: { size: '1x1', count: 2 }, acceptance: { status: 'unknown', unknownFields: ['quality'] } });
-    expect(dispatches.at(-1)).toMatchObject({ model: modelId, size: '1x1', n: 2, quality: 'studio' });
+      actualSpec: { size: '1x1', count: 1 }, acceptance: { status: 'unknown', unknownFields: ['quality'] } });
+    expect(dispatches.at(-1)).toMatchObject({ model: modelId, size: '1x1', n: 1, quality: 'studio' });
     const download = await get('/requests/' + submitted.body.receiptId + '/outputs/' + submitted.body.outputs[0].outputId + '/content').expect(200);
     expect(download.body).toEqual(MEDIA_MOCK_PNG);
     const count = dispatches.length;
@@ -177,7 +185,8 @@ describe('V3 image HTTP with production adapter, store and cache and fake upstre
   it('retains mismatched safe originals and settles independently of requested dimensions', async () => {
     const value = { ...input, requestedSpec: { ...input.requestedSpec, width: 2, height: 2 } };
     const quote = await post('/quotes', value).expect(201);
-    const result = await post('/requests', { ...value, quoteId: quote.body.quoteId, clientRequestId: 'image-mismatch' }).expect(200);
+    const created = await post('/requests', { ...value, quoteId: quote.body.quoteId, clientRequestId: 'image-mismatch' }).expect(202);
+    const result = await get(`/requests/${created.body.receiptId}`).expect(200);
     expect(result.body).toMatchObject({ status: 'SUCCEEDED', billingStatus: 'SETTLED', actualSpec: { size: '1x1' },
       acceptance: { status: 'mismatched', mismatchedFields: ['size'] }, recovery: { canDownload: true } });
     await get('/requests/' + result.body.receiptId + '/outputs/' + result.body.outputs[0].outputId + '/content').expect(200);

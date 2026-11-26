@@ -1,4 +1,4 @@
-import { ExecutionContext, INestApplication, UnauthorizedException } from '@nestjs/common';
+import { ExecutionContext, HttpException, INestApplication, UnauthorizedException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -18,6 +18,9 @@ import { videoClaims, videoRealPrisma } from './media-video-real.test-support';
 import { Sub2apiVideoAdapter } from './sub2api-video.adapter';
 import { VideoFileCacheService } from './video-file-cache.service';
 import { VideoReferenceUploadService } from './video-reference-upload.service';
+import { contractResult } from './longdao-media.test-support';
+import { MediaVideoMaintenanceService } from './media-video-maintenance.service';
+import { MediaVideoRealReceiptSchema } from 'shared';
 
 const run = promisify(execFile);
 const prefix = '/api/gateway/v1/media/video-real';
@@ -36,16 +39,28 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
   let uploads: VideoReferenceUploadService;
   let adapter: Sub2apiVideoAdapter;
   let store: MediaVideoRealStore;
+  let files: VideoFileCacheService;
+  let createService: () => MediaVideoRealService;
   let nextUpload: { status: number; body: unknown; headers?: Record<string, string> } | undefined;
+  let createFailure: { status: number; patch: Record<string, unknown> } | undefined;
+  let rawCreateFailure: { status: number; body: unknown } | undefined;
+  let queryFailure: { status: number; body: unknown } | undefined;
+  let queryPatch: Record<string, unknown> = {};
+  let usagePatch: Record<string, unknown> = {};
+  let contentFailures = 0;
+  let contentAttempts = 0;
+  let restoreLostSubmission = false;
   let generationLost = false;
   let completeTasks = false;
   let nextReference = 0;
   let key = 'synthetic-video-reference-secret';
   const uploaded = new Map<string, Buffer>();
   const submissions: Array<{ body: any; headers: Headers }> = [];
+  let originalRequestId: string;
   const billing = { quoteFunding: jest.fn(async () => ({ creditCny: '0.000000', memberWalletCny: '0.000000', personalCny: '1.400000' })),
     reserve: jest.fn(async (_claims, id) => { db.state.reservations.set(id, { receiptId: id, status: 'RESERVED' }); }),
-    status: jest.fn(async id => db.state.reservations.get(id)?.status ?? 'RESERVED'), release: jest.fn(),
+    status: jest.fn(async id => db.state.reservations.get(id)?.status ?? 'RESERVED'),
+    release: jest.fn(async id => { db.state.reservations.get(id).status = 'RELEASED'; }),
     settleNegotiated: jest.fn(async id => { db.state.reservations.get(id).status = 'SETTLED'; return 'SETTLED'; }) };
   const json = (body: unknown, status = 200, headers = {}) => new Response(JSON.stringify(body), { status,
     headers: { 'content-type': 'application/json', ...headers } });
@@ -56,6 +71,33 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
   const input = (ids: string[]) => ({ protocolVersion: 3, specRevision: 1, profileId: 'real-h3', configVersion: 'cfg-real-h3',
     operation: 'video-to-video', creativeBrief: 'Retain camera movement', referenceIds: [], videoReferenceIds: ids,
     requestedSpec: { durationSeconds: 1, resolution: '90p', aspectRatio: '16:9', audio: false, frameRate: 30, outputFormat: 'video/mp4' } });
+
+  async function boot() {
+    const module = await Test.createTestingModule({ controllers: [MediaVideoRealController], providers: [MediaVideoRealGuard,
+      { provide: MediaVideoRealService, useValue: service }, { provide: VideoReferenceUploadService, useValue: uploads }],
+    }).overrideGuard(ClientEmploymentGuard).useValue({ canActivate(context: ExecutionContext) {
+      const req = context.switchToHttp().getRequest(); if (req.headers['x-test-auth'] !== 'yes') throw new UnauthorizedException();
+      req.clientEmployment = videoClaims; return true;
+    } }).compile();
+    const next = module.createNestApplication(); next.setGlobalPrefix('api'); next.useGlobalFilters(new HttpExceptionFilter());
+    await next.init(); return next;
+  }
+
+  async function prepare(clientRequestId: string) {
+    const reference = (await upload().expect(201)).body;
+    const payload = input([reference.referenceId]);
+    const quote = (await post('/quotes').send(payload).expect(201)).body;
+    return { ...payload, quoteId: quote.quoteId, clientRequestId };
+  }
+
+  function taskQueries() {
+    return upstream.mock.calls.filter(([url, init]) => (init?.method ?? 'GET') === 'GET'
+      && /\/videos\/(?:original-task|sep-video-[^/?]+)(?:\?id_type=request_id)?$/.test(String(url)));
+  }
+
+  async function background() {
+    await new MediaVideoMaintenanceService(store, service, files).recoverPending();
+  }
 
   beforeAll(async () => {
     directory = await mkdtemp(join(tmpdir(), 'sep-video-input-'));
@@ -96,31 +138,64 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
       }
       if (url.endsWith('/videos')) {
         submissions.push({ body: JSON.parse(init.body as string), headers });
+        originalRequestId = headers.get('X-Client-Request-ID');
         if (generationLost) throw new Error('Synthetic lost generation response');
-        return json({ object: 'video', id: 'original-task', model: modelId, status: 'queued' }, 200,
+        if (rawCreateFailure) return json(rawCreateFailure.body, rawCreateFailure.status);
+        return json(contractResult(originalRequestId, {
+          object: 'video', task_id: 'original-task', id: 'original-task', model: modelId, receipt_operation: 'create',
+          ...createFailure?.patch,
+        }).contract, createFailure?.status ?? 200,
           { 'X-Client-Request-ID': headers.get('X-Client-Request-ID') });
       }
-      if (url.endsWith('/videos/original-task')) return json({ object: 'video', id: 'original-task', model: modelId, status: completeTasks ? 'completed' : 'in_progress' });
-      if (url.endsWith('/videos/original-task/content')) return new Response(new Uint8Array(mp4), { headers: { 'content-type': 'video/mp4' } });
+      if (url.endsWith('/videos/original-task')) {
+        if (queryFailure) return json(queryFailure.body, queryFailure.status);
+        return json(contractResult(originalRequestId, {
+        object: 'video', task_id: 'original-task', id: 'original-task', model: modelId, receipt_operation: 'query',
+        status: completeTasks ? 'completed' : 'in_progress', is_final: completeTasks,
+        billing: completeTasks ? { status: 'settled', actual_cost_usd: '0.2' } : { status: 'pending', actual_cost_usd: null },
+        ...queryPatch,
+      }).contract);
+      }
+      if (url.includes('/videos/') && new URL(url).searchParams.get('id_type') === 'request_id') {
+        if (restoreLostSubmission) return json(contractResult(originalRequestId, {
+          object: 'video', task_id: 'original-task', id: 'original-task', model: modelId, receipt_operation: 'query',
+          status: 'in_progress', is_final: false,
+        }).contract);
+        return json(contractResult(new URL(url).pathname.split('/').pop(), {
+          task_id: null, status: null, submission_status: 'unobserved', receipt_operation: 'query',
+          billing: { status: 'unknown', actual_cost_usd: null },
+          operation_error: { code: 'request_not_found', message: 'Synthetic request record not found' },
+        }).contract, 404);
+      }
+      if (url.endsWith('/videos/original-task/content')) {
+        contentAttempts++;
+        if (contentFailures-- > 0) return json({ error: { code: 'content_temporarily_unavailable',
+          message: 'Synthetic original video download interrupted', source: 'platform' } }, 503);
+        return new Response(new Uint8Array(mp4), { headers: { 'content-type': 'video/mp4' } });
+      }
       if (url.includes('/sub2api/videos/usage?')) return json({ object: 'sub2api.video_request_usage', schema_version: 1,
         currency: 'USD', request_id: new URL(url).searchParams.get('request_id'), status: 'settled', model: modelId,
-        actual_cost_usd: '0.2', video_count: 1, duration_seconds: 1, resolution: '90p' });
+        actual_cost_usd: '0.2', video_count: 1, duration_seconds: 1, resolution: '90p', ...usagePatch });
       throw new Error(`Unexpected synthetic compute request: ${new URL(url).pathname}`);
     });
-    const files = new VideoFileCacheService(); await files.assertAvailable();
+    files = new VideoFileCacheService(); await files.assertAvailable();
     const runtime = new MediaVideoConfigService(db as never, {} as never, config as never, adapter, files, undefined, settings as never);
     store = new MediaVideoRealStore(db as never);
-    service = new MediaVideoRealService(config as never, db as never, settings as never, runtime, adapter, files, billing as never, store);
+    createService = () => new MediaVideoRealService(config as never, db as never, settings as never, runtime, adapter,
+      new VideoFileCacheService(), billing as never, new MediaVideoRealStore(db as never));
+    service = createService();
     uploads = new VideoReferenceUploadService({ redis: { eval: async () => 1, zrem: jest.fn(async () => 1) } } as never);
-    const module = await Test.createTestingModule({ controllers: [MediaVideoRealController], providers: [MediaVideoRealGuard,
-      { provide: MediaVideoRealService, useValue: service }, { provide: VideoReferenceUploadService, useValue: uploads }],
-    }).overrideGuard(ClientEmploymentGuard).useValue({ canActivate(context: ExecutionContext) {
-      const req = context.switchToHttp().getRequest(); if (req.headers['x-test-auth'] !== 'yes') throw new UnauthorizedException();
-      req.clientEmployment = videoClaims; return true;
-    } }).compile();
-    app = module.createNestApplication(); app.setGlobalPrefix('api'); app.useGlobalFilters(new HttpExceptionFilter()); await app.init();
+    app = await boot();
   }, 60_000);
-  afterEach(() => { nextUpload = undefined; generationLost = false; completeTasks = false; });
+  beforeEach(() => {
+    db.state.references.clear(); db.state.quotes.clear(); db.state.requests.clear(); db.state.reservations.clear();
+    submissions.length = 0; uploaded.clear(); upstream.mockClear();
+    for (const fn of Object.values(billing)) fn.mockClear();
+  });
+  afterEach(() => {
+    nextUpload = undefined; generationLost = false; completeTasks = false; createFailure = undefined; rawCreateFailure = undefined; queryFailure = undefined;
+    queryPatch = {}; usagePatch = {}; contentFailures = 0; contentAttempts = 0; restoreLostSubmission = false;
+  });
   afterAll(async () => {
     upstream?.mockRestore(); await app?.close();
     if (priorCache === undefined) delete process.env.MEDIA_VIDEO_CACHE_DIR; else process.env.MEDIA_VIDEO_CACHE_DIR = priorCache;
@@ -192,6 +267,7 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
     const start = submissions.length;
     const [accepted, duplicate] = await Promise.all([post('/requests').send(body).expect(202), post('/requests').send(body).expect(202)]);
     const submitted = accepted.body;
+    expect(submitted.execution).toMatchObject({ submissionStatus: 'accepted', taskId: 'original-task' });
     expect(duplicate.body.receiptId).toBe(submitted.receiptId);
     expect(submissions).toHaveLength(start + 1);
     const scope = JSON.stringify([videoClaims.enterpriseId, videoClaims.subscriptionId, videoClaims.memberId, videoClaims.sub]);
@@ -206,6 +282,10 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
       const row = db.state.references.get(id); row.expiresAt = new Date(Date.now() - 1000); row.metadata.value.expiresAt = row.expiresAt.toISOString();
     }
     completeTasks = true;
+    await service.recoverPending(scope, submitted.receiptId);
+    expect(await store.findRequest(scope, submitted.receiptId)).toMatchObject({ receipt: {
+      status: 'SUCCEEDED', fileStatus: 'available', billingStatus: 'SETTLED',
+    } });
     const replay = (await post('/requests').send(body).expect(200)).body;
     expect(replay).toMatchObject({ receiptId: submitted.receiptId, status: 'SUCCEEDED', billingStatus: 'SETTLED', operation: 'video-to-video' });
     const downloaded = await get(`/requests/${submitted.receiptId}/outputs/${replay.outputs[0].outputId}/content`).expect(200);
@@ -231,9 +311,206 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
     const quote = (await post('/quotes').send(payload).expect(201)).body;
     generationLost = true; const before = submissions.length;
     const body = { ...payload, quoteId: quote.quoteId, clientRequestId: 'lost-video-response' };
-    await post('/requests').send(body).expect(502);
+    const initial = await post('/requests').send(body).expect(202);
+    expect(initial.body).toMatchObject({ status: 'SUBMISSION_UNKNOWN', receiptVersion: 2,
+      execution: { submissionStatus: 'unknown' }, clientActions: { shouldPoll: true, pollPurpose: 'submission' } });
     const recovered = await post('/requests').send(body).expect(202);
     expect(recovered.body.status).toBe('SUBMISSION_UNKNOWN'); expect(submissions).toHaveLength(before + 1);
     await post('/requests').send({ ...body, creativeBrief: 'Different request' }).expect(409);
+  });
+
+  it.each([400, 401, 402, 403, 409, 422, 429, 500, 502, 503, 504])(
+    'closes an explicit HTTP %s creation failure with its original reason and no charge', async httpStatus => {
+      const reason = { code: 'synthetic_video_creation_failure', message: `Reference video creation rejected (${httpStatus})` };
+      createFailure = { status: httpStatus, patch: {
+        task_id: null, id: null, submission_status: 'failed', status: null, http_status: httpStatus,
+        submission_error: reason, operation_error: reason, billing: { status: 'not_charged', actual_cost_usd: '0' },
+      } };
+      const body = await prepare(`refused-${httpStatus}`);
+      const receipt = (await post('/requests').send(body).expect(200)).body;
+      expect(MediaVideoRealReceiptSchema.safeParse(receipt).success).toBe(true);
+      expect(receipt).toMatchObject({ operation: 'video-to-video', status: 'FAILED', billingStatus: 'RELEASED',
+        fileStatus: 'unavailable', execution: { submissionStatus: 'failed', generationStatus: null,
+          submissionError: reason, submissionHttpStatus: httpStatus, operationError: { status: httpStatus },
+          billing: { status: 'not_charged', actualCostUsd: '0' } },
+        clientActions: { generationFinished: true, canStartNewRequest: true, shouldPoll: false },
+      });
+      expect((await post('/requests').send(body).expect(200)).body.receiptId).toBe(receipt.receiptId);
+      expect((await get(`/requests/by-client-id/${body.clientRequestId}`).expect(200)).body.execution.submissionError).toEqual(reason);
+      expect(submissions).toHaveLength(1); expect(taskQueries()).toHaveLength(0); expect(contentAttempts).toBe(0);
+      expect(billing.release).toHaveBeenCalledTimes(1); expect(billing.settleNegotiated).not.toHaveBeenCalled();
+    });
+
+  it('closes a protocol error with a diagnostic task ID and preserves all submission diagnostics', async () => {
+    const reason = { code: 'video_protocol_error', message: 'Synthetic supplier acknowledgment has an invalid model' };
+    createFailure = { status: 502, patch: { task_id: 'diagnostic-task', id: 'diagnostic-task', model: 'invalid-model',
+      submission_status: 'protocol_error', status: null, submission_error: reason, operation_error: reason,
+      submission_record_error: { message: 'Synthetic association record unavailable' }, http_status: 502,
+      billing: { status: 'not_charged', actual_cost_usd: '0' } } };
+    const body = await prepare('protocol-refused');
+    const receipt = (await post('/requests').send(body).expect(200)).body;
+    expect(receipt).toMatchObject({ status: 'FAILED', billingStatus: 'RELEASED', execution: {
+      submissionStatus: 'protocol_error', taskId: 'diagnostic-task', submissionError: reason,
+      submissionRecordError: { message: 'Synthetic association record unavailable' },
+    }, clientActions: { shouldPoll: false, canStartNewRequest: true } });
+    await background(); await post('/requests').send(body).expect(200);
+    expect(submissions).toHaveLength(1); expect(taskQueries()).toHaveLength(0); expect(contentAttempts).toBe(0);
+  });
+
+  it.each([403, 502])('does not infer rejection or refund from HTTP %s without a full receipt', async status => {
+    rawCreateFailure = { status, body: { error: { code: 'incomplete_reply', message: 'Synthetic missing task and billing evidence' } } };
+    const body = await prepare(`incomplete-${status}`);
+    const receipt = (await post('/requests').send(body).expect(202)).body;
+    expect(receipt).toMatchObject({ status: 'SUBMISSION_UNKNOWN', billingStatus: 'RECONCILING', execution: {
+      submissionStatus: 'unknown', operationError: { status, body: rawCreateFailure.body },
+    }, clientActions: { canStartNewRequest: false, pollPurpose: 'submission' } });
+    expect(billing.release).not.toHaveBeenCalled(); expect(billing.settleNegotiated).not.toHaveBeenCalled();
+    restoreLostSubmission = true; await background(); completeTasks = true; await background();
+    expect((await get(`/requests/${receipt.receiptId}`).expect(200)).body).toMatchObject({ status: 'SUCCEEDED', billingStatus: 'SETTLED' });
+    expect(submissions).toHaveLength(1);
+  });
+
+  it('retains failure and no-charge evidence while retrying only the failed wallet release', async () => {
+    createFailure = { status: 403, patch: { task_id: null, id: null, submission_status: 'rejected', status: null,
+      submission_error: { code: 'model_forbidden', message: 'Synthetic reference video access denied' },
+      billing: { status: 'not_charged', actual_cost_usd: '0' } } };
+    billing.release.mockRejectedValueOnce(new HttpException({ error: { code: 'wallet_unavailable',
+      message: 'Synthetic reservation release unavailable' } }, 503));
+    const body = await prepare('release-recovery');
+    const receipt = (await post('/requests').send(body).expect(200)).body;
+    expect(receipt).toMatchObject({ status: 'FAILED', billingStatus: 'RECONCILING',
+      billingError: { status: 503, body: { error: { message: 'Synthetic reservation release unavailable' } } },
+      execution: { billing: { status: 'not_charged' } },
+      clientActions: { generationFinished: true, canStartNewRequest: true, pollPurpose: 'billing' } });
+    await background();
+    const recovered = (await get(`/requests/${receipt.receiptId}`).expect(200)).body;
+    expect(recovered).toMatchObject({ status: 'FAILED', billingStatus: 'RELEASED', execution: {
+      submissionError: { code: 'model_forbidden', message: 'Synthetic reference video access denied' },
+    }, clientActions: { shouldPoll: false } });
+    expect(recovered).not.toHaveProperty('billingError'); expect(submissions).toHaveLength(1);
+    expect(taskQueries()).toHaveLength(0); expect(billing.release).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns a final generation failure without confusing it with a rejected submission', async () => {
+    const body = await prepare('generation-failed');
+    const receipt = (await post('/requests').send(body).expect(202)).body;
+    queryPatch = { status: 'failed', is_final: true,
+      task_error: { code: 'reference_content_rejected', message: 'Synthetic reference content rejected by provider' },
+      billing: { status: 'not_charged', actual_cost_usd: '0' } };
+    await background();
+    const failed = (await get(`/requests/${receipt.receiptId}`).expect(200)).body;
+    expect(failed).toMatchObject({ status: 'FAILED', billingStatus: 'RELEASED', fileStatus: 'unavailable',
+      execution: { submissionStatus: 'accepted', generationStatus: 'failed', isFinal: true,
+        taskError: { code: 'reference_content_rejected', message: 'Synthetic reference content rejected by provider' } },
+      clientActions: { generationFinished: true, shouldPoll: false, canStartNewRequest: true } });
+    expect(failed.execution).not.toHaveProperty('submissionError'); expect(contentAttempts).toBe(0);
+    expect(submissions).toHaveLength(1); expect(billing.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('finishes failed generation while billing is unknown and later releases confirmed uncharged funds', async () => {
+    const body = await prepare('failed-billing-unknown');
+    const receipt = (await post('/requests').send(body).expect(202)).body;
+    queryPatch = { status: 'failed', is_final: true,
+      task_error: { code: 'supplier_failed', message: 'Synthetic supplier task failed' },
+      billing: { status: 'unknown', actual_cost_usd: null, error: { message: 'Synthetic compute settlement unavailable' } } };
+    const failed = (await get(`/requests/${receipt.receiptId}`).expect(200)).body;
+    expect(failed).toMatchObject({ status: 'FAILED', billingStatus: 'RECONCILING', execution: {
+      generationStatus: 'failed', billing: { status: 'unknown', actualCostUsd: null,
+        error: { message: 'Synthetic compute settlement unavailable' } },
+    }, clientActions: { generationFinished: true, canStartNewRequest: true, pollPurpose: 'billing' } });
+    expect(billing.release).not.toHaveBeenCalled(); expect(billing.settleNegotiated).not.toHaveBeenCalled();
+    queryPatch.billing = { status: 'not_charged', actual_cost_usd: '0' };
+    await background();
+    expect((await get(`/requests/${receipt.receiptId}`).expect(200)).body).toMatchObject({
+      status: 'FAILED', billingStatus: 'RELEASED', clientActions: { shouldPoll: false },
+    });
+    expect(contentAttempts).toBe(0); expect(submissions).toHaveLength(1);
+  });
+
+  it('retries original content after download failure without resubmitting or charging twice', async () => {
+    const body = await prepare('download-recovery');
+    const receipt = (await post('/requests').send(body).expect(202)).body;
+    completeTasks = true; contentFailures = 1;
+    const failed = (await get(`/requests/${receipt.receiptId}`).expect(200)).body;
+    expect(failed).toMatchObject({ fileStatus: 'download_failed', billingStatus: 'SETTLED', execution: {
+      generationStatus: 'completed', operation: 'download', operationError: { status: 503, body: { error: {
+        code: 'content_temporarily_unavailable', message: 'Synthetic original video download interrupted',
+      } } },
+    }, clientActions: { generationFinished: true, canRetryDownload: true, pollPurpose: 'delivery' } });
+    const queried = taskQueries().length;
+    await background();
+    const recovered = (await get(`/requests/${receipt.receiptId}`).expect(200)).body;
+    expect(recovered).toMatchObject({ status: 'SUCCEEDED', fileStatus: 'available', billingStatus: 'SETTLED',
+      clientActions: { shouldPoll: false, canRetryDownload: false } });
+    expect(recovered.execution).not.toHaveProperty('operationError'); expect(recovered).not.toHaveProperty('upstreamError');
+    const output = recovered.outputs[0];
+    expect(output.sha256).toBe(createHash('sha256').update(mp4).digest('hex'));
+    expect((await get(`/requests/${receipt.receiptId}/outputs/${output.outputId}/content`).expect(200)).body).toEqual(mp4);
+    expect(taskQueries()).toHaveLength(queried); expect(contentAttempts).toBe(2);
+    expect(submissions).toHaveLength(1); expect(billing.settleNegotiated).toHaveBeenCalledTimes(1);
+  });
+
+  it('delivers valid video while billing evidence disagrees and settles once after correction', async () => {
+    const body = await prepare('billing-mismatch');
+    const receipt = (await post('/requests').send(body).expect(202)).body;
+    completeTasks = true; usagePatch = { actual_cost_usd: '0.3' };
+    const pending = (await get(`/requests/${receipt.receiptId}`).expect(200)).body;
+    expect(pending).toMatchObject({ status: 'SUCCEEDED', fileStatus: 'available', billingStatus: 'RECONCILING',
+      billingError: { status: 409, body: { error: { code: 'BILLING_PENDING' } } },
+      recovery: { canDownload: true }, clientActions: { generationFinished: true, canStartNewRequest: true, pollPurpose: 'billing' } });
+    expect(billing.settleNegotiated).not.toHaveBeenCalled(); expect(billing.release).not.toHaveBeenCalled();
+    usagePatch = {};
+    await background();
+    const settled = (await get(`/requests/${receipt.receiptId}`).expect(200)).body;
+    expect(settled).toMatchObject({ status: 'SUCCEEDED', billingStatus: 'SETTLED', actualCostCny: '1.400000',
+      clientActions: { shouldPoll: false } });
+    expect(settled).not.toHaveProperty('billingError'); expect(contentAttempts).toBe(1);
+    expect(submissions).toHaveLength(1); expect(billing.settleNegotiated).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['unobserved', 'malformed'])('preserves known task state and money on a %s query failure', async mode => {
+    const body = await prepare(`query-${mode}`);
+    const receipt = (await post('/requests').send(body).expect(202)).body;
+    queryFailure = mode === 'unobserved' ? { status: 403, body: contractResult('unrelated-query-id', {
+      task_id: null, status: null, submission_status: 'unobserved', receipt_operation: 'query',
+      billing: { status: 'unknown', actual_cost_usd: null }, operation_error: {
+        code: 'query_denied', message: 'Synthetic original task lookup denied' },
+    }).contract } : { status: 502, body: { error: { code: 'bad_reply', message: 'Synthetic malformed query reply' } } };
+    const failed = (await get(`/requests/${receipt.receiptId}`).expect(200)).body;
+    expect(failed).toMatchObject({ status: 'QUEUED', billingStatus: receipt.billingStatus, execution: {
+      requestId: receipt.execution.requestId, taskId: 'original-task', submissionStatus: 'accepted', generationStatus: 'queued',
+      operationError: { status: queryFailure.status },
+    }, clientActions: { shouldPoll: true, canStartNewRequest: false } });
+    expect(billing.release).not.toHaveBeenCalled(); expect(billing.settleNegotiated).not.toHaveBeenCalled();
+    queryFailure = undefined; completeTasks = true;
+    await background();
+    expect((await get(`/requests/${receipt.receiptId}`).expect(200)).body).toMatchObject({ status: 'SUCCEEDED', billingStatus: 'SETTLED' });
+    expect(submissions).toHaveLength(1);
+  });
+
+  it('restores a lost submission and downloads after application restart without expired reference reuploads', async () => {
+    const body = await prepare('restart-recovery'); generationLost = true;
+    const receipt = (await post('/requests').send(body).expect(202)).body;
+    expect(receipt.status).toBe('SUBMISSION_UNKNOWN');
+    for (const row of db.state.references.values()) {
+      row.expiresAt = new Date(Date.now() - 1000); row.metadata.value.expiresAt = row.expiresAt.toISOString();
+    }
+    await app.close(); service = createService(); app = await boot();
+    restoreLostSubmission = true;
+    await background();
+    const restored = (await get(`/requests/by-client-id/${body.clientRequestId}`).expect(200)).body;
+    expect(restored).toMatchObject({ receiptId: receipt.receiptId, operation: 'video-to-video', execution: {
+      requestId: receipt.execution.requestId, taskId: 'original-task', submissionStatus: 'accepted',
+    } });
+    expect(taskQueries().some(([url]) => String(url).endsWith(`${receipt.execution.requestId}?id_type=request_id`))).toBe(true);
+    completeTasks = true; await background();
+    const completed = (await get(`/requests/${receipt.receiptId}`).expect(200)).body;
+    expect(completed).toMatchObject({ status: 'SUCCEEDED', fileStatus: 'available', billingStatus: 'SETTLED' });
+    await app.close(); service = createService(); app = await boot();
+    const output = completed.outputs[0];
+    expect((await get(`/requests/${receipt.receiptId}/outputs/${output.outputId}/content`).expect(200)).body).toEqual(mp4);
+    await post('/requests').send(body).expect(200);
+    expect(submissions).toHaveLength(1); expect(billing.settleNegotiated).toHaveBeenCalledTimes(1);
+    expect(upstream.mock.calls.filter(([url]) => String(url).endsWith('/videos/references'))).toHaveLength(1);
   });
 });

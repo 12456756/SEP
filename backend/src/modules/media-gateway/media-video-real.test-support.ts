@@ -68,10 +68,14 @@ export function videoRealPrisma() {
       return copy([...requests.values()].find(row => row.enterpriseId === key.enterpriseId && row.clientRequestId === key.clientRequestId) ?? null);
     }),
     findMany: jest.fn(async ({ where, take }) => {
+      const jsonMatches = (value, filter) => filter.path.reduce((part, key) => part?.[key], value) === filter.equals;
       const match = (row, filter) => (!filter.AND || filter.AND.every(item => match(row, item))) &&
+        (!filter.OR || filter.OR.some(item => match(row, item))) &&
+        (!filter.id?.gt || row.id > filter.id.gt) && (!filter.status || filter.status.in.includes(row.status)) &&
         (!filter.enterpriseId || row.enterpriseId === filter.enterpriseId) &&
-        (!filter.configuration || row.configuration[filter.configuration.path[0]] === filter.configuration.equals);
-      return copy([...requests.values()].filter(row => match(row, where)).slice(0, take ?? requests.size));
+        (!filter.configuration || jsonMatches(row.configuration, filter.configuration)) &&
+        (!filter.receipt || jsonMatches(row.receipt, filter.receipt));
+      return copy([...requests.values()].filter(row => match(row, where)).sort((a, b) => a.id.localeCompare(b.id)).slice(0, take ?? requests.size));
     }),
     count: jest.fn(async ({ where }) => {
       const match = (row, filter) => (!filter.enterpriseId || row.enterpriseId === filter.enterpriseId) &&

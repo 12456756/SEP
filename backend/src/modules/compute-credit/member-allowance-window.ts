@@ -45,6 +45,7 @@ export async function sumEnterpriseUsed(
     where: {
       enterpriseId: params.enterpriseId,
       userId: params.userId,
+      paymentMode: { not: 'PERSONAL_ONLY' },
       createdAt: { gte: params.from, lt: params.to },
     },
     _sum: USED_SUM_SELECT,

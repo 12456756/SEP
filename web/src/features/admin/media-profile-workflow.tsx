@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { MediaImageSpecV3Schema, MediaVideoSpecV3Schema } from 'shared/media-spec.dto';
 import { MAX_MEDIA_REFERENCE_COUNT } from 'shared/media-reference.dto';
-import { effectiveImageLimits, IMAGE_ADAPTER_MAX_OUTPUTS, IMAGE_REFERENCE_DEFAULT_COUNT, VIDEO_INPUT_MAX_COUNT, VIDEO_INPUT_MAX_BYTES, VIDEO_INPUT_MIME_TYPES } from 'shared/media-runtime-parameters';
+import { IMAGE_REFERENCE_DEFAULT_COUNT, VIDEO_INPUT_MAX_COUNT, VIDEO_INPUT_MAX_BYTES, VIDEO_INPUT_MIME_TYPES } from 'shared/media-runtime-parameters';
 import { CreateMediaProfileDtoSchema } from 'shared/media.dto';
 import { CreateMediaVideoProfileDtoSchema } from 'shared/media-video-config.dto';
 import { MediaVideoDurationRangeSchema } from 'shared/media-video.dto';
@@ -48,8 +48,8 @@ export function MediaProfileWorkflow({ kind, model, profile }: Props) {
     } : {}); return; }
     if (kind === 'image' && profile.kind === 'image') {
       setDraft({ operations: profile.operations.join(','), sizes: listValue(profile.capabilities.sizes),
-        maxOutputs: String(effectiveImageLimits(profile.capabilities).maxOutputs), supportsReferenceImage: String(profile.capabilities.supportsReferenceImage),
-        qualities: listValue(profile.capabilities.qualities), maxReferenceCount: String(profile.capabilities.maxReferenceCount || IMAGE_REFERENCE_DEFAULT_COUNT) });
+        maxOutputs: '1', supportsReferenceImage: String(profile.capabilities.supportsReferenceImage),
+        qualities: listValue(profile.capabilities.qualities), maxReferenceCount: String(Math.min(4, profile.capabilities.maxReferenceCount || IMAGE_REFERENCE_DEFAULT_COUNT)) });
     } else if (kind === 'video' && profile.kind === 'video') {
       const c = profile.capabilities;
       setDraft({ operations: profile.operations.join(','),
@@ -88,6 +88,7 @@ export function MediaProfileWorkflow({ kind, model, profile }: Props) {
       if (mode === 'quote') {
         if (kind === 'image') {
           const spec = MediaImageSpecV3Schema.parse({ size: draft.size, count: Number(draft.count), quality: draft.quality });
+          if (spec.count !== 1) throw new Error('异步图片每次输出 1 张');
           await imageVerify.mutateAsync({ profileId: profile!.profileId,
             dto: { expectedConfigVersion: profile!.configVersion, verificationSpec: spec } });
         } else {
@@ -104,11 +105,12 @@ export function MediaProfileWorkflow({ kind, model, profile }: Props) {
           ...((draft.qualities?.trim() || profile?.kind === 'image' && profile.capabilities.qualities !== undefined)
             ? { qualities: splitValues(draft.qualities ?? '') } : {}),
           maxReferenceCount: draft.supportsReferenceImage === 'true' ? Number(draft.maxReferenceCount) : 0 };
+        if (capabilities.maxOutputs !== 1 || capabilities.maxReferenceCount > 4) throw new Error('异步图片每次输出 1 张，最多支持 4 张参考图');
         if (profile) await imageUpdate.mutateAsync({ profileId: profile.profileId,
           dto: { expectedConfigVersion: profile.configVersion,
             ...(!autoProfile ? { operations: operations as ('generate' | 'edit')[] } : {}), capabilities } });
         else await imageCreate.mutateAsync(CreateMediaProfileDtoSchema.parse({ profileId: draft.profileId, displayName: draft.displayName,
-          kind: 'image', modelId: model.modelId, executionMode: 'sync-response', enabled: false,
+          kind: 'image', modelId: model.modelId, executionMode: 'async-query', enabled: false,
           operations, capabilities }));
       } else {
         const operations = (draft.operations ?? '').split(',').filter(Boolean);
@@ -139,7 +141,7 @@ export function MediaProfileWorkflow({ kind, model, profile }: Props) {
     <Input required={required} type={numeric ? 'number' : 'text'} min={numeric ? 1 : undefined} max={maximum} step={numeric ? maximum || integer ? 1 : 'any' : undefined}
       value={draft[key] ?? ''} disabled={busy} onChange={event => edit(key, event.target.value)} /></label>;
   const referenceCountField = <label className="min-w-0 text-xs">最多参考图数量
-    <Input aria-label="最多参考图数量" required type="number" min={1} max={MAX_MEDIA_REFERENCE_COUNT} step={1}
+    <Input aria-label="最多参考图数量" required type="number" min={1} max={kind === 'image' ? 4 : MAX_MEDIA_REFERENCE_COUNT} step={1}
       value={draft.maxReferenceCount ?? ''} disabled={busy} onChange={event => edit('maxReferenceCount', event.target.value)} />
   </label>;
   const multiField = (key: string, label: string, limits: string, required = true) => <label key={key} className="min-w-0 text-xs">{label}
@@ -152,7 +154,7 @@ export function MediaProfileWorkflow({ kind, model, profile }: Props) {
     {operationChoices.map(operation => <label key={operation} className="flex items-center gap-2 text-xs"><input type="checkbox" disabled={busy}
       checked={selected(operation)} onChange={() => toggleOperation(operation)} />{operationLabels[operation]}</label>)}
   </div></fieldset>;
-  const quoteFields = kind === 'image' ? <>{field('size', '尺寸 size')}{field('count', '输出数量', true)}{field('quality', '质量 quality')}</>
+  const quoteFields = kind === 'image' ? <>{field('size', '尺寸 size')}{field('count', '输出数量', true, true, 1)}{field('quality', '质量 quality')}</>
     : <>{field('durationSeconds', '时长（秒）', true)}{field('resolution', '分辨率')}{field('aspectRatio', '画幅比例', false, false)}
       {field('frameRate', '帧率', true, false)}<label className="text-xs">音频<select value={draft.audio ?? ''} onChange={event => edit('audio', event.target.value)} className="mt-1 block w-full border border-border bg-background p-2">
         <option value="">不指定</option><option value="true">有音频</option><option value="false">无音频</option></select></label>
@@ -160,7 +162,7 @@ export function MediaProfileWorkflow({ kind, model, profile }: Props) {
   const configurationFields = <>{!profile && <>{field('profileId', 'Profile ID')}{field('displayName', '显示名称')}</>}{!autoProfile && operationsControl}
     {kind === 'image' ? <>{multiField('sizes', '支持尺寸', '最多 32 项，格式如 1024x1024')}
       {multiField('qualities', '质量选项', '最多 128 项，每项最多 128 字符；留空表示未确认', false)}
-      {field('maxOutputs', '最大输出数量', true, true, IMAGE_ADAPTER_MAX_OUTPUTS)}
+      {field('maxOutputs', '最大输出数量', true, true, 1)}
       <label className="flex items-center gap-2 text-xs"><input type="checkbox" checked={draft.supportsReferenceImage === 'true'} disabled={busy || autoProfile && selected('edit')}
         onChange={event => edit('supportsReferenceImage', String(event.target.checked))} />支持参考图编辑</label>
       {draft.supportsReferenceImage === 'true' && referenceCountField}</>

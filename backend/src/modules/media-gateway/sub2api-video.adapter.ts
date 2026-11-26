@@ -11,6 +11,7 @@ import { SettingService } from '../setting/setting.service';
 import { inspectReferenceImage } from './media-reference-image';
 import { errorMessage, sanitizeError, hasBusinessError } from '../../common/errors/error-diagnostics';
 import { upstreamHeaders } from '../../common/errors/upstream-http.exception';
+import { LongdaoReceiptMetadataFields, readLongdaoMedia, VIDEO_CREATE_TIMEOUT_MS } from './longdao-media-contract';
 
 export interface Sub2apiVideoConnection { base: string; key: string; fingerprint: string }
 const ModelIdSchema = z.string().min(1).max(160).regex(/^[^\s\p{Cc}\p{Cf}]+$/u);
@@ -23,7 +24,8 @@ const TaskSchema = z.object({
   error: MediaJsonValueSchema.optional(),
 });
 const PricingSchema = z.object({
-  object: z.literal('sub2api.video_pricing'), schema_version: z.literal(1), currency: z.literal('USD'),
+  ...LongdaoReceiptMetadataFields,
+  object: z.literal('sub2api.video_pricing'), schema_version: z.union([z.literal(1), z.literal(2)]), currency: z.literal('USD'),
   model: ModelIdSchema, operation: MediaVideoOperationSchema,
   resolution: z.string().min(1).max(128), duration_seconds: z.number().int().positive().safe(),
   billing_mode: z.enum(['video', 'per_request']), pricing_status: z.enum(['quoted', 'unavailable']),
@@ -35,8 +37,9 @@ const PricingSchema = z.object({
 }).strict();
 export type Sub2apiVideoPrice = z.infer<typeof PricingSchema>;
 const UsageSchema = z.object({
-  object: z.literal('sub2api.video_request_usage'), schema_version: z.literal(1), currency: z.literal('USD'),
-  request_id: RequestIdSchema, status: z.enum(['settled', 'pending']), model: ModelIdSchema.nullable(),
+  ...LongdaoReceiptMetadataFields,
+  object: z.literal('sub2api.video_request_usage'), schema_version: z.union([z.literal(1), z.literal(2)]), currency: z.literal('USD'),
+  request_id: RequestIdSchema, status: z.enum(['settled', 'pending', 'not_charged', 'unknown']), model: ModelIdSchema.nullable(),
   actual_cost_usd: MediaVideoUsdSchema.nullable(), video_count: z.number().int().nonnegative().nullable(),
   duration_seconds: z.number().finite().positive().max(Number.MAX_SAFE_INTEGER).nullable(), resolution: z.string().min(1).max(128).nullable(),
 }).strict();
@@ -131,12 +134,55 @@ export class Sub2apiVideoAdapter {
     if (!parsed.success) unavailable('BILLING_PENDING', { message: 'Video usage response validation failed', errors: parsed.error.issues });
     const value = parsed.data;
     if (value.request_id !== requestId ||
-      value.status === 'pending' && value.actual_cost_usd !== null ||
+      ['pending', 'unknown'].includes(value.status) && value.actual_cost_usd !== null ||
+      value.status === 'not_charged' && !/^0(?:\.0+)?$/.test(value.actual_cost_usd ?? '') ||
       value.status === 'settled' && (value.actual_cost_usd === null || value.model === null ||
         value.video_count === null || value.video_count < 1 || value.duration_seconds === null || value.resolution === null)) {
       unavailable('BILLING_PENDING', { message: 'Video usage evidence does not match the original request or settlement state', usage: value });
     }
     return value;
+  }
+
+  async submitContract(connection: Sub2apiVideoConnection, input: Sub2apiVideoInput, modelId: string,
+    references: Buffer[], requestId: string, pricingVersion: string, videoReferenceIds: string[] = []) {
+    this.assertInput(input, modelId);
+    if (!RequestIdSchema.safeParse(requestId).success || references.length !== input.referenceIds.length ||
+        !/^[A-Za-z0-9_.:-]{1,128}$/.test(pricingVersion)) unavailable('INVALID_PARAMETER');
+    if (input.operation === 'video-to-video') {
+      if (!('protocolVersion' in input) || references.length || !videoReferenceIds.length
+        || videoReferenceIds.length !== input.videoReferenceIds?.length || videoReferenceIds.length > VIDEO_INPUT_MAX_COUNT
+        || videoReferenceIds.some(id => !/^vref_[a-f0-9]{32}$/.test(id))) unavailable('INVALID_REFERENCE');
+    } else if (videoReferenceIds.length) unavailable('INVALID_REFERENCE');
+    const fields = this.submitFields(input, modelId);
+    const headers: Record<string, string> = { 'X-Client-Request-ID': requestId, 'Idempotency-Key': requestId,
+      'X-Video-Pricing-Version': pricingVersion, 'X-Video-Operation': input.operation };
+    let body: BodyInit;
+    if (input.operation === 'text-to-video' || input.operation === 'video-to-video') {
+      headers['Content-Type'] = 'application/json';
+      body = JSON.stringify({ ...fields, ...(input.operation === 'video-to-video' ? { metadata: { content:
+        videoReferenceIds.map(reference_id => ({ type: 'video_url', video_url: { reference_id }, role: 'reference_video' })) } } : {}) });
+    } else {
+      const form = new FormData();
+      for (const [index, bytes] of references.entries()) {
+        const { mimeType, extension } = await inspectReferenceImage(bytes, VIDEO_REFERENCE_MAX_BYTES);
+        form.append('input_reference', new Blob([new Uint8Array(bytes)], { type: mimeType }), `reference-${index}.${extension}`);
+      }
+      for (const [name, value] of Object.entries(fields)) form.append(name, typeof value === 'object' ? JSON.stringify(value) : String(value));
+      body = form;
+    }
+    return readLongdaoMedia(await this.fetch(connection, '/videos', { method: 'POST', headers, body }, VIDEO_CREATE_TIMEOUT_MS), connection.key, requestId, undefined, true);
+  }
+
+  async queryContract(connection: Sub2apiVideoConnection, requestId: string, taskId?: string | null) {
+    if (!RequestIdSchema.safeParse(requestId).success || taskId && !TaskIdSchema.safeParse(taskId).success) unavailable('INVALID_PARAMETER');
+    return readLongdaoMedia(await this.fetch(connection,
+      `/videos/${encodeURIComponent(taskId ?? requestId)}${taskId ? '' : '?id_type=request_id'}`, { method: 'GET' }, 90_000), connection.key, requestId, taskId);
+  }
+
+  async cancelContract(connection: Sub2apiVideoConnection, requestId: string, taskId: string) {
+    if (!RequestIdSchema.safeParse(requestId).success || !TaskIdSchema.safeParse(taskId).success) unavailable('INVALID_PARAMETER');
+    return readLongdaoMedia(await this.fetch(connection, `/videos/${encodeURIComponent(taskId)}/cancel`, { method: 'PUT' }, 90_000),
+      connection.key, requestId, taskId);
   }
 
   async submit(connection: Sub2apiVideoConnection, input: Sub2apiVideoInput, modelId: string,

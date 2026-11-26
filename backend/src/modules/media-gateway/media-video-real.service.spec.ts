@@ -10,7 +10,7 @@ import { MediaVideoGatewayQuoteRequestV3Schema } from '../../shared/media-video.
 import { referenceFixture } from './media-reference.test-support';
 
 const code = (value: string) => ({ response: { error: { code: value } } });
-describe('MediaVideoRealService', () => {
+describe('MediaVideoRealService legacy receipt compatibility', () => {
   let db: ReturnType<typeof videoRealPrisma>;
   let store: MediaVideoRealStore;
   let service: MediaVideoRealService;
@@ -22,6 +22,16 @@ describe('MediaVideoRealService', () => {
   let usdRate: string;
   beforeEach(() => {
     db = videoRealPrisma(); store = new MediaVideoRealStore(db as never); enabled = true;
+    // Seed the pre-v2 dispatch format to exercise recovery of persisted legacy jobs.
+    const claimLegacy = store.claim.bind(store);
+    jest.spyOn(store, 'claim').mockImplementation(value => {
+      const legacy = structuredClone(value);
+      delete legacy.configuration.contractVersion; delete legacy.configuration.cancelSupported;
+      legacy.configuration.upstreamRequestId = null;
+      delete legacy.receipt.receiptVersion; delete legacy.receipt.execution;
+      delete legacy.receipt.clientActions; delete legacy.receipt.fileStatus;
+      return claimLegacy(legacy);
+    });
     usdRate = '7';
     const connection = { base: 'https://relay.invalid/v1', key: 'secret-never-persist', fingerprint };
     adapter = {
@@ -525,7 +535,7 @@ describe('MediaVideoRealService', () => {
 
   it('does not call upstream after reservation failure', async () => {
     billing.reserve.mockRejectedValue(new HttpException({ error: { code: 'INSUFFICIENT_FUNDS' } }, 402));
-    await expect(quotedSubmit()).rejects.toMatchObject(code('INSUFFICIENT_FUNDS'));
+    await expect(quotedSubmit()).resolves.toMatchObject({ receipt: { status: 'FAILED', billingError: { status: 402 } } });
     expect(adapter.submit).not.toHaveBeenCalled();
     expect([...db.state.requests.values()][0].receipt).toMatchObject({ status: 'FAILED', billingStatus: 'NOT_RESERVED' });
   });

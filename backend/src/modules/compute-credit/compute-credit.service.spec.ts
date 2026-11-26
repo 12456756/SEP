@@ -76,6 +76,7 @@ describe("ComputeCreditService.chargeUsage", () => {
     createdRecord = null;
 
     prisma = {
+      enterpriseMember: { findUnique: jest.fn().mockResolvedValue({ paymentMode: 'AUTO' }), updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
       platformModel: { findUnique: jest.fn().mockResolvedValue({ isFree: false }) },
       $queryRaw: jest.fn().mockResolvedValue([{ status: 'ACTIVE' }]),
       computeUsageRecord: {
@@ -198,6 +199,69 @@ describe("ComputeCreditService.chargeUsage", () => {
       outputTokens: 0,
       ...overrides,
     } as any);
+
+  it('personal-only freezes the preference and never consumes company funding or allowance after a switch', async () => {
+    personalBalance = new Decimal(40);
+    creditRow = makeCredit({ grantedCNY: new Decimal(50) });
+    allowanceCap = new Decimal(0);
+    prisma.enterpriseMember.findUnique.mockResolvedValue({ paymentMode: 'PERSONAL_ONLY' });
+    const billingSnapshot = await svc.getBillingSnapshot('unknown-model', ENTERPRISE, 'user-1');
+    prisma.enterpriseMember.findUnique.mockResolvedValue({ paymentMode: 'ENTERPRISE_ONLY' });
+    const result = await charge({ billingSnapshot });
+    expect(result.personalPaidCNY.toNumber()).toBe(10);
+    expect(result.creditPaidCNY.toNumber()).toBe(0);
+    expect(walletBalance.toNumber()).toBe(100);
+    expect(creditRow.usedCNY.toNumber()).toBe(0);
+    expect(allowance.planCharge).not.toHaveBeenCalled();
+    expect(allowanceNotifier.afterCharge).not.toHaveBeenCalled();
+    expect(createdRecord.allowanceWindowId).toBeNull();
+  });
+
+  it('enterprise-only leaves personal funds untouched when the company cap is insufficient', async () => {
+    personalBalance = new Decimal(40);
+    allowanceCap = new Decimal(3);
+    prisma.enterpriseMember.findUnique.mockResolvedValue({ paymentMode: 'ENTERPRISE_ONLY' });
+    const billingSnapshot = await svc.getBillingSnapshot('unknown-model', ENTERPRISE, 'user-1');
+    const result = await charge({ billingSnapshot });
+    expect(result.walletPaidCNY.toNumber()).toBe(3);
+    expect(result.unpaidCNY.toNumber()).toBe(7);
+    expect(result.personalPaidCNY.toNumber()).toBe(0);
+    expect(personalWallet.consumeUpTo).not.toHaveBeenCalled();
+    expect(personalBalance.toNumber()).toBe(40);
+  });
+
+  it('personal-only ignores exhausted company allowance, but checks personal funds', async () => {
+    prisma.enterpriseMember.findUnique.mockResolvedValue({ paymentMode: 'PERSONAL_ONLY' });
+    personalBalance = new Decimal(10);
+    expect(await svc.checkBalanceBeforeConversation(ENTERPRISE, SUBSCRIPTION, 'user-1'))
+      .toMatchObject({ allowed: true, enterpriseFundsAllowed: false, personalBalanceCNY: 10 });
+    personalBalance = new Decimal(0);
+    expect(await svc.checkBalanceBeforeConversation(ENTERPRISE, SUBSCRIPTION, 'user-1'))
+      .toMatchObject({ allowed: false, enterpriseFundsAllowed: false });
+    expect(allowance.check).not.toHaveBeenCalled();
+  });
+
+  it('enterprise-only rejects exhausted allowance even with personal funds', async () => {
+    prisma.enterpriseMember.findUnique.mockResolvedValue({ paymentMode: 'ENTERPRISE_ONLY' });
+    personalBalance = new Decimal(10);
+    allowance.check.mockResolvedValue({ allowed: true, enterpriseFundsAllowed: false, personalBalanceCNY: '10' });
+    expect(await svc.checkBalanceBeforeConversation(ENTERPRISE, SUBSCRIPTION, 'user-1'))
+      .toMatchObject({ allowed: false, enterpriseFundsAllowed: false });
+  });
+
+  it('reads and saves only the specified membership preference without moving funds', async () => {
+    expect(await svc.getPaymentPreference(ENTERPRISE, 'user-1')).toEqual({ paymentMode: 'AUTO' });
+    expect(prisma.enterpriseMember.findUnique).toHaveBeenCalledWith({
+      where: { userId_enterpriseId: { enterpriseId: ENTERPRISE, userId: 'user-1' } }, select: { paymentMode: true },
+    });
+    expect(await svc.setPaymentPreference(ENTERPRISE, 'user-1', 'PERSONAL_ONLY')).toEqual({ paymentMode: 'PERSONAL_ONLY' });
+    expect(prisma.enterpriseMember.updateMany).toHaveBeenCalledWith({
+      where: { enterpriseId: ENTERPRISE, userId: 'user-1' }, data: { paymentMode: 'PERSONAL_ONLY' },
+    });
+    prisma.enterpriseMember.updateMany.mockResolvedValue({ count: 0 });
+    await expect(svc.setPaymentPreference(ENTERPRISE, 'user-1', 'AUTO')).rejects.toThrow('你已不属于该企业');
+    expect(personalWallet.consumeUpTo).not.toHaveBeenCalled();
+  });
 
   it('活动免费保留非零 token 用量账单，不消耗赠送、钱包或额度', async () => {
     prisma.platformModel.findUnique.mockResolvedValue({ isFree: true });

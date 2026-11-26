@@ -218,7 +218,7 @@ services:
 
       # Next.js rewrites /api/* → API_ORIGIN（见 next.config.mjs）
       - API_ORIGIN=http://sep-backend:3001
-      - SEP_API_PROXY_TIMEOUT_MS=${SEP_API_PROXY_TIMEOUT_MS:-180000}
+      - SEP_API_PROXY_TIMEOUT_MS=${SEP_API_PROXY_TIMEOUT_MS:-330000}
 
       - NEXT_TELEMETRY_DISABLED=1
       - TZ=Asia/Shanghai

@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { CenteredSpinner } from '@/components/ui/feedback';
-import { useMe, useUpdateProfile, useChangePassword, useUploadAvatar } from '@/features/user/use-user';
+import { useMe, useUpdateProfile, useUploadAvatar } from '@/features/user/use-user';
 import {
   useLogout,
   useRequestEmailVerification,
@@ -28,27 +28,14 @@ const profileSchema = z.object({
   name: z.string().min(1, '姓名不能为空'),
 });
 
-const passwordSchema = z
-  .object({
-    currentPassword: z.string().min(1, '当前密码不能为空'),
-    newPassword: z.string().min(8, '新密码至少 8 位'),
-    confirmPassword: z.string().min(1, '请确认新密码'),
-  })
-  .refine((d) => d.newPassword === d.confirmPassword, {
-    message: '两次输入的密码不一致',
-    path: ['confirmPassword'],
-  });
-
 export default function SettingsPage() {
   const { data: me, isLoading } = useMe();
   const updateProfile = useUpdateProfile();
-  const changePassword = useChangePassword();
   const logout = useLogout();
   const uploadAvatar = useUploadAvatar();
   const requestEmailVerification = useRequestEmailVerification();
   const requestEmailChange = useRequestEmailChange();
 
-  const [pwSuccess, setPwSuccess] = useState(false);
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const [avatarSaved, setAvatarSaved] = useState(false);
   const [newEmail, setNewEmail] = useState('');
@@ -58,11 +45,6 @@ export default function SettingsPage() {
   const profileForm = useForm({
     resolver: zodResolver(profileSchema),
     values: me ? { name: me.name ?? '' } : undefined,
-  });
-
-  const passwordForm = useForm({
-    resolver: zodResolver(passwordSchema),
-    defaultValues: { currentPassword: '', newPassword: '', confirmPassword: '' },
   });
 
   const onProfileSubmit = profileForm.handleSubmit((data) => {
@@ -103,20 +85,6 @@ export default function SettingsPage() {
       setAvatarError(cause instanceof ApiError ? cause.message : '上传失败，请重试');
     }
   }
-
-  const onPasswordSubmit = passwordForm.handleSubmit((data) => {
-    setPwSuccess(false);
-    changePassword.mutate(
-      { currentPassword: data.currentPassword, newPassword: data.newPassword },
-      {
-        onSuccess: () => {
-          passwordForm.reset();
-          setPwSuccess(true);
-          setTimeout(() => setPwSuccess(false), 3000);
-        },
-      },
-    );
-  });
 
   function handleEmailChangeRequest() {
     setEmailMessage(null);
@@ -267,63 +235,6 @@ export default function SettingsPage() {
             >
               {updateProfile.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
               保存
-            </Button>
-          </form>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>修改密码</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={onPasswordSubmit} className="space-y-4">
-            <div>
-              <label className="mb-1.5 block text-sm font-medium text-foreground">当前密码</label>
-              <Input type="password" {...passwordForm.register('currentPassword')} />
-              {passwordForm.formState.errors.currentPassword && (
-                <p className="mt-1 text-sm text-danger">
-                  {passwordForm.formState.errors.currentPassword.message}
-                </p>
-              )}
-            </div>
-
-            <div>
-              <label className="mb-1.5 block text-sm font-medium text-foreground">新密码</label>
-              <Input type="password" {...passwordForm.register('newPassword')} />
-              {passwordForm.formState.errors.newPassword && (
-                <p className="mt-1 text-sm text-danger">
-                  {passwordForm.formState.errors.newPassword.message}
-                </p>
-              )}
-            </div>
-
-            <div>
-              <label className="mb-1.5 block text-sm font-medium text-foreground">确认新密码</label>
-              <Input type="password" {...passwordForm.register('confirmPassword')} />
-              {passwordForm.formState.errors.confirmPassword && (
-                <p className="mt-1 text-sm text-danger">
-                  {passwordForm.formState.errors.confirmPassword.message}
-                </p>
-              )}
-            </div>
-
-            {changePassword.error && (
-              <p className="text-sm text-danger">
-                {(changePassword.error as ApiError).message || '修改失败'}
-              </p>
-            )}
-
-            {pwSuccess && (
-              <p className="flex items-center gap-1.5 text-sm text-success">
-                <Check className="h-4 w-4" />
-                密码已更新
-              </p>
-            )}
-
-            <Button type="submit" size="sm" disabled={changePassword.isPending}>
-              {changePassword.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-              修改密码
             </Button>
           </form>
         </CardContent>

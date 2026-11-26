@@ -103,7 +103,7 @@ export class MediaConfigService {
           kind: dto.kind,
           displayName: dto.displayName,
           modelId: dto.modelId,
-          executionMode: dto.executionMode,
+          executionMode: 'async-query',
           enabled: dto.enabled,
           operations: [...new Set(dto.operations)],
           capabilities: capabilities.data,
@@ -183,8 +183,8 @@ export class MediaConfigService {
     const fingerprint = mediaConnectionFingerprint(connection);
     const models = await this.imageAdapter.discoverModels({ base: connection.baseUrl, key: connection.apiKey });
     await this.modelSync.sync('image', models.map(model => ({
-      ...model, autoCreate: isSupportedImageModel(model.modelId), operations: ['generate', 'edit'], executionMode: 'sync-response',
-      capabilities: { supportsReferenceImage: true, maxOutputs: 4, sizes: [...IMAGE_MODEL_SIZES] },
+      ...model, autoCreate: isSupportedImageModel(model.modelId), operations: ['generate', 'edit'], executionMode: 'async-query',
+      capabilities: { supportsReferenceImage: true, maxOutputs: 1, sizes: [...IMAGE_MODEL_SIZES] },
     })), fingerprint, row => {
       const parsed = MediaProfileSchema.safeParse({
         profileId: row.profileId, kind: row.kind, displayName: row.displayName, modelId: row.modelId,
@@ -201,8 +201,8 @@ export class MediaConfigService {
           ...model, compatible,
           reason: compatible ? '目录候选；需要显式配置、报价校验后启用' : '仅目录候选；可显式创建通用图片协议 Profile 并校验报价，尚未验证适配',
           suggested: compatible ? {
-            operations: ['generate', 'edit'], executionMode: 'sync-response',
-            capabilities: { supportsReferenceImage: true, maxOutputs: 4, sizes: [...IMAGE_MODEL_SIZES] },
+            operations: ['generate', 'edit'], executionMode: 'async-query',
+            capabilities: { supportsReferenceImage: true, maxOutputs: 1, sizes: [...IMAGE_MODEL_SIZES] },
           } : null,
         };
       }),
@@ -210,7 +210,7 @@ export class MediaConfigService {
   }
 
   private adapterCompatible(profile: MediaProfile): boolean {
-    return profile.executionMode === 'sync-response'
+    return ['sync-response', 'async-query'].includes(profile.executionMode)
       && profile.capabilities.maxOutputs <= 8
       && profile.capabilities.sizes.every(size => /^\S{1,64}$/.test(size))
       && (!profile.operations.includes('edit') || profile.capabilities.supportsReferenceImage);
@@ -222,7 +222,7 @@ export class MediaConfigService {
     if (!row) throw new NotFoundException('媒体 Profile 不存在');
     const profile = this.profileView(row);
     if (profile.configVersion !== dto.expectedConfigVersion) throw new ConflictException('媒体配置已更新，请重新加载后校验');
-    if (profile.executionMode !== 'sync-response' ||
+    if (!['sync-response', 'async-query'].includes(profile.executionMode) ||
       profile.capabilities.maxOutputs > 8 || profile.capabilities.sizes.some(size => !/^\S{1,64}$/.test(size)) ||
       (profile.operations.includes('edit') && !profile.capabilities.supportsReferenceImage)) {
       throw new BadRequestException('当前模型或参数超出图片适配器支持范围');
@@ -235,7 +235,7 @@ export class MediaConfigService {
         throw new BadRequestException('新模型或已配置质量选项的模型须显式填写报价校验规格');
       }
       if (dto.verificationSpec) {
-        if (dto.verificationSpec.count !== undefined && dto.verificationSpec.count > effectiveImageLimits(profile.capabilities).maxOutputs) {
+        if (dto.verificationSpec.count !== undefined && dto.verificationSpec.count > Math.min(1, effectiveImageLimits(profile.capabilities).maxOutputs)) {
           throw new BadRequestException('校验输出数量超过当前 Profile 上限');
         }
         for (const operation of profile.operations) {
@@ -248,7 +248,7 @@ export class MediaConfigService {
         for (const operation of [...new Set(profile.operations)]) {
           for (const size of [...new Set(profile.capabilities.sizes)]) {
             for (const quality of ['low', 'medium', 'high'] as const) {
-              for (let count = 1; count <= effectiveImageLimits(profile.capabilities).maxOutputs; count++) {
+              for (let count = 1; count <= Math.min(1, effectiveImageLimits(profile.capabilities).maxOutputs); count++) {
                 checks.push({ profileId, configVersion: profile.configVersion, operation,
                   creativeBrief: 'Media configuration preflight', referenceIds: [],
                   parameters: { size: size as MediaRealQuoteRequest['parameters']['size'], count, quality } });
@@ -422,17 +422,17 @@ export class MediaConfigService {
     const realEnabled = await this.realRuntimeEnabled();
     const profiles = (profilesOverride ?? await this.availableProfiles())
       .filter((profile) => policy.enabledProfileIds.includes(profile.profileId))
-      .filter((profile) => !realEnabled || (isSupportedImageModel(profile.modelId) && profile.executionMode === 'sync-response'))
+      .filter((profile) => !realEnabled || (isSupportedImageModel(profile.modelId) && ['sync-response', 'async-query'].includes(profile.executionMode)))
       .map((profile) => {
         const sizes = profile.capabilities.sizes.filter(size => !realEnabled || (IMAGE_MODEL_SIZES as readonly string[]).includes(size));
         const dimensions = sizes.map(size => size.split('x').map(Number));
         return {
           profileId: profile.profileId, kind: profile.kind, displayName: profile.displayName,
-          configVersion: profile.configVersion, executionMode: profile.executionMode,
+          configVersion: profile.configVersion, executionMode: realEnabled ? 'async-query' as const : profile.executionMode,
           operations: profile.operations.filter((operation) => !realEnabled || operation === 'generate' || profile.capabilities.supportsReferenceImage),
           capabilities: {
             supportsReferenceImage: profile.capabilities.supportsReferenceImage,
-            maxOutputs: Math.min(profile.capabilities.maxOutputs, realEnabled ? 4 : 8),
+            maxOutputs: Math.min(profile.capabilities.maxOutputs, realEnabled ? 1 : 8),
             maxWidth: Math.max(0, ...dimensions.map(([width]) => width)),
             maxHeight: Math.max(0, ...dimensions.map(([, height]) => height)),
             sizes,
@@ -487,17 +487,20 @@ export class MediaConfigService {
         : !profile.verified ? 'PROFILE_UNVERIFIED'
           : !executionEnabled ? 'EXECUTION_DISABLED'
             : !connectionUsable ? 'CONNECTION_UNAVAILABLE'
-              : profile.executionMode !== 'sync-response' ? 'ADAPTER_PROTOCOL_UNSUPPORTED'
+              : !['sync-response', 'async-query'].includes(profile.executionMode) ? 'ADAPTER_PROTOCOL_UNSUPPORTED'
                 : operations.length === 0 ? 'ADAPTER_OPERATION_UNSUPPORTED' : undefined;
-      const capabilities = imageRuntimeCapabilities(profile, operations);
+      const capabilities = imageRuntimeCapabilities({ ...profile, executionMode: 'async-query', capabilities: {
+        ...profile.capabilities, maxOutputs: Math.min(1, profile.capabilities.maxOutputs),
+        maxReferenceCount: Math.min(4, profile.capabilities.maxReferenceCount),
+      } }, operations);
       return {
         profileId: profile.profileId, configVersion: profile.configVersion, kind: 'image' as const,
         modelId: profile.modelId, modelDisplayName: profile.modelId,
-        displayName: profile.displayName, operations, executionMode: 'sync-response' as const, authorized: true,
+        displayName: profile.displayName, operations, executionMode: 'async-query' as const, authorized: true,
         adapter: {
           id: 'sub2api-image', version: '3', available: reason === undefined, ...(reason ? { reason } : {}), operations,
           referenceSupport: capabilities.referenceSupport,
-          supportsTaskQuery: false, supportsCancel: false,
+          supportsTaskQuery: true, supportsCancel: false,
         },
         parameters: capabilities.parameters, constraints: capabilities.constraints, referenceRules: capabilities.referenceRules,
         unavailableReason: reason ?? null, unavailableMessage: reason ? MEDIA_UNAVAILABLE_MESSAGES[reason] : null,

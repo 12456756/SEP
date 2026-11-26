@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import type { PaymentMode } from 'shared/payment-preference.dto';
 import {
   ChevronDown,
   ChevronUp,
@@ -23,6 +24,7 @@ import {
   type PersonalWalletTransaction,
 } from '@/lib/api/use-personal-wallet';
 import { PersonalDepositDialog } from './personal-deposit-dialog';
+import { PaymentPreferenceControl, usePaymentPreference } from './payment-preference';
 
 /** 「10月1日」—— 重置时刻只要月日，年份对「下次什么时候重置」没有信息量。 */
 function shortDate(iso: string): string {
@@ -45,7 +47,7 @@ function remainingBarColor(remainingPct: number): string {
 }
 
 /** 公司额度那一栏。不限额与限额是两种完全不同的读法，分开渲染。 */
-function AllowanceBlock({ allowance }: { allowance: MemberAllowanceItem }) {
+function AllowanceBlock({ allowance, paymentMode }: { allowance: MemberAllowanceItem; paymentMode?: PaymentMode }) {
   const unlimited = allowance.limitCNY === null && !allowance.dailyLimitCNY && !allowance.monthlyLimitCNY;
   const monthlyLimit = allowance.monthlyLimitCNY ?? (allowance.monthlyLimitCNY === null && allowance.limitCNY !== null ? allowance.limitCNY : null);
   const monthlyRemaining = allowance.monthlyRemainingCNY ?? (monthlyLimit ? allowance.remainingCNY : null);
@@ -65,7 +67,7 @@ function AllowanceBlock({ allowance }: { allowance: MemberAllowanceItem }) {
         <span className="text-sm font-medium text-gtext-primary">公司给我的额度</span>
         {capped && (
           <span className="shrink-0 rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-600">
-            已用完 · 转自费
+            {paymentMode === 'AUTO' ? '已用完 · 转自费' : '企业额度已用完'}
           </span>
         )}
       </div>
@@ -162,6 +164,7 @@ export function MyComputePanel() {
   const [showTx, setShowTx] = useState(false);
   const allowance = useMyAllowance();
   const wallet = usePersonalWallet();
+  const preference = usePaymentPreference();
   // 折叠状态下不打这次请求：一份看不见的列表不值得一次往返
   const transactions = usePersonalWalletTransactions({ pageSize: 8 }, showTx);
 
@@ -196,8 +199,9 @@ export function MyComputePanel() {
   return (
     <Card>
       <CardContent className="space-y-3 p-4">
+        <PaymentPreferenceControl />
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-          <AllowanceBlock allowance={my} />
+          <AllowanceBlock allowance={my} paymentMode={preference.data?.paymentMode} />
 
           <div className="w-full shrink-0 border-glassline sm:w-56 sm:border-l sm:pl-4">
             <div className="mb-1.5 flex items-center gap-2">
@@ -222,7 +226,11 @@ export function MyComputePanel() {
           三种状态给三句话，含糊其辞会让用户误以为自己被停用了。
         */}
         <p className="rounded-glass-sm bg-glass-2 px-3 py-2 text-xs leading-relaxed text-gtext-secondary">
-          {blocked ? (
+          {preference.data?.paymentMode === 'PERSONAL_ONLY' ? (
+            <>本次使用个人余额支付，企业资金与分配额度不受影响。{personalBalance <= 0 && '个人余额不足，请充值或切换付款方式。'}</>
+          ) : preference.data?.paymentMode === 'ENTERPRISE_ONLY' ? (
+            <>仅使用获授权的企业资金，受每日、每月限额约束；不足时不会自动扣个人余额。</>
+          ) : blocked ? (
             <>
               公司额度与个人余额都已用尽，现在发消息会被拦下。
               {shortDate(my.resetAt)}额度重置；想提前恢复，可联系企业管理员调高额度或给企业充值，

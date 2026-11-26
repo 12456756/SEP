@@ -296,7 +296,7 @@ describe('MediaRealStore (mock PrismaService; no database)', () => {
     const { receiptId: _id, ...storedReceipt } = record.receipt;
     const result = await store.save(record, 'upstream-1');
     expect(prisma.mediaRealRequest.updateMany).toHaveBeenCalledWith({
-      where: { id: row.id, revision: 3 }, data: { receipt: storedReceipt, status: 'RUNNING',
+      where: { id: row.id, revision: 3 }, data: { receipt: storedReceipt, status: 'RUNNING', configuration: record.configuration,
         upstreamRequestId: 'upstream-1', revision: { increment: 1 } },
     });
     expect(result).toMatchObject({ revision: 4, upstreamRequestId: 'upstream-1', receipt: { status: 'RUNNING' } });

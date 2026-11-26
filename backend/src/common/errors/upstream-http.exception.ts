@@ -11,7 +11,8 @@ export class UpstreamHttpException extends HttpException {
 
 export function upstreamHeaders(response: Response, secrets: readonly string[] = []): Record<string, string> {
   const headers: Record<string, string> = {};
-  for (const name of ['x-request-id', 'x-client-request-id', 'x-upstream-request-id', 'retry-after', 'x-video-dispatch', 'x-data-degraded']) {
+  for (const name of ['x-request-id', 'x-client-request-id', 'x-upstream-request-id', 'retry-after', 'x-video-dispatch', 'x-data-degraded',
+    'x-video-request-id', 'x-image-request-id', 'x-video-billing-status', 'x-image-billing-status']) {
     const value = response.headers.get(name);
     if (value !== null) headers[name] = String(sanitizeError(value, secrets));
   }

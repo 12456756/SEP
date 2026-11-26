@@ -18,6 +18,7 @@ import type { MediaRealAnyQuoteRequest, MediaRealAnyRequest } from 'shared';
 import { MediaRealService } from './media-real.service';
 import { MediaRealGuard } from './media-real.guard';
 import { MediaSpecValidationPipe } from './media-spec-validation.pipe';
+import { MediaPaymentModeInterceptor } from './media-payment-mode.interceptor';
 
 @ApiTags('media-gateway-real')
 @ApiBearerAuth()
@@ -31,6 +32,7 @@ import { MediaSpecValidationPipe } from './media-spec-validation.pipe';
 @ApiResponse({ status: 503, description: '真实媒体未启用、连接不可用或存储暂不可用；查原 ID，不重发生成' })
 @SkipThrottle({ auth: true, chat: true })
 @UseGuards(ClientEmploymentGuard, MediaRealGuard)
+@UseInterceptors(MediaPaymentModeInterceptor)
 @Controller('gateway/v1/media/real')
 export class MediaRealController {
   constructor(private readonly media: MediaRealService) {}
@@ -71,7 +73,7 @@ export class MediaRealController {
 
   @Post('requests')
   @ApiOperation({ summary: '按幂等键提交一次真实图片执行' })
-  @ApiResponse({ status: 200, description: '同步或终态真实回执' })
+  @ApiResponse({ status: 200, description: '已结束的真实回执；生成、文件和账务状态分别表达' })
   @ApiResponse({ status: 202, description: '已受理或提交结果不明的真实回执' })
   async submit(
     @ClientEmployment() claims: ClientEmploymentClaims,
@@ -101,8 +103,8 @@ export class MediaRealController {
   }
 
   @Get('requests/:receiptId/outputs/:outputId/content')
-  @ApiOperation({ summary: '授权后下载真实 PNG 输出' })
-  @ApiResponse({ status: 200, description: '裸 PNG 字节及 SHA256 响应头' })
+  @ApiOperation({ summary: '授权后下载原格式 PNG、JPEG 或 WebP 输出' })
+  @ApiResponse({ status: 200, description: '原始图片字节及 SHA256 响应头' })
   async content(
     @ClientEmployment() claims: ClientEmploymentClaims,
     @Param('receiptId', new ZodValidationPipe(MediaGatewayIdSchema)) receiptId: string,
@@ -112,7 +114,7 @@ export class MediaRealController {
     const { output, bytes } = await this.media.content(claims, receiptId, outputId);
     res.set({
       'Content-Type': output.mimeType, 'Content-Length': String(bytes.length),
-      'Content-Disposition': `attachment; filename="${output.outputId}.png"`,
+      'Content-Disposition': `attachment; filename="${output.outputId}.${output.mimeType === 'image/jpeg' ? 'jpg' : output.mimeType === 'image/webp' ? 'webp' : 'png'}"`,
       'X-SHA256': output.sha256, 'X-SEP-Media-Mock': 'false',
       'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
     });
