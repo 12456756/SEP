@@ -44,6 +44,7 @@ describe('GatewayModelPolicyService', () => {
   let config: ConfigService;
   let context: any;
   let modelConfig: EnterpriseModelConfigService;
+  let catalog: { chatModels: jest.Mock };
   let service: GatewayModelPolicyService;
 
   beforeEach(() => {
@@ -69,7 +70,11 @@ describe('GatewayModelPolicyService', () => {
     };
     config = new ConfigService({ GATEWAY_DEFAULT_MAX_TOKENS: 4096, MODEL_MAX_OUTPUT_TOKENS: 32768 });
     context = { resolve: jest.fn() };
-    modelConfig = new EnterpriseModelConfigService(prisma, context, config);
+    catalog = { chatModels: jest.fn().mockResolvedValue([
+      { modelId: 'model-a' }, { modelId: 'model-b' },
+      { modelId: 'model-template' }, { modelId: 'model-subscription' },
+    ]) };
+    modelConfig = new EnterpriseModelConfigService(prisma, context, catalog as any, config);
     service = new GatewayModelPolicyService(modelConfig, prisma, config);
   });
 
@@ -83,9 +88,8 @@ describe('GatewayModelPolicyService', () => {
     });
     expect(context.resolve).not.toHaveBeenCalled();
     expect(policy.departmentId).toBe('dept-current');
-    expect(prisma.platformModel.findMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { enabled: true, isStale: false },
-    }));
+    expect(catalog.chatModels).toHaveBeenCalledWith('ent-1');
+    expect(prisma.platformModel.findMany).not.toHaveBeenCalled();
   });
 
   it('rejects missing or mismatched members before reading policies or model metadata', async () => {
@@ -174,7 +178,7 @@ describe('GatewayModelPolicyService', () => {
   });
 
   it('skips stale implicit subscription and template models when advertising the client default', async () => {
-    prisma.platformModel.findMany.mockResolvedValue([{ modelId: 'model-a' }, { modelId: 'model-b' }]);
+    catalog.chatModels.mockResolvedValue([{ modelId: 'model-a' }, { modelId: 'model-b' }]);
     const policy = await service.resolvePolicy(identity);
     expect(policy.defaultModel).toBe('model-a');
     expect(policy.allowedModels).toContain(policy.defaultModel);
@@ -189,13 +193,14 @@ describe('GatewayModelPolicyService', () => {
     expect(prepared.inputBytes).toBe(Buffer.byteLength(JSON.stringify(prepared.request), 'utf8'));
   });
 
-  it('caps an omitted max_tokens, but rejects an explicit limit beyond the model cap', async () => {
+  it('ignores retired model caps while enforcing the platform output ceiling', async () => {
     prisma.platformModel.findFirst.mockResolvedValue({ maxOutputTokens: 2048, supportedFeatures: null });
-    expect((await service.prepare(identity, request())).request.max_tokens).toBe(2048);
-    await expect(service.prepare(identity, request({ max_tokens: 2049 }))).rejects.toMatchObject({
-      status: 400, response: { error: { code: 'MODEL_OUTPUT_LIMIT_EXCEEDED', param: 'max_tokens', limit: 2048 } },
+    expect((await service.prepare(identity, request())).request.max_tokens).toBe(4096);
+    expect((await service.prepare(identity, request({ max_tokens: 2049 }))).request.max_tokens).toBe(2049);
+    await expect(service.prepare(identity, request({ max_tokens: 32769 }))).rejects.toMatchObject({
+      status: 400, response: { error: { code: 'MODEL_OUTPUT_LIMIT_EXCEEDED', param: 'max_tokens', limit: 32768 } },
     });
-    expect((await service.prepare(identity, request({ max_tokens: 2048 }))).request.max_tokens).toBe(2048);
+    expect(prisma.platformModel.findFirst).not.toHaveBeenCalled();
   });
 
   it('keeps an explicit 4096 budget but accepts larger budgets independently of the default', async () => {
@@ -254,27 +259,23 @@ describe('GatewayModelPolicyService', () => {
     await expect(service.prepare(identity, request())).rejects.toThrow(InternalServerErrorException);
   });
 
-  it.each([0, -1])('rejects invalid model output metadata %s', async (maxOutputTokens) => {
+  it.each([0, -1])('ignores invalid retired model output metadata %s', async (maxOutputTokens) => {
     prisma.platformModel.findFirst.mockResolvedValue({ maxOutputTokens, supportedFeatures: null });
-    await expectPlatformError(service.prepare(identity, request()), 400, 'MODEL_OUTPUT_LIMIT_INVALID',
-      '模型 maxOutputTokens 配置无效', 'model');
+    await expect(service.prepare(identity, request())).resolves.toMatchObject({ request: { max_tokens: 4096 } });
+    expect(prisma.platformModel.findFirst).not.toHaveBeenCalled();
   });
 
-  it('rechecks enabled/stale status immediately before resource validation', async () => {
+  it('accepts an enterprise model absent from the retired platform catalog', async () => {
     prisma.platformModel.findFirst.mockResolvedValue(null);
-    await expectPlatformError(service.prepare(identity, request()), 400, 'MODEL_UNAVAILABLE',
-      '该模型未启用或已下架', 'model');
-    expect(prisma.platformModel.findFirst).toHaveBeenCalledWith({
-      where: { modelId: 'model-a', enabled: true, isStale: false },
-      select: { maxOutputTokens: true, supportedFeatures: true },
-    });
+    await expect(service.prepare(identity, request())).resolves.toMatchObject({ request: { model: 'model-a' } });
+    expect(prisma.platformModel.findFirst).not.toHaveBeenCalled();
   });
 
-  it('rejects explicit unsupported features, but accepts missing or unknown metadata', async () => {
+  it('leaves streaming and tool capability validation to upstream', async () => {
     prisma.platformModel.findFirst.mockResolvedValue({ maxOutputTokens: null, supportedFeatures: { streaming: false, functionCalling: false } });
-    await expect(service.prepare(identity, request({ stream: true }))).rejects.toThrow('streaming');
-    await expect(service.prepare(identity, request({ tools: [{ type: 'function', function: { name: 'ls' } }] }))).rejects.toThrow('functionCalling');
-    await expect(service.prepare(identity, request({ tool_choice: 'required' }))).rejects.toThrow('functionCalling');
+    await expect(service.prepare(identity, request({ stream: true }))).resolves.toBeDefined();
+    await expect(service.prepare(identity, request({ tools: [{ type: 'function', function: { name: 'ls' } }] }))).resolves.toBeDefined();
+    await expect(service.prepare(identity, request({ tool_choice: 'required' }))).resolves.toBeDefined();
     await expect(service.prepare(identity, request({ tools: [], tool_choice: 'none', stream: false }))).resolves.toBeDefined();
     for (const supportedFeatures of [null, {}, { streaming: null, functionCalling: null }]) {
       prisma.platformModel.findFirst.mockResolvedValue({ maxOutputTokens: null, supportedFeatures });
@@ -282,12 +283,12 @@ describe('GatewayModelPolicyService', () => {
     }
   });
 
-  it('applies functionCalling support checks to tool continuation history too', async () => {
+  it('preserves tool continuation history regardless of retired capability metadata', async () => {
     prisma.platformModel.findFirst.mockResolvedValue({ maxOutputTokens: null, supportedFeatures: { functionCalling: false } });
     await expect(service.prepare(identity, request({ messages: [
       { role: 'assistant', content: null, tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'ls', arguments: '{}' } }] },
       { role: 'tool', content: 'done', tool_call_id: 'call-1' },
-    ] }))).rejects.toThrow('functionCalling');
+    ] }))).resolves.toBeDefined();
   });
 
   it('accepts history above the previous 4 MiB default', async () => {
@@ -325,22 +326,21 @@ describe('GatewayModelPolicyService', () => {
     [{ messages: [{ role: 'assistant', content: null, tool_calls: [
       { id: 'call-1', type: 'function', function: { name: 'ls', arguments: '{}' } },
     ] }] }, 'functionCalling', 'messages'],
-  ])('identifies the unsupported request field %j', async (overrides, feature, param) => {
+  ])('does not reject %j based on retired %s metadata for %s', async (overrides, _feature, _param) => {
     prisma.platformModel.findFirst.mockResolvedValue({
       maxOutputTokens: null, supportedFeatures: { streaming: false, functionCalling: false },
     });
-    await expectPlatformError(service.prepare(identity, request(overrides)), 400,
-      'MODEL_FEATURE_UNSUPPORTED', `该模型不支持 ${feature}`, param);
+    await expect(service.prepare(identity, request(overrides))).resolves.toMatchObject({ request: request(overrides) });
+    expect(prisma.platformModel.findFirst).not.toHaveBeenCalled();
   });
 
-  it('rejects image input only when the model explicitly disables vision', async () => {
+  it('preserves image input regardless of retired vision metadata', async () => {
     const imageRequest = request({ messages: [{ role: 'user', content: [
       { type: 'text', text: 'Describe this image' },
       { type: 'image_url', image_url: { url: 'data:image/png;base64,aGVsbG8=' } },
     ] }] });
     prisma.platformModel.findFirst.mockResolvedValue({ maxOutputTokens: null, supportedFeatures: { vision: false } });
-    await expectPlatformError(service.prepare(identity, imageRequest), 400, 'MODEL_FEATURE_UNSUPPORTED',
-      '该模型不支持 vision', 'messages');
+    await expect(service.prepare(identity, imageRequest)).resolves.toMatchObject({ request: imageRequest });
     prisma.platformModel.findFirst.mockResolvedValue({ maxOutputTokens: null, supportedFeatures: { vision: true } });
     await expect(service.prepare(identity, imageRequest)).resolves.toMatchObject({ request: imageRequest });
   });
@@ -371,11 +371,11 @@ describe('GatewayModelPolicyService', () => {
     await expect(service.prepare(identity, dto)).rejects.toBe(failure);
   });
 
-  it.each(['member', 'policy', 'metadata'])('propagates unknown %s errors unchanged', async (step) => {
+  it.each(['member', 'policy', 'catalog'])('propagates unknown %s errors unchanged', async (step) => {
     const failure = new Error('unexpected policy failure');
     if (step === 'member') prisma.enterpriseMember.findFirst.mockRejectedValue(failure);
     else if (step === 'policy') jest.spyOn(modelConfig, 'resolveEffectiveModel').mockRejectedValue(failure);
-    else prisma.platformModel.findFirst.mockRejectedValue(failure);
+    else catalog.chatModels.mockRejectedValue(failure);
     await expect(service.prepare(identity, request())).rejects.toBe(failure);
   });
 
@@ -467,21 +467,24 @@ describe('GatewayModelPolicyService', () => {
     expect(prisma.platformModel.findFirst).not.toHaveBeenCalled();
   });
 
-  it('retains availability, feature support, model caps and serialized size checks with a snapshot', async () => {
+  it('retains enterprise availability, platform output and size checks with a snapshot', async () => {
     const snapshot = policySnapshot();
     prisma.platformModel.findFirst.mockResolvedValueOnce(null);
-    await expect(service.prepare(identity, request(), snapshot)).rejects.toThrow(BadRequestException);
+    await expect(service.prepare(identity, request(), snapshot)).resolves.toBeDefined();
     prisma.platformModel.findFirst.mockResolvedValue({ maxOutputTokens: 100, supportedFeatures: { streaming: false, functionCalling: false } });
-    await expect(service.prepare(identity, request({ stream: true }), snapshot)).rejects.toThrow('streaming');
-    await expect(service.prepare(identity, request({ tool_choice: 'required' }), snapshot)).rejects.toThrow('functionCalling');
+    await expect(service.prepare(identity, request({ stream: true }), snapshot)).resolves.toBeDefined();
+    await expect(service.prepare(identity, request({ tool_choice: 'required' }), snapshot)).resolves.toBeDefined();
     await expect(service.prepare(identity, request({ messages: [
       { role: 'assistant', content: null, tool_calls: [{ id: 'call-1', type: 'function', function: { name: 'tool', arguments: '{}' } }] },
       { role: 'tool', content: 'done', tool_call_id: 'call-1' },
     ] }), snapshot))
-      .rejects.toThrow('functionCalling');
-    await expect(service.prepare(identity, request({ max_tokens: 101 }), snapshot))
-      .rejects.toMatchObject({ response: { error: { code: 'MODEL_OUTPUT_LIMIT_EXCEEDED', limit: 100 } } });
-    expect((await service.prepare(identity, request(), snapshot)).request.max_tokens).toBe(100);
+      .resolves.toBeDefined();
+    await expect(service.prepare(identity, request({ max_tokens: 32769 }), snapshot))
+      .rejects.toMatchObject({ response: { error: { code: 'MODEL_OUTPUT_LIMIT_EXCEEDED', limit: 32768 } } });
+    expect((await service.prepare(identity, request(), snapshot)).request.max_tokens).toBe(4096);
+    catalog.chatModels.mockResolvedValueOnce([]);
+    await expect(service.prepare(identity, request(), snapshot)).rejects.toThrow(ForbiddenException);
+    expect(prisma.platformModel.findFirst).not.toHaveBeenCalled();
     jest.spyOn(config, 'get').mockImplementation((key: string) => (key === 'GATEWAY_MAX_REQUEST_BYTES' ? 10 : undefined) as never);
     await expect(service.prepare(identity, request(), snapshot)).rejects.toThrow(PayloadTooLargeException);
   });

@@ -22,11 +22,13 @@ import { RegistrationEmailCodeService } from './registration-email-code.service'
 import { SettingModule } from '../setting/setting.module';
 import { AccountClosureController } from './account-closure.controller';
 import { AccountClosureService } from './account-closure.service';
+import { ComputeIntegrationModule } from '../compute-integration/compute-integration.module';
 
 @Module({
   imports: [
     PrismaModule,
     SettingModule,
+    ComputeIntegrationModule,
     MailModule,
     PassportModule,
     JwtModule.registerAsync({

@@ -28,7 +28,7 @@ export function SessionList({
   onDelete,
 }: SessionListProps) {
   return (
-    <div className="flex h-full w-72 shrink-0 flex-col border-r border-border bg-sidebar">
+    <div className="flex h-full w-full shrink-0 flex-col border-r border-border bg-sidebar md:w-72">
       <div className="p-3">
         <button
           type="button"

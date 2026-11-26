@@ -52,6 +52,7 @@ import { MediaGatewayModule } from './modules/media-gateway/media-gateway.module
 import { SkillImportModule } from './modules/skill-import/skill-import.module';
 import { EmployeeBundleModule } from './modules/employee-bundle/employee-bundle.module';
 import { validateSkillImportEnvironment } from './skill-import-environment';
+import { ComputeIntegrationModule } from './modules/compute-integration/compute-integration.module';
 
 @Module({
   imports: [
@@ -77,6 +78,7 @@ import { validateSkillImportEnvironment } from './skill-import-environment';
     SubscriptionModule,
     ConversationModule,
     SettingModule,
+    ComputeIntegrationModule,
     ModelModule,
     EnterpriseModule,
     ClientModule,

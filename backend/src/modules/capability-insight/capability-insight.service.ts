@@ -5,11 +5,15 @@ import {
   ForbiddenException,
   HttpException,
   Injectable,
+  Optional,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ComputeConnectionService } from '../compute-integration/compute-connection.service';
+import { ComputeCreditService } from '../compute-credit/compute-credit.service';
 import { randomUUID } from 'node:crypto';
+import { DEFAULT_MODEL_ID, SETTING_KEYS } from 'shared';
 import { localError } from '../../common/errors/error-diagnostics';
 import { fetchUpstream, readUpstreamJson } from '../../common/errors/upstream-http.exception';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -51,6 +55,8 @@ export class CapabilityInsightService {
     private readonly runtimePolicy: ModelRuntimePolicyService,
     private readonly admission: GatewayAdmissionService,
     private readonly modelPolicy: GatewayModelPolicyService,
+    @Optional() private readonly connections?: ComputeConnectionService,
+    @Optional() private readonly computeCredit?: ComputeCreditService,
   ) {}
 
   /**
@@ -158,6 +164,7 @@ export class CapabilityInsightService {
         content: version.content.slice(0, 4000),
       })),
       modelId,
+      userId,
       identity: { enterpriseId: ctx.enterpriseId, memberId: ctx.memberId },
     });
 
@@ -238,8 +245,7 @@ export class CapabilityInsightService {
     const enterpriseChoice =
       await this.modelConfig.getPlannerModel(enterpriseId);
     if (enterpriseChoice) return enterpriseChoice;
-    const { defaultModel } = await resolveSub2ApiProviderConfig(this.settings);
-    return defaultModel;
+    return (await this.settings.getEffectiveValue(SETTING_KEYS.SUB2API_DEFAULT_MODEL)) || DEFAULT_MODEL_ID;
   }
 
   private truncate(value: unknown) {
@@ -265,13 +271,19 @@ export class CapabilityInsightService {
       content: string;
     }>;
     modelId: string;
+    userId: string;
     identity: GatewayAdmissionIdentity;
   }): Promise<InsightOutput> {
     // 中转参数统一从系统设置取，不读 env（见 resolveSub2ApiProviderConfig）
-    const { baseURL, apiKey } = await resolveSub2ApiProviderConfig(
+    const { baseURL, apiKey, fetch: modelFetch, enterpriseBilling } = await resolveSub2ApiProviderConfig(
       this.settings,
+      this.connections ? { enterpriseId: params.identity.enterpriseId, connections: this.connections, funding: { memberId: params.identity.memberId } } : undefined,
     );
     if (!apiKey) throw new BadGatewayException('分析模型未配置，请联系管理员');
+    if (enterpriseBilling) {
+      const balance = await this.computeCredit.checkBalanceBeforeConversation(params.identity.enterpriseId, undefined, params.userId);
+      if (!balance.allowed) throw new ForbiddenException({ code: 'INSUFFICIENT_BALANCE', message: balance.reason });
+    }
 
     const material = [
       `## 技能当前生效正文\n${params.baselineContent.slice(0, 8000)}`,
@@ -298,12 +310,8 @@ export class CapabilityInsightService {
     this.logger.log(
       `[ModelPolicy] requestId=${requestId} chain=capability-insight policyVersion=${snapshot.version}`,
     );
-    const model = await this.prisma.platformModel.findUnique({
-      where: { modelId: params.modelId },
-      select: { maxOutputTokens: true },
-    });
     const maxOutputTokens = this.modelPolicy.internalOutputTokens(
-      model,
+      null,
       snapshot,
       snapshot.values.PLANNER_MAX_OUTPUT_TOKENS,
     );
@@ -354,7 +362,7 @@ export class CapabilityInsightService {
       );
       lifecycle.assertActive();
       response = await lifecycle.wait(
-        fetchUpstream(`${baseURL.replace(/\/$/, '')}/chat/completions`, {
+        (modelFetch ?? fetchUpstream)(`${baseURL.replace(/\/$/, '')}/chat/completions`, {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${apiKey}`,

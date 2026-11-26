@@ -112,7 +112,7 @@ describe('enterprise media configuration page', () => {
     vi.mocked(api.get).mockImplementation(async (path) => path === '/enterprise/media-config'
       ? { policy: { ...policy, enabledProfileIds: [], defaultProfileId: null }, configured: false, canEdit: true } : []);
     renderPage();
-    await screen.findByText('平台图片连接尚未配置，暂时没有可用的图片 Profile。');
+    await screen.findByText('本企业图片 Key 尚未就绪。');
     expect(screen.getByText('暂无已验证且可用的图片 Profile')).toBeInTheDocument();
   });
 

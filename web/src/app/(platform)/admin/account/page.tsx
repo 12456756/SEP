@@ -167,7 +167,7 @@ export default function AdminAccountSettingsPage() {
               </div>
             ))}
             {passwordError && <p role="alert" className="text-sm text-danger">{passwordError}</p>}
-            {passwordSaved && <p role="status" className="flex items-center gap-1 text-sm text-success"><Check className="h-4 w-4" />密码已修改，其他设备已退出。</p>}
+            {passwordSaved && <p role="status" className={`flex items-center gap-1 text-sm ${changePassword.data?.computePasswordSync === 'PENDING' ? 'text-amber-700 dark:text-amber-400' : 'text-success'}`}><Check className="h-4 w-4 shrink-0" />{changePassword.data?.message ?? '密码已修改，其他设备已退出。'}</p>}
             <div className="flex flex-wrap items-center gap-4">
               <Button type="submit" disabled={changePassword.isPending}>
                 {changePassword.isPending && <Loader2 className="h-4 w-4 animate-spin" />}

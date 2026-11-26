@@ -1,4 +1,5 @@
 import { ExecutionContext, HttpException, INestApplication, UnauthorizedException } from '@nestjs/common';
+import { enterpriseMediaStub } from '../../../test/stubs/enterprise-media.stub';
 import { Test } from '@nestjs/testing';
 import { Decimal } from '@prisma/client/runtime/library';
 import request from 'supertest';
@@ -114,6 +115,7 @@ describe('real video controller and guard HTTP', () => {
         reservedCny: { equals: () => true }, usdToCnyRate: { equals: () => true }, status: 'RELEASED' }
       : null;
     const tx = {
+      enterpriseMember: { findUnique: jest.fn(async () => ({ paymentMode: 'AUTO' })) },
       $queryRaw: jest.fn(async () => [{ id: videoClaims.sub, status: 'ACTIVE' }]),
       mediaRealBillingReservation: { findUnique: jest.fn(async () => prior), create: jest.fn() },
       subscriptionCredit: { findUnique: jest.fn(async () => null) },
@@ -157,6 +159,7 @@ describe('real video controller and guard HTTP', () => {
     const db = videoRealPrisma();
     const store = new MediaVideoRealStore(db as never);
     const tx = {
+      enterpriseMember: { findUnique: jest.fn(async () => ({ paymentMode: 'AUTO' })) },
       $queryRaw: jest.fn(async () => [{ id: videoClaims.sub, status: 'ACTIVE' }]),
       mediaRealBillingReservation: { findUnique: jest.fn(async () => null), create: jest.fn() },
       subscriptionCredit: { findUnique: jest.fn(async () => null) },
@@ -164,19 +167,22 @@ describe('real video controller and guard HTTP', () => {
       memberAllowanceTopUp: { findMany: jest.fn(async () => []) },
       personalWallet: { findUnique: jest.fn().mockResolvedValue({ id: 'test-wallet', balance: new Decimal(10) }), updateMany: jest.fn() },
     };
-    const billing = new MediaRealBillingService({ $transaction: async work => work(tx) } as never);
+    const billing = new MediaRealBillingService({ $transaction: async work => work(tx) } as never,
+      { isEnterpriseMode: async () => true } as never);
     const reserve = jest.spyOn(billing, 'reserve');
     const adapter = {
       connection: jest.fn(async () => ({ fingerprint })),
       pricing: jest.fn(async () => ({ model: 'minimax-h3', operation: input.operation, resolution: '720p',
-        duration_seconds: 4, pricing_status: 'quoted', amount_usd: '0.2', pricing_version: 'pricing-1',
+        duration_seconds: 4, pricing_status: 'quoted', amount_usd: null, amount_cny: '1.400000', quote_id: 'pricing-1', pricing_version: 'pricing-1',
         expires_at: new Date(Date.now() + 60_000).toISOString() })),
       submit: jest.fn(), query: jest.fn(), usage: jest.fn(),
     };
     const runtime = { getRuntimeVideo: async () => ({ executionAvailable: true, executionMode: 'real',
       profiles: [{ ...input, operations: ['text-to-video', 'image-to-video'] }] }) };
+    const enterprise = enterpriseMediaStub('https://video.invalid/v1', 'enterprise-video-key', fingerprint, '0.700000');
     const service = new MediaVideoRealService({ get: () => 'true' } as never, db as never,
-      { getEffectiveValue: async () => '7' } as never, runtime as never, adapter as never, {} as never, billing, store);
+      { getEffectiveValue: async () => '7' } as never, runtime as never, adapter as never, {} as never, billing, store,
+      enterprise.connections as never, enterprise.media as never);
     media.quote.mockImplementation(service.quote.bind(service));
     media.submit.mockImplementation(service.submit.bind(service));
     media.findByClientId.mockImplementation(service.findByClientId.bind(service));

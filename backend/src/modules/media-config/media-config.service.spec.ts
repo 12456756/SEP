@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, NotFoundExc
 import { MediaConfigService } from './media-config.service';
 import { Prisma } from '@prisma/client';
 import { CreateMediaProfileDtoSchema, MediaRuntimeSchema, SETTING_KEYS } from 'shared';
+import { mediaCatalogStub } from '../../../test/stubs/compute-catalog.stub';
 
 function fixture(config?: any) {
   const row = {
@@ -44,10 +45,41 @@ function fixture(config?: any) {
     pricing: jest.fn().mockResolvedValue({ amount_usd: '0.04' }),
   };
   const sync: any = { sync: jest.fn() };
-  return { service: new MediaConfigService(prisma, settings, context, config, imageAdapter, sync), prisma, settings, context, row, imageAdapter, sync };
+  const catalog = mediaCatalogStub();
+  return { service: new MediaConfigService(prisma, settings, context, catalog as any, config, imageAdapter, sync), prisma, settings, context, row, imageAdapter, sync, catalog };
 }
 
 describe('MediaConfigService', () => {
+  it('filters enterprise image profiles using its image key while keeping platform definitions unchanged', async () => {
+    const { service, catalog, prisma } = fixture();
+    catalog.filterProfiles.mockResolvedValue([]);
+    expect(await service.getAvailableProfiles('user')).toEqual([]);
+    expect(catalog.filterProfiles).toHaveBeenCalledWith('ent-1', 'image', expect.any(Array));
+    expect(prisma.mediaModelProfile.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('reports revoked enterprise permission separately from unsettled accounting', async () => {
+    const { service, catalog, row } = fixture({ get: () => 'true' });
+    catalog.filterProfiles.mockResolvedValue([]);
+    expect(await service.getRuntimeMediaV3('ent-1')).toMatchObject({ executionAvailable: false, profiles: [{ unavailableReason: 'ENTERPRISE_MODEL_UNAVAILABLE' }] });
+    catalog.filterProfiles.mockResolvedValue([row]); catalog.executionReady.mockReturnValue(false);
+    expect(await service.getRuntimeMediaV3('ent-1')).toMatchObject({ executionAvailable: false, tools: [], profiles: [{ unavailableReason: 'SETTLEMENT_NOT_CONNECTED' }] });
+  });
+
+  it('rejects adding a profile outside the enterprise key permissions before saving authorization', async () => {
+    const { service, catalog, prisma } = fixture(); catalog.assertProfiles.mockRejectedValue(new BadRequestException('企业图片 Key 无权限'));
+    await expect(service.updateEnterpriseConfig('user', { enabledProfileIds: ['foreign'] })).rejects.toThrow('无权限');
+    expect(prisma.enterpriseModelConfig.upsert).not.toHaveBeenCalled();
+  });
+
+  it('calibrates images with the saved administrator key and never consults enterprise credentials', async () => {
+    const { service, row, catalog, imageAdapter } = fixture(); row.modelId = 'gpt-image-2';
+    await service.verifyProfile(row.profileId, { expectedConfigVersion: row.configVersion });
+    expect(imageAdapter.discoverModels).toHaveBeenCalledWith({ base: 'https://relay.example/v1', key: 'test-secret' });
+    expect(imageAdapter.pricing.mock.calls.every(call => call[2].key === 'test-secret')).toBe(true);
+    expect(catalog.filterProfiles).not.toHaveBeenCalled(); expect(catalog.configured).not.toHaveBeenCalled();
+  });
+
   it('publishes the configured reference maximum and lets administrators edit auto profiles', async () => {
     const { service, row, prisma } = fixture({ get: () => 'true' });
     row.profileId = 'auto-image-reference';
@@ -72,7 +104,7 @@ describe('MediaConfigService', () => {
       verificationSpec: { size: '2048x2048', count: 1, quality: 'ultra' } }))
       .toMatchObject({ profile: { verified: true }, executionTested: false });
     expect(imageAdapter.pricing).toHaveBeenCalledWith(expect.objectContaining({ protocolVersion: 3,
-      requestedSpec: expect.objectContaining({ size: '2048x2048', count: 1, quality: 'ultra' }) }), row.modelId);
+      requestedSpec: expect.objectContaining({ size: '2048x2048', count: 1, quality: 'ultra' }) }), row.modelId, { base: 'https://relay.example/v1', key: 'test-secret' });
   });
 
   it('uses equivalent pixel dimensions for explicit verification and rejects an unexpressible combination', async () => {
@@ -83,7 +115,7 @@ describe('MediaConfigService', () => {
       verificationSpec: { width: 2048, height: 1024, count: 1, quality: 'ultra' } });
     expect(imageAdapter.pricing).toHaveBeenCalledWith(expect.objectContaining({ requestedSpec: {
       size: '2048x1024', width: 2048, height: 1024, count: 1, quality: 'ultra',
-    } }), row.modelId);
+    } }), row.modelId, { base: 'https://relay.example/v1', key: 'test-secret' });
     imageAdapter.pricing.mockClear();
     await expect(service.verifyProfile(row.profileId, { expectedConfigVersion: row.configVersion,
       verificationSpec: { size: 'auto', width: 2048, height: 1024, count: 1, quality: 'ultra' } }))
@@ -153,11 +185,11 @@ describe('MediaConfigService', () => {
   });
 
   it('distinguishes empty grants and connection read failures without contacting the model', async () => {
-    const { service, prisma, settings, imageAdapter } = fixture({ get: jest.fn(() => 'true') });
+    const { service, prisma, catalog, imageAdapter } = fixture({ get: jest.fn(() => 'true') });
     prisma.enterpriseModelConfig.findUnique.mockResolvedValue({ mediaPolicy: { enabledProfileIds: [] } });
     expect(await service.getRuntimeMediaV3('ent-1')).toMatchObject({ status: 'empty', profiles: [], executionAvailable: false });
     const failure = new ServiceUnavailableException({ message: '读取连接失败', errors: [{ field: 'connection', message: 'storage unavailable' }] });
-    settings.getMediaConnection.mockRejectedValue(failure);
+    catalog.configured.mockRejectedValue(failure);
     await expect(service.getRuntimeMediaV3('ent-1')).rejects.toBe(failure);
     expect(imageAdapter.pricing).not.toHaveBeenCalled();
     expect(imageAdapter.discoverModels).not.toHaveBeenCalled();
@@ -257,8 +289,8 @@ describe('MediaConfigService', () => {
       .resolves.toMatchObject({ executionTested: false, profile: { verified: true } });
     expect(imageAdapter.discoverModels).toHaveBeenCalledTimes(1);
     expect(imageAdapter.pricing).toHaveBeenCalledTimes(12);
-    expect(imageAdapter.pricing).toHaveBeenCalledWith(expect.objectContaining({ parameters: expect.objectContaining({ count: 1 }) }), 'gpt-image-2');
-    expect(imageAdapter.pricing).toHaveBeenCalledWith(expect.objectContaining({ operation: 'edit' }), 'gpt-image-2');
+    expect(imageAdapter.pricing).toHaveBeenCalledWith(expect.objectContaining({ parameters: expect.objectContaining({ count: 1 }) }), 'gpt-image-2', { base: 'https://relay.example/v1', key: 'test-secret' });
+    expect(imageAdapter.pricing).toHaveBeenCalledWith(expect.objectContaining({ operation: 'edit' }), 'gpt-image-2', { base: 'https://relay.example/v1', key: 'test-secret' });
     expect(prisma.mediaModelProfile.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       where: { profileId: 'product-image', configVersion: 'cfg_1' }, data: { verified: true, configVersion: expect.stringMatching(/^cfg_/) },
     }));
@@ -457,12 +489,12 @@ describe('MediaConfigService', () => {
   });
 
   it('fails closed on missing grants or connection while ignoring obsolete size limits', async () => {
-    const { service, prisma, settings } = fixture();
+    const { service, prisma, catalog } = fixture();
     prisma.enterpriseModelConfig.findUnique.mockResolvedValue({ mediaPolicy: { maxOutputs: -1 } });
     expect((await service.getRuntimeMedia('ent-1')).profiles).toEqual([]);
     prisma.enterpriseModelConfig.findUnique.mockResolvedValue({ mediaPolicy: { enabledProfileIds: ['product-image'], defaultProfileId: 'product-image', maxWidth: 1 } });
     expect(await service.getRuntimeMedia('ent-1')).toMatchObject({ defaultProfileId: 'product-image', profiles: [{ profileId: 'product-image' }] });
-    settings.getEffectiveValue.mockResolvedValue(undefined);
+    catalog.configured.mockResolvedValue(false);
     expect((await service.getRuntimeMedia('ent-1')).profiles).toEqual([]);
   });
 
@@ -501,14 +533,12 @@ describe('MediaConfigService', () => {
 
   it('fails closed for unusable real connection or profiles outside the real execution contract', async () => {
     const config = { get: jest.fn(() => 'true') };
-    const { service, settings, prisma, row } = fixture(config);
+    const { service, catalog, prisma, row } = fixture(config);
     row.modelId = 'gpt-image-2';
-    settings.getEffectiveValue.mockImplementation(async (key: string) =>
-      key === SETTING_KEYS.MEDIA_BASE_URL ? 'http://relay.example/v1' : 'test-secret');
+    catalog.configured.mockResolvedValue(false);
     expect(await service.getRuntimeMedia('ent-1')).toMatchObject({ executionAvailable: false, tools: [] });
 
-    settings.getEffectiveValue.mockImplementation(async (key: string) =>
-      key === SETTING_KEYS.MEDIA_BASE_URL ? 'https://relay.example/v1' : 'test-secret');
+    catalog.configured.mockResolvedValue(true);
     row.modelId = 'private-model-id';
     expect(await service.getRuntimeMedia('ent-1')).toMatchObject({ executionAvailable: false, tools: [], profiles: [] });
     row.modelId = 'gpt-image-2';

@@ -1,5 +1,7 @@
 import { ExecutionContext, HttpException, INestApplication, UnauthorizedException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { mediaCatalogStub } from '../../../test/stubs/compute-catalog.stub';
+import { enterpriseMediaStub, signedMediaProtocolStub } from '../../../test/stubs/enterprise-media.stub';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
@@ -61,9 +63,12 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
     reserve: jest.fn(async (_claims, id) => { db.state.reservations.set(id, { receiptId: id, status: 'RESERVED' }); }),
     status: jest.fn(async id => db.state.reservations.get(id)?.status ?? 'RESERVED'),
     release: jest.fn(async id => { db.state.reservations.get(id).status = 'RELEASED'; }),
-    settleNegotiated: jest.fn(async id => { db.state.reservations.get(id).status = 'SETTLED'; return 'SETTLED'; }) };
-  const json = (body: unknown, status = 200, headers = {}) => new Response(JSON.stringify(body), { status,
-    headers: { 'content-type': 'application/json', ...headers } });
+    settleCompute: jest.fn(async id => { db.state.reservations.get(id).status = 'SETTLED'; return 'SETTLED'; }) };
+  let enterprise: ReturnType<typeof enterpriseMediaStub>;
+  const json = (body: unknown, status = 200, headers = {}) => {
+    if (body && typeof body === 'object' && 'billing' in body) enterprise?.observe(body as never);
+    return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });
+  };
   const get = (path: string) => request(app.getHttpServer()).get(prefix + path).set('x-test-auth', 'yes');
   const post = (path: string) => request(app.getHttpServer()).post(prefix + path).set('x-test-auth', 'yes');
   const upload = (bytes: Buffer = mp4, mimeType = 'video/mp4') => post('/video-references?profileId=real-h3&configVersion=cfg-real-h3')
@@ -117,7 +122,7 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
     const config = { get: (name: string) => name === 'MEDIA_VIDEO_REAL_ENABLED' ? 'true' : 'test' };
     const settings = { getMediaConnection: async () => ({ baseUrl: 'https://fake.invalid/v1', apiKey: key, source: 'database' }),
       getEffectiveValue: async () => '7' };
-    adapter = new Sub2apiVideoAdapter(settings as never);
+    adapter = new Sub2apiVideoAdapter(settings as never, signedMediaProtocolStub as never);
     upstream = jest.spyOn(global, 'fetch').mockImplementation(async (_url, init) => {
       const url = String(_url); const headers = new Headers(init?.headers);
       expect(headers.get('authorization')).toBe(`Bearer ${key}`);
@@ -131,7 +136,8 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
       }
       if (url.endsWith('/sub2api/videos/pricing')) {
         const dimensions = JSON.parse(init.body as string);
-        return json({ object: 'sub2api.video_pricing', schema_version: 1, currency: 'USD', ...dimensions,
+        return json({ object: 'sub2api.video_pricing', schema_version: 1, currency: 'CNY', contract_version: 1,
+          enterprise_id: videoClaims.enterpriseId, amount_cny: '1.400000', quote_id: 'price-video', ...dimensions,
           billing_mode: 'video', pricing_status: 'quoted', pricing_source: 'customer_video_contract', pricing_authority: 'sub2api_customer_billing',
           amount_usd: '0.2', pricing_version: 'price-video', effective_rate_multiplier: 1, observed_at: new Date().toISOString(),
           expires_at: new Date(Date.now() + 60_000).toISOString() });
@@ -179,10 +185,21 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
       throw new Error(`Unexpected synthetic compute request: ${new URL(url).pathname}`);
     });
     files = new VideoFileCacheService(); await files.assertAvailable();
-    const runtime = new MediaVideoConfigService(db as never, {} as never, config as never, adapter, files, undefined, settings as never);
+    const runtime = new MediaVideoConfigService(db as never, {} as never, config as never, mediaCatalogStub() as never, adapter, files, undefined, settings as never);
     store = new MediaVideoRealStore(db as never);
+    const connection = await adapter.connection();
+    enterprise = enterpriseMediaStub(connection.base, connection.key, connection.fingerprint, '1.400000');
+    enterprise.media.connection.mockImplementation(async (enterpriseId, _kind, _pinned, sourceRef) => ({
+      base: connection.base, key, fingerprint: createHash('sha256').update(`${connection.base}\0${key}`).digest('hex'),
+      compute: { enterpriseId, ...(sourceRef ? { executionId: `execution_${sourceRef}` } : {}) },
+      snapshot: { enterpriseId, credentialId: 'enterprise-key', baseUrl: connection.base },
+    }));
+    Object.assign(billing, { settleCompute: jest.fn(async id => {
+      const status = enterprise.feeStatus() === 'not_charged' ? 'RELEASED' : 'SETTLED';
+      db.state.reservations.get(id).status = status; return status;
+    }) });
     createService = () => new MediaVideoRealService(config as never, db as never, settings as never, runtime, adapter,
-      new VideoFileCacheService(), billing as never, new MediaVideoRealStore(db as never));
+      new VideoFileCacheService(), billing as never, new MediaVideoRealStore(db as never), enterprise.connections as never, enterprise.media as never);
     service = createService();
     uploads = new VideoReferenceUploadService({ redis: { eval: async () => 1, zrem: jest.fn(async () => 1) } } as never);
     app = await boot();
@@ -338,7 +355,7 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
       expect((await post('/requests').send(body).expect(200)).body.receiptId).toBe(receipt.receiptId);
       expect((await get(`/requests/by-client-id/${body.clientRequestId}`).expect(200)).body.execution.submissionError).toEqual(reason);
       expect(submissions).toHaveLength(1); expect(taskQueries()).toHaveLength(0); expect(contentAttempts).toBe(0);
-      expect(billing.release).toHaveBeenCalledTimes(1); expect(billing.settleNegotiated).not.toHaveBeenCalled();
+      expect(billing.release).not.toHaveBeenCalled(); expect(billing.settleCompute).toHaveBeenCalledTimes(1);
     });
 
   it('closes a protocol error with a diagnostic task ID and preserves all submission diagnostics', async () => {
@@ -364,7 +381,7 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
     expect(receipt).toMatchObject({ status: 'SUBMISSION_UNKNOWN', billingStatus: 'RECONCILING', execution: {
       submissionStatus: 'unknown', operationError: { status, body: rawCreateFailure.body },
     }, clientActions: { canStartNewRequest: false, pollPurpose: 'submission' } });
-    expect(billing.release).not.toHaveBeenCalled(); expect(billing.settleNegotiated).not.toHaveBeenCalled();
+    expect(billing.release).not.toHaveBeenCalled(); expect(billing.settleCompute).not.toHaveBeenCalled();
     restoreLostSubmission = true; await background(); completeTasks = true; await background();
     expect((await get(`/requests/${receipt.receiptId}`).expect(200)).body).toMatchObject({ status: 'SUCCEEDED', billingStatus: 'SETTLED' });
     expect(submissions).toHaveLength(1);
@@ -374,7 +391,7 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
     createFailure = { status: 403, patch: { task_id: null, id: null, submission_status: 'rejected', status: null,
       submission_error: { code: 'model_forbidden', message: 'Synthetic reference video access denied' },
       billing: { status: 'not_charged', actual_cost_usd: '0' } } };
-    billing.release.mockRejectedValueOnce(new HttpException({ error: { code: 'wallet_unavailable',
+    billing.settleCompute.mockRejectedValueOnce(new HttpException({ error: { code: 'wallet_unavailable',
       message: 'Synthetic reservation release unavailable' } }, 503));
     const body = await prepare('release-recovery');
     const receipt = (await post('/requests').send(body).expect(200)).body;
@@ -388,7 +405,7 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
       submissionError: { code: 'model_forbidden', message: 'Synthetic reference video access denied' },
     }, clientActions: { shouldPoll: false } });
     expect(recovered).not.toHaveProperty('billingError'); expect(submissions).toHaveLength(1);
-    expect(taskQueries()).toHaveLength(0); expect(billing.release).toHaveBeenCalledTimes(2);
+    expect(taskQueries()).toHaveLength(0); expect(billing.settleCompute).toHaveBeenCalledTimes(2);
   });
 
   it('returns a final generation failure without confusing it with a rejected submission', async () => {
@@ -404,7 +421,7 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
         taskError: { code: 'reference_content_rejected', message: 'Synthetic reference content rejected by provider' } },
       clientActions: { generationFinished: true, shouldPoll: false, canStartNewRequest: true } });
     expect(failed.execution).not.toHaveProperty('submissionError'); expect(contentAttempts).toBe(0);
-    expect(submissions).toHaveLength(1); expect(billing.release).toHaveBeenCalledTimes(1);
+    expect(submissions).toHaveLength(1); expect(billing.settleCompute).toHaveBeenCalledTimes(1);
   });
 
   it('finishes failed generation while billing is unknown and later releases confirmed uncharged funds', async () => {
@@ -418,7 +435,7 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
       generationStatus: 'failed', billing: { status: 'unknown', actualCostUsd: null,
         error: { message: 'Synthetic compute settlement unavailable' } },
     }, clientActions: { generationFinished: true, canStartNewRequest: true, pollPurpose: 'billing' } });
-    expect(billing.release).not.toHaveBeenCalled(); expect(billing.settleNegotiated).not.toHaveBeenCalled();
+    expect(billing.release).not.toHaveBeenCalled(); expect(billing.settleCompute).not.toHaveBeenCalled();
     queryPatch.billing = { status: 'not_charged', actual_cost_usd: '0' };
     await background();
     expect((await get(`/requests/${receipt.receiptId}`).expect(200)).body).toMatchObject({
@@ -447,25 +464,28 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
     expect(output.sha256).toBe(createHash('sha256').update(mp4).digest('hex'));
     expect((await get(`/requests/${receipt.receiptId}/outputs/${output.outputId}/content`).expect(200)).body).toEqual(mp4);
     expect(taskQueries()).toHaveLength(queried); expect(contentAttempts).toBe(2);
-    expect(submissions).toHaveLength(1); expect(billing.settleNegotiated).toHaveBeenCalledTimes(1);
+    expect(submissions).toHaveLength(1); expect(billing.settleCompute).toHaveBeenCalledTimes(1);
   });
 
   it('delivers valid video while billing evidence disagrees and settles once after correction', async () => {
     const body = await prepare('billing-mismatch');
     const receipt = (await post('/requests').send(body).expect(202)).body;
-    completeTasks = true; usagePatch = { actual_cost_usd: '0.3' };
+    completeTasks = true;
+    enterprise.media.fee.mockRejectedValueOnce(new HttpException({ error: {
+      code: 'BILLING_PENDING', message: 'Final CNY bill differs from the original execution',
+    } }, 409));
     const pending = (await get(`/requests/${receipt.receiptId}`).expect(200)).body;
     expect(pending).toMatchObject({ status: 'SUCCEEDED', fileStatus: 'available', billingStatus: 'RECONCILING',
       billingError: { status: 409, body: { error: { code: 'BILLING_PENDING' } } },
       recovery: { canDownload: true }, clientActions: { generationFinished: true, canStartNewRequest: true, pollPurpose: 'billing' } });
-    expect(billing.settleNegotiated).not.toHaveBeenCalled(); expect(billing.release).not.toHaveBeenCalled();
+    expect(billing.settleCompute).not.toHaveBeenCalled(); expect(billing.release).not.toHaveBeenCalled();
     usagePatch = {};
     await background();
     const settled = (await get(`/requests/${receipt.receiptId}`).expect(200)).body;
     expect(settled).toMatchObject({ status: 'SUCCEEDED', billingStatus: 'SETTLED', actualCostCny: '1.400000',
       clientActions: { shouldPoll: false } });
     expect(settled).not.toHaveProperty('billingError'); expect(contentAttempts).toBe(1);
-    expect(submissions).toHaveLength(1); expect(billing.settleNegotiated).toHaveBeenCalledTimes(1);
+    expect(submissions).toHaveLength(1); expect(billing.settleCompute).toHaveBeenCalledTimes(1);
   });
 
   it.each(['unobserved', 'malformed'])('preserves known task state and money on a %s query failure', async mode => {
@@ -481,7 +501,7 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
       requestId: receipt.execution.requestId, taskId: 'original-task', submissionStatus: 'accepted', generationStatus: 'queued',
       operationError: { status: queryFailure.status },
     }, clientActions: { shouldPoll: true, canStartNewRequest: false } });
-    expect(billing.release).not.toHaveBeenCalled(); expect(billing.settleNegotiated).not.toHaveBeenCalled();
+    expect(billing.release).not.toHaveBeenCalled(); expect(billing.settleCompute).not.toHaveBeenCalled();
     queryFailure = undefined; completeTasks = true;
     await background();
     expect((await get(`/requests/${receipt.receiptId}`).expect(200)).body).toMatchObject({ status: 'SUCCEEDED', billingStatus: 'SETTLED' });
@@ -510,7 +530,7 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
     const output = completed.outputs[0];
     expect((await get(`/requests/${receipt.receiptId}/outputs/${output.outputId}/content`).expect(200)).body).toEqual(mp4);
     await post('/requests').send(body).expect(200);
-    expect(submissions).toHaveLength(1); expect(billing.settleNegotiated).toHaveBeenCalledTimes(1);
+    expect(submissions).toHaveLength(1); expect(billing.settleCompute).toHaveBeenCalledTimes(1);
     expect(upstream.mock.calls.filter(([url]) => String(url).endsWith('/videos/references'))).toHaveLength(1);
   });
 });

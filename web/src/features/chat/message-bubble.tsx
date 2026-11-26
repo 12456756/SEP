@@ -10,7 +10,6 @@ import { zhCN } from 'date-fns/locale';
 import { Markdown } from './markdown';
 import { ToolCallBlock } from './tool-call-block';
 import { AttachmentDisplay } from './attachment-display';
-import { TextGenerateEffect } from '@/components/aceternity/text-generate-effect';
 import type { LiveToolCall } from './use-chat-stream';
 import type {
   Message,
@@ -32,7 +31,6 @@ interface MessageBubbleProps {
   employeeAvatarAsset?: EmployeeAvatarAsset | null;
   streaming?: boolean;
   createdAt?: string;
-  enableTextGenerate?: boolean;
 }
 
 export function MessageBubble({
@@ -47,7 +45,6 @@ export function MessageBubble({
   employeeAvatarAsset,
   streaming,
   createdAt,
-  enableTextGenerate = false,
 }: MessageBubbleProps) {
   const [showTimestamp, setShowTimestamp] = useState(false);
 
@@ -109,16 +106,7 @@ export function MessageBubble({
         ))}
         {content ? (
           <div className="rounded-2xl rounded-tl-sm bg-card px-4 py-3 shadow-sm ring-1 ring-border transition-shadow hover:shadow-md">
-            {enableTextGenerate && !streaming ? (
-              <TextGenerateEffect
-                words={content}
-                className="text-[15px] leading-relaxed"
-                duration={0.3}
-                filter={false}
-              />
-            ) : (
-              <Markdown content={content} />
-            )}
+            <Markdown content={content} />
           </div>
         ) : streaming && !reasoning && !toolCalls?.length ? (
           <TypingDots />

@@ -21,6 +21,7 @@ import { cn } from '@/lib/utils';
 const NAV_ITEMS = [
   { href: '/settings/profile', label: '个人资料', icon: User },
   { href: '/settings/models', label: '模型偏好', icon: Cpu },
+  { href: '/settings/compute-connection', label: '算力连接', icon: Plug },
   { href: '/settings/media', label: '图片配置', icon: Image },
   { href: '/settings/billing', label: '账单与套餐', icon: CreditCard },
   { href: '/settings/organization', label: '企业信息', icon: Building2 },

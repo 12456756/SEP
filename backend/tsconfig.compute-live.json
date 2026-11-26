@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "incremental": false,
+    "declaration": false
+  },
+  "include": ["test/compute-platform.live.ts", "test/compute-business.live.ts"],
+  "exclude": ["node_modules", "dist"]
+}

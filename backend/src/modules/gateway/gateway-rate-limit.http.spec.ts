@@ -160,7 +160,8 @@ describe('Gateway production guard chain over HTTP', () => {
     expect(executions.start).toHaveBeenCalledWith(expect.objectContaining(identity), 'employee-1', body.model, expect.any(String), snapshot, undefined);
     expect(admission.acquire).toHaveBeenCalledWith(expect.objectContaining(identity), snapshot);
     expect(admission.reserve).toHaveBeenCalledTimes(15);
-    expect(forward).toHaveBeenCalledWith(expect.objectContaining({ model: body.model }), snapshot, expect.any(String), expect.any(AbortSignal));
+    expect(forward).toHaveBeenCalledWith(expect.objectContaining({ model: body.model }), snapshot, expect.any(String), expect.any(AbortSignal),
+      expect.objectContaining({ enterpriseId: identity.enterpriseId, memberId: identity.memberId, subscriptionId: identity.subscriptionId, employeeId: 'employee-1' }));
   });
 
   it('reports the dedicated threshold and decreasing wait, without extending reset time', async () => {

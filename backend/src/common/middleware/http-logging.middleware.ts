@@ -20,6 +20,7 @@ function safeText(value: string, limit = 500): string {
     .replace(/\bBearer\s+[^\s"',;]+/gi, 'Bearer [REDACTED]')
     .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, '[REDACTED]')
     .replace(/\bsk-[A-Za-z0-9_-]+/g, '[REDACTED]')
+    .replace(/\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}/g, '[REDACTED]')
     .replace(/(["']?(?:password|pwd|(?:access[_-]?|refresh[_-]?)?token|secret|api[_-]?key|authorization|cookie)["']?\s*[:=]\s*)(?:"[^"\r\n]*(?:"|$)|'[^'\r\n]*(?:'|$)|[^\s,;]+)/gi, '$1[REDACTED]')
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[REDACTED_EMAIL]')
     .replace(/\b1[3-9]\d{9}\b/g, '[REDACTED_PHONE]')

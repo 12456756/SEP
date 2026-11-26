@@ -9,6 +9,7 @@ import {
 import videoFixture from '../../shared/fixtures/media-video-v1.json';
 import { MediaConfigService } from './media-config.service';
 import { MediaVideoConfigService } from './media-video-config.service';
+import { mediaCatalogStub } from '../../../test/stubs/compute-catalog.stub';
 
 function setup(real = false) {
   const row: any = { ...structuredClone(videoFixture.profile), modelId: 'mock-video-v1', configVersion: 'cfg_video', enabled: true, verified: true };
@@ -48,8 +49,9 @@ function setup(real = false) {
     getMediaConnection: jest.fn(async () => ({ baseUrl: 'https://video.example/v1', apiKey: 'video-key', source: 'database' })),
     updateMediaConnection: jest.fn() };
   const sync: any = { sync: jest.fn() };
-  return { service: new MediaVideoConfigService(prisma, context, config, videoAdapter, videoFiles, sync, settings), videoAdapter, videoFiles, sync, settings,
-    imageService: new MediaConfigService(prisma, settings, context),
+  const catalog = mediaCatalogStub();
+  return { service: new MediaVideoConfigService(prisma, context, config, catalog as any, videoAdapter, videoFiles, sync, settings), videoAdapter, videoFiles, sync, settings, catalog,
+    imageService: new MediaConfigService(prisma, settings, context, catalog as any),
     prisma, context, config, row, imagePolicy, videoPolicy,
     getStored: () => stored, setStored: (value: any) => { stored = value; } };
 }
@@ -195,17 +197,24 @@ describe('MediaVideoConfigService real configuration', () => {
     expect(f.prisma.mediaModelProfile.updateMany).not.toHaveBeenCalled();
   });
 
-  it('withholds real video tools for an absent or invalid independent connection', async () => {
+  it('keeps administrator video calibration independent from enterprise keys and gates new accounting', async () => {
     const f = realSetup();
-    for (const connection of [
-      { baseUrl: '', apiKey: '', source: 'unconfigured' },
-      { baseUrl: 'http://video.example', apiKey: 'video-key', source: 'database' },
-      { baseUrl: 'https://video.example', apiKey: 'bad key', source: 'database' },
-    ]) {
-      f.settings.getMediaConnection.mockResolvedValue(connection);
-      expect(await f.service.getAvailableProfiles('user')).toEqual([]);
-    }
-    expect(f.settings.getMediaConnection).toHaveBeenCalledWith('video');
+    await f.service.verifyProfile(f.row.profileId, { expectedConfigVersion: f.row.configVersion });
+    expect(f.videoAdapter.connection).toHaveBeenCalled();
+    expect(f.videoAdapter.pricing.mock.calls.every(call => call[0].fingerprint === 'test')).toBe(true);
+    expect(f.catalog.filterProfiles).not.toHaveBeenCalled();
+    f.catalog.executionReady.mockReturnValue(false);
+    expect(await f.service.getRuntimeVideoV3('ent-1')).toMatchObject({ executionAvailable: false, tools: [], profiles: [{ unavailableReason: 'SETTLEMENT_NOT_CONNECTED' }] });
+    f.catalog.filterProfiles.mockResolvedValue([]);
+    expect(await f.service.getRuntimeVideoV3('ent-1')).toMatchObject({ executionAvailable: false, profiles: [{ unavailableReason: 'ENTERPRISE_MODEL_UNAVAILABLE' }] });
+  });
+
+  it('withholds enterprise video profiles for an absent enterprise credential without borrowing the administrator connection', async () => {
+    const f = realSetup();
+    f.catalog.configured.mockResolvedValue(false);
+    expect(await f.service.getAvailableProfiles('user')).toEqual([]);
+    expect(f.catalog.configured).toHaveBeenCalledWith('ent-1', 'video');
+    expect(f.settings.getMediaConnection).not.toHaveBeenCalled();
     expect(f.prisma.mediaModelProfile.findMany).not.toHaveBeenCalled();
   });
 

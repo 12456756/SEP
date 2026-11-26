@@ -23,7 +23,7 @@ export const EnterpriseModelConfigSchema = z.object({
   employeeModelPolicy: z.enum(['FOLLOW_TEMPLATE', 'FORCE_DEFAULT']),
   employeeDefaultModel: z.string().nullable(),
 
-  /** 编排与分析模型（工作安排 / 迭代建议 / 交付物生成共用）。null = 跟随平台默认 */
+  /** 编排与分析模型。null = 跟随企业默认会话模型 */
   plannerModel: z.string().nullable(),
 
   createdAt: z.string(),
@@ -40,7 +40,7 @@ export const UpdateEnterpriseModelConfigDtoSchema = z.object({
   employeeModelPolicy: z.enum(['FOLLOW_TEMPLATE', 'FORCE_DEFAULT']).optional(),
   employeeDefaultModel: z.string().nullable().optional(),
 
-  /** null / 空串 = 跟随平台默认模型 */
+  /** null / 空串 = 跟随企业默认会话模型 */
   plannerModel: z.string().nullable().optional(),
 });
 

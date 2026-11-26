@@ -1,0 +1,161 @@
+{
+  "contract_version": 1,
+  "status": "review_draft",
+  "currency": "CNY",
+  "note": "Constructed CNY settlement fixtures. Compute converts costs to CNY before returning amounts. SEP performs no FX conversion. Integration behavior is not verified.",
+  "settlement_scope": "media_reserved",
+  "chat_postpaid_settlements": [
+    {
+      "id": "chat_free_covers_actual_fee",
+      "available_free_cny": "7.200000",
+      "available_paid_cny": "0.000000",
+      "gross_cny": "5.760000",
+      "free_cny": "5.760000",
+      "paid_due_cny": "0.000000",
+      "collected_paid_cny": "0.000000",
+      "unpaid_cny": "0.000000",
+      "settlement_ready": true
+    },
+    {
+      "id": "chat_allocate_free_at_settlement",
+      "available_free_cny": "2.880000",
+      "available_paid_cny": "7.200000",
+      "gross_cny": "7.200000",
+      "free_cny": "2.880000",
+      "paid_due_cny": "4.320000",
+      "collected_paid_cny": "4.320000",
+      "unpaid_cny": "0.000000",
+      "settlement_ready": true
+    },
+    {
+      "id": "chat_insufficient_funds_after_execution",
+      "available_free_cny": "1.440000",
+      "available_paid_cny": "2.160000",
+      "gross_cny": "7.200000",
+      "free_cny": "1.440000",
+      "paid_due_cny": "5.760000",
+      "collected_paid_cny": "2.160000",
+      "unpaid_cny": "3.600000",
+      "settlement_ready": false
+    }
+  ],
+  "settlements": [
+    {
+      "id": "fully_free_zero_paid_balance",
+      "initial_free_cny": "14.400000",
+      "initial_paid_cny": "0.000000",
+      "max_gross_cny": "7.200000",
+      "max_free_cny": "7.200000",
+      "max_paid_cny": "0.000000",
+      "gross_cny": "5.760000",
+      "free_cny": "5.760000",
+      "paid_cny": "0.000000",
+      "released_free_cny": "1.440000",
+      "released_paid_cny": "0.000000",
+      "final_free_cny": "8.640000",
+      "final_paid_cny": "0.000000"
+    },
+    {
+      "id": "part_free_part_paid",
+      "initial_free_cny": "2.880000",
+      "initial_paid_cny": "14.400000",
+      "max_gross_cny": "7.200000",
+      "max_free_cny": "2.880000",
+      "max_paid_cny": "4.320000",
+      "gross_cny": "7.200000",
+      "free_cny": "2.880000",
+      "paid_cny": "4.320000",
+      "released_free_cny": "0.000000",
+      "released_paid_cny": "0.000000",
+      "final_free_cny": "0.000000",
+      "final_paid_cny": "10.080000"
+    },
+    {
+      "id": "actual_lower_than_free_hold",
+      "initial_free_cny": "5.760000",
+      "initial_paid_cny": "7.200000",
+      "max_gross_cny": "7.200000",
+      "max_free_cny": "5.760000",
+      "max_paid_cny": "1.440000",
+      "gross_cny": "2.160000",
+      "free_cny": "2.160000",
+      "paid_cny": "0.000000",
+      "released_free_cny": "3.600000",
+      "released_paid_cny": "1.440000",
+      "final_free_cny": "3.600000",
+      "final_paid_cny": "7.200000"
+    },
+    {
+      "id": "fully_paid",
+      "initial_free_cny": "0.000000",
+      "initial_paid_cny": "21.600000",
+      "max_gross_cny": "7.200000",
+      "max_free_cny": "0.000000",
+      "max_paid_cny": "7.200000",
+      "gross_cny": "1.800000",
+      "free_cny": "0.000000",
+      "paid_cny": "1.800000",
+      "released_free_cny": "0.000000",
+      "released_paid_cny": "5.400000",
+      "final_free_cny": "0.000000",
+      "final_paid_cny": "19.800000"
+    },
+    {
+      "id": "confirmed_zero_fee",
+      "initial_free_cny": "2.880000",
+      "initial_paid_cny": "7.200000",
+      "max_gross_cny": "7.200000",
+      "max_free_cny": "2.880000",
+      "max_paid_cny": "4.320000",
+      "gross_cny": "0.000000",
+      "free_cny": "0.000000",
+      "paid_cny": "0.000000",
+      "released_free_cny": "2.880000",
+      "released_paid_cny": "4.320000",
+      "final_free_cny": "2.880000",
+      "final_paid_cny": "7.200000"
+    },
+    {
+      "id": "minimum_cny_unit_split",
+      "initial_free_cny": "0.000001",
+      "initial_paid_cny": "0.100000",
+      "max_gross_cny": "0.000002",
+      "max_free_cny": "0.000001",
+      "max_paid_cny": "0.000001",
+      "gross_cny": "0.000002",
+      "free_cny": "0.000001",
+      "paid_cny": "0.000001",
+      "released_free_cny": "0.000000",
+      "released_paid_cny": "0.000000",
+      "final_free_cny": "0.000000",
+      "final_paid_cny": "0.099999"
+    }
+  ],
+  "must_reject": [
+    {
+      "id": "budget_breach",
+      "max_free_cny": "2.880000",
+      "max_paid_cny": "4.320000",
+      "gross_cny": "7.200001",
+      "expected_code": "BUDGET_BREACH"
+    },
+    {
+      "id": "increase_free_after_dispatch",
+      "max_free_cny": "2.880000",
+      "max_paid_cny": "4.320000",
+      "gross_cny": "7.200000",
+      "free_cny": "3.600000",
+      "paid_cny": "3.600000",
+      "expected_code": "SETTLEMENT_MISMATCH"
+    },
+    {
+      "id": "split_exceeds_confirmed_cny_total",
+      "max_free_cny": "0.000001",
+      "max_paid_cny": "0.000001",
+      "gross_cny": "0.000002",
+      "free_cny": "0.000001",
+      "paid_cny": "0.000002",
+      "expected_code": "SETTLEMENT_MISMATCH"
+    }
+  ]
+}

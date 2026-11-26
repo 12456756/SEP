@@ -44,9 +44,9 @@ export const MediaVideoRealQuoteBaseSchema = z.object({
   semanticSha256: z.string().regex(/^[a-fA-F0-9]{64}$/),
   pricingStatus: z.literal('quoted'),
   amountCny: MediaMoneySchema,
-  amountUsd: MediaVideoUsdSchema,
+  amountUsd: MediaVideoUsdSchema.nullable(),
   pricingVersion: z.string().min(1).max(128),
-  usdToCnyRate: z.number().finite().positive(),
+  usdToCnyRate: z.number().finite().positive().nullable(),
   billingStatus: z.literal('NOT_RESERVED'),
   funding: MediaFundingSchema,
 }).strict();
@@ -70,7 +70,7 @@ export const MediaVideoRealReceiptBaseSchema = MediaVideoGatewayReceiptSchema.in
   billingStatus: MediaVideoRealBillingStatusSchema,
   amountCny: MediaMoneySchema.optional(),
   actualCostCny: MediaMoneySchema.optional(),
-  amountUsd: MediaVideoUsdSchema.optional(),
+  amountUsd: MediaVideoUsdSchema.nullable().optional(),
 }).strict().superRefine((value, ctx) => {
   const delivered = value.status === 'SUCCEEDED' || value.status === 'PARTIAL_SUCCEEDED';
   const taskTerminal = delivered || ['FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(value.status);
@@ -99,7 +99,7 @@ export const MediaVideoRealReceiptV3Schema = MediaVideoGatewayReceiptSchema.inne
   upstreamError: MediaUpstreamErrorSchema.optional(),
   profileId: MediaProfileIdV3Schema, configVersion: MediaConfigVersionV3Schema,
   mock: z.literal(false), billingStatus: MediaVideoRealBillingStatusSchema,
-  amountCny: MediaMoneySchema.optional(), actualCostCny: MediaMoneySchema.optional(), amountUsd: MediaVideoUsdSchema.optional(),
+  amountCny: MediaMoneySchema.optional(), actualCostCny: MediaMoneySchema.optional(), amountUsd: MediaVideoUsdSchema.nullable().optional(),
   protocolVersion: z.literal(3), semanticHashVersion: z.literal(3), specRevision: z.number().int().positive(),
   effectiveSpec: MediaVideoSpecV3Schema, outputs: z.array(MediaVideoV3OutputSchema).max(4),
   billingDimensions: z.object({

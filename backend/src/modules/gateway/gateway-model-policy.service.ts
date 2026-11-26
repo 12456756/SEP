@@ -110,45 +110,8 @@ export class GatewayModelPolicyService {
         'MODEL_NOT_ALLOWED', '该模型不在当前成员允许范围内', 'model', 'permission_error',
       ));
     }
-    const model = await this.prisma.platformModel.findFirst({
-      where: { modelId: request.model, enabled: true, isStale: false },
-      select: { maxOutputTokens: true, supportedFeatures: true },
-    });
-    if (!model) throw new BadRequestException(platformErrorResponse(
-      'MODEL_UNAVAILABLE', '该模型未启用或已下架', 'model',
-    ));
-
-    const features = model.supportedFeatures as Record<string, unknown> | null;
-    const usesImages = request.messages.some((message) => Array.isArray(message.content) &&
-      message.content.some((part) => part.type === 'image_url'));
-    const usesTools = Boolean(request.tools?.length) ||
-      (request.tool_choice !== undefined && request.tool_choice !== 'none') ||
-      request.messages.some((message) => message.role === 'tool' || message.tool_calls?.length);
-    if (features?.functionCalling === false && usesTools) {
-      const param = request.tools?.length ? 'tools'
-        : request.tool_choice !== undefined && request.tool_choice !== 'none' ? 'tool_choice' : 'messages';
-      throw new BadRequestException(platformErrorResponse(
-        'MODEL_FEATURE_UNSUPPORTED', '该模型不支持 functionCalling', param,
-      ));
-    }
-    if (features?.vision === false && usesImages) {
-      throw new BadRequestException(platformErrorResponse(
-        'MODEL_FEATURE_UNSUPPORTED', '该模型不支持 vision', 'messages',
-      ));
-    }
-    if (features?.streaming === false && request.stream) {
-      throw new BadRequestException(platformErrorResponse(
-        'MODEL_FEATURE_UNSUPPORTED', '该模型不支持 streaming', 'stream',
-      ));
-    }
-
-    const cap = model.maxOutputTokens ?? null;
-    if (cap !== null && (!Number.isSafeInteger(cap) || cap <= 0)) {
-      throw new BadRequestException(platformErrorResponse(
-        'MODEL_OUTPUT_LIMIT_INVALID', '模型 maxOutputTokens 配置无效', 'model',
-      ));
-    }
-    const normalized = this.normalize(request, model, snapshot);
+    // Enterprise catalog and policies decide availability; upstream validates model capabilities.
+    const normalized = this.normalize(request, {}, snapshot);
     let serialized: string;
     try {
       serialized = JSON.stringify(normalized);

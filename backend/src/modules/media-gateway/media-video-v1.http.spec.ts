@@ -15,6 +15,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { ClientController } from '../client/client.controller';
 import { ClientService } from '../client/client.service';
+import { GatewayModelPolicyService } from '../gateway/gateway-model-policy.service';
 import { ClientEmploymentGuard } from '../client/client-employment.guard';
 import { ClientSkillArtifactService } from '../client/client-skill-artifact.service';
 import { MemberAllowanceQueryService } from '../compute-credit/member-allowance-query.service';
@@ -126,6 +127,8 @@ describe('V1 video configuration → runtime → gateway real HTTP (in-memory Pr
     const module = await Test.createTestingModule({
       controllers: [MediaVideoConfigController, ClientController, MediaVideoGatewayController, VideoV1ControlController],
       providers: [ClientService, MediaVideoConfigService, MediaVideoGatewayStore, MediaVideoGatewayService, MediaGatewayMockGuard,
+        { provide: ComputeModelCatalogService, useValue: mediaCatalogStub() },
+        { provide: GatewayModelPolicyService, useValue: { resolvePolicy: async () => ({ allowedModels: ['chat-fixture'], defaultModel: 'chat-fixture' }) } },
         { provide: VideoV1Fixture, useValue: state },
         { provide: PrismaService, useValue: state.prisma },
         { provide: EnterpriseContextService, useValue: state.context },
@@ -314,3 +317,5 @@ describe('V1 video configuration → runtime → gateway real HTTP (in-memory Pr
     expect(state.prisma.state.requests.size).toBe(1);
   }, 50_000);
 });
+import { ComputeModelCatalogService } from '../compute-integration/compute-model-catalog.service';
+import { mediaCatalogStub } from '../../../test/stubs/compute-catalog.stub';

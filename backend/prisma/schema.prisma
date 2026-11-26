@@ -10,6 +10,254 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+enum ComputeIntegrationMode {
+  LEGACY
+  PREPARING
+  ENTERPRISE
+}
+
+enum ComputeIntegrationStatus {
+  NOT_CONNECTED
+  PENDING
+  READY
+  FAILED
+}
+
+enum ComputeIntegrationJobStatus {
+  BLOCKED
+  PENDING
+  RUNNING
+  SUCCEEDED
+}
+
+model EnterpriseComputeBinding {
+  id                String @id @default(cuid())
+  enterpriseId      String @unique
+  remoteAccountId   String? @unique
+  registrationRef   String @unique
+  mode              ComputeIntegrationMode @default(LEGACY)
+  status            ComputeIntegrationStatus @default(NOT_CONNECTED)
+  lastErrorCode     String?
+  lastErrorMessage  String?
+  lastSyncedAt      DateTime?
+  ledgerCursor      String?
+  version           Int @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@map("enterprise_compute_bindings")
+}
+
+model EnterpriseComputeCredential {
+  id                String @id @default(cuid())
+  enterpriseId      String
+  kind              String
+  remoteId          String
+  version           Int
+  encryptedKey      String
+  maskedKey         String
+  active            Boolean @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([enterpriseId, kind, version])
+  @@index([enterpriseId, kind, active])
+  @@map("enterprise_compute_credentials")
+}
+
+model ComputeCredentialRotation {
+  id                  String @id @default(cuid())
+  operationId         String @unique
+  enterpriseId        String
+  kind                String
+  expectedVersion     Int
+  oldCredentialId     String
+  oldRemoteId         String
+  newCredentialId     String?
+  remoteAccountId     String
+  encryptionKeyId     String
+  requestedById       String
+  status              String @default("PENDING")
+  openSlot            String?
+  attempts            Int @default(0)
+  leaseToken          String?
+  leaseUntil          DateTime?
+  nextRunAt           DateTime @default(now())
+  lastErrorCode       String?
+  lastErrorMessage    String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@unique([enterpriseId, kind, openSlot])
+  @@index([status, nextRunAt])
+  @@map("compute_credential_rotations")
+}
+
+model ComputePasswordSync {
+  id                    String   @id @default(cuid())
+  enterpriseId          String   @unique
+  userId                String
+  version               Int      @default(1)
+  encryptedPasswordHash String?
+  status                String   @default("PENDING")
+  attempts              Int      @default(0)
+  nextRunAt             DateTime @default(now())
+  lastErrorCode         String?
+  lastErrorMessage      String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  @@index([status, nextRunAt])
+  @@index([userId])
+  @@map("compute_password_syncs")
+}
+
+model ComputeIntegrationJob {
+  id                String @id @default(cuid())
+  enterpriseId      String
+  businessId        String @unique
+  kind              String
+  status            ComputeIntegrationJobStatus @default(BLOCKED)
+  attempts          Int @default(0)
+  leaseToken        String?
+  leaseUntil        DateTime?
+  nextRunAt         DateTime @default(now())
+  lastErrorCode     String?
+  lastErrorMessage  String?
+  requestPayload    Json?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([status, nextRunAt, leaseUntil])
+  @@index([enterpriseId, createdAt])
+  @@map("compute_integration_jobs")
+}
+
+model ComputeIntegrationSettlement {
+  id                String @id @default(cuid())
+  enterpriseId      String
+  executionId       String @unique
+  kind              String
+  billId            String @unique
+  billVersion       Int
+  grossCny          Decimal @db.Decimal(24, 6)
+  freeCny           Decimal @db.Decimal(24, 6)
+  paidCny           Decimal @db.Decimal(24, 6)
+  unpaidCny         Decimal @db.Decimal(24, 6)
+  decisionHash      String
+  status            String @default("UNPAID")
+  remoteLedgerId    String?
+  remoteSequence    String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([enterpriseId, status, createdAt])
+  @@map("compute_integration_settlements")
+}
+
+/// Execution correlation only; existing usage records remain the local funds ledger.
+model ComputeIntegrationExecution {
+  id                String @id @default(cuid())
+  enterpriseId      String
+  sourceRef         String
+  kind              String
+  credentialId      String
+  credentialVersion Int
+  remoteAccountId   String
+  computeRequestId  String? @unique
+  taskId            String?
+  feeStatus         String @default("PENDING")
+  billId            String? @unique
+  billVersion       Int?
+  grossCny          Decimal? @db.Decimal(24, 6)
+  fundingContext    Json?
+  baseUrl           String?
+  localUsageRecordId String?
+  dispatchStatus    String @default("PREPARED")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@unique([enterpriseId, kind, sourceRef])
+  @@index([enterpriseId, feeStatus, createdAt])
+  @@map("compute_integration_executions")
+}
+
+/// A comparison is meaningful only when both sides refer to the same ledger watermark.
+model ComputeIntegrationReconciliation {
+  id                String @id @default(cuid())
+  enterpriseId      String
+  businessId        String @unique
+  ledgerCursor      String
+  sequence          String
+  localBalanceCny   Decimal @db.Decimal(24, 6)
+  remoteBalanceCny  Decimal @db.Decimal(24, 6)
+  differenceCny     Decimal @db.Decimal(25, 6)
+  status            String
+  details           Json?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([enterpriseId, createdAt])
+  @@map("compute_integration_reconciliations")
+}
+
+model ComputeIntegrationTransfer {
+  id                String @id @default(cuid())
+  enterpriseId      String
+  businessId        String @unique
+  direction         String
+  amountCny         Decimal @db.Decimal(24, 6)
+  fundingRef        String
+  status            String @default("PENDING")
+  remoteLedgerId    String?
+  remoteSequence    String?
+  walletAction      String?
+  localApplied      Boolean @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([enterpriseId, status, createdAt])
+  @@map("compute_integration_transfers")
+}
+
+model ComputeBalanceSyncState {
+  id             String @id @default(cuid())
+  enterpriseId   String @unique
+  sequence       BigInt @default(0)
+  baselineSequence BigInt @default(0)
+  lastError      String?
+  lastPolledAt   DateTime?
+  remoteAvailableCny Decimal? @db.Decimal(24, 6)
+  remoteFrozenCny Decimal? @db.Decimal(24, 6)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@map("compute_balance_sync_states")
+}
+
+model ComputeBalanceEvent {
+  id             String @id @default(cuid())
+  eventId        String @unique
+  enterpriseId   String
+  sequence       BigInt
+  origin         String
+  type           String
+  deltaCny       Decimal @db.Decimal(24, 6)
+  payloadHash    String
+  payload        Json
+  status         String @default("RECEIVED")
+  appliedAt      DateTime?
+  acknowledgedAt DateTime?
+  outstandingCny Decimal @default(0) @db.Decimal(24, 6)
+  allocation     Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([enterpriseId, sequence])
+  @@index([status, acknowledgedAt, createdAt])
+  @@map("compute_balance_events")
+}
+
 // ============================================================================
 // User System (用户体系)
 // ============================================================================
@@ -2094,10 +2342,10 @@ model ComputeUsageRecord {
   inputTokens              Int
   outputTokens             Int
   /// 输入/输出单价（美元 / 1M tokens）
-  inputPriceUsdPerMillion  Decimal @db.Decimal(14, 6)
-  outputPriceUsdPerMillion Decimal @db.Decimal(14, 6)
+  inputPriceUsdPerMillion  Decimal? @db.Decimal(14, 6)
+  outputPriceUsdPerMillion Decimal? @db.Decimal(14, 6)
   /// 本次入账使用的美元汇率
-  usdToCnyRate             Decimal @db.Decimal(10, 4)
+  usdToCnyRate             Decimal? @db.Decimal(10, 4)
   /// true = 该模型未配价，按保底价计费
   fallbackPricing          Boolean @default(false)
 
@@ -2560,7 +2808,7 @@ model MediaRealBillingReservation {
   personalCny     Decimal  @default(0) @db.Decimal(14, 6)
   settledCny      Decimal? @db.Decimal(14, 6)
   settledUsd      Decimal? @db.Decimal(14, 6)
-  usdToCnyRate    Decimal  @db.Decimal(10, 4)
+  usdToCnyRate    Decimal? @db.Decimal(10, 4)
   sourceSnapshot  Json
   status          String   @default("RESERVED")
   createdAt       DateTime @default(now())

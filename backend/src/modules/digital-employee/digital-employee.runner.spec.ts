@@ -1,3 +1,4 @@
+import { enterpriseConnectionStub } from '../../../test/stubs/enterprise-connection.stub';
 import {
   ForbiddenException,
   HttpException,
@@ -121,6 +122,8 @@ describe('DigitalEmployeeRunner execution context', () => {
       runtimePolicy,
       admission,
       new GatewayModelPolicyService({} as never, {} as never, {} as never),
+      enterpriseConnectionStub('https://relay.example/v1') as never,
+      { checkBalanceBeforeConversation: jest.fn().mockResolvedValue({ allowed: true }) } as never,
     );
   });
 
@@ -379,12 +382,12 @@ describe('DigitalEmployeeRunner execution context', () => {
     );
     expect(generateText).toHaveBeenCalledWith(
       expect.objectContaining({
-        maxOutputTokens: 1200,
+        maxOutputTokens: 4096,
         prepareStep: expect.any(Function),
         abortSignal: expect.any(AbortSignal),
       }),
     );
-    expect(generateText.mock.calls[0][0]).not.toHaveProperty('maxRetries');
+    expect(generateText.mock.calls[0][0].maxRetries).toBe(0);
     expect(openAiCompatible.createOpenAICompatible).toHaveBeenCalledWith(
       expect.objectContaining({
         baseURL: 'https://relay.example/v1',
@@ -398,7 +401,7 @@ describe('DigitalEmployeeRunner execution context', () => {
         { enterpriseId: member.enterpriseId, memberId: member.id },
         { ...snapshot, values: { ...snapshot.values, WEB_DEFAULT_MAX_OUTPUT_TOKENS: 4096 } },
         request,
-        1200,
+        4096,
       );
       expect(admission.reserve.mock.invocationCallOrder[index]).toBeLessThan(
         upstream.mock.invocationCallOrder[index],
@@ -433,7 +436,7 @@ describe('DigitalEmployeeRunner execution context', () => {
 
     await runner.run('employee-1', 'Hello', 'session-1', 'user-1');
 
-    expect(generateText.mock.calls[0][0]).not.toHaveProperty('maxRetries');
+    expect(generateText.mock.calls[0][0].maxRetries).toBe(0);
     expect(runtimePolicy.getSnapshot).toHaveBeenCalledTimes(1);
     expect(admission.acquire).toHaveBeenCalledTimes(1);
     expect(admission.reserve).toHaveBeenCalledTimes(2);
@@ -552,10 +555,7 @@ describe('DigitalEmployeeRunner execution context', () => {
       values: { ...snapshot.values, MODEL_MAX_OUTPUT_TOKENS: 600 },
     });
     await runner.run('employee-1', 'Hello', 'session-1', 'user-1');
-    expect(prisma.platformModel.findUnique).toHaveBeenCalledWith({
-      where: { modelId: 'settings-model' },
-      select: { maxOutputTokens: true },
-    });
+    expect(prisma.platformModel.findUnique).not.toHaveBeenCalled();
     expect(generateText).toHaveBeenCalledWith(
       expect.objectContaining({ maxOutputTokens: 600 }),
     );

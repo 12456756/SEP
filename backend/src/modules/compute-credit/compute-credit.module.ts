@@ -11,6 +11,7 @@ import { MemberAllowanceQueryService } from "./member-allowance-query.service";
 import { UsageAnalyticsService } from "./usage-analytics.service";
 import { AllowanceNotifierService } from "./allowance-notifier.service";
 import { ModelModule } from '../model/model.module';
+import { ComputeFeeWorker } from './compute-fee.worker';
 
 /**
  * 统一人民币算力账本。订阅履约、对话计费、企业算力查询都经过这里，
@@ -43,6 +44,7 @@ import { ModelModule } from '../model/model.module';
   ],
   controllers: [ComputeCreditController],
   providers: [
+    ComputeFeeWorker,
     ComputeCreditService,
     MemberAllowanceService,
     MemberAllowanceQueryService,

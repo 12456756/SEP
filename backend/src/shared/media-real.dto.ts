@@ -61,7 +61,7 @@ export const MediaRealQuoteSchema = z.object({
 export const MediaRealQuoteV3Schema = MediaRealQuoteSchema.extend({
   protocolVersion: z.literal(3), semanticHashVersion: z.literal(3), specRevision: z.number().int().positive(),
   profileId: z.string().min(1), configVersion: z.string().min(1), modelId: z.string().min(1).max(160),
-  adapterVersion: z.string().min(1).max(128), amountUsd: z.string().regex(/^\d+(?:\.\d{1,12})?$/),
+  adapterVersion: z.string().min(1).max(128), amountUsd: z.string().regex(/^\d+(?:\.\d{1,12})?$/).nullable(),
   connectionFingerprint: z.string().regex(/^[a-f0-9]{64}$/), effectiveSpec: MediaImageSpecV3Schema,
   billingDimensions: z.object({ size: z.string().min(1).max(128), count: z.number().int().positive(), quality: z.string().min(1).max(128) }).strict(),
   normalizationNotes: z.array(z.string().min(1).max(240)).max(16),

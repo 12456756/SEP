@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { MAX_MEDIA_REFERENCE_COUNT } from 'shared';
 import { PrismaService } from '../../prisma/prisma.service';
 import { exceptionDetails } from '../../common/errors/error-diagnostics';
+import { ComputeMediaSnapshotSchema, type ComputeMediaSnapshot } from '../compute-integration/compute-media.service';
 
 const asyncConfiguration = {
   asyncProtocol: z.literal('longdao-image-v2').optional(),
@@ -15,6 +16,7 @@ const asyncConfiguration = {
 };
 const legacyConfigurationSchema = z.object({
   ...asyncConfiguration,
+  compute: ComputeMediaSnapshotSchema.optional(),
   profileId: z.string().min(1),
   configVersion: z.string().min(1),
   modelId: z.string().min(1).max(160).optional(),
@@ -27,6 +29,7 @@ const legacyConfigurationSchema = z.object({
 }).strict();
 const configurationV3Schema = z.object({
   ...asyncConfiguration,
+  compute: ComputeMediaSnapshotSchema.optional(),
   protocolVersion: z.literal(3), semanticHashVersion: z.literal(3), specRevision: z.number().int().positive(),
   profileId: MediaProfileIdV3Schema, configVersion: MediaConfigVersionV3Schema, modelId: z.string().min(1).max(160),
   operation: z.enum(['generate', 'edit']), requestedSpec: z.record(z.unknown()), effectiveSpec: z.object({
@@ -37,7 +40,7 @@ const configurationV3Schema = z.object({
 const configurationSchema = z.union([configurationV3Schema, legacyConfigurationSchema]);
 
 export type RealReferenceRecord = { scope: string; value: MediaRealReference };
-export type RealQuoteRecord = { scope: string; value: MediaRealQuote; usdToCnyRate: number; connectionFingerprint?: string };
+export type RealQuoteRecord = { scope: string; value: MediaRealQuote; usdToCnyRate: number | null; connectionFingerprint?: string; compute?: ComputeMediaSnapshot };
 export type RealRequestRecord = {
   id: string; enterpriseId: string; clientRequestId: string; quoteId: string; upstreamRequestId: string | null;
   scope: string; semanticSha256: string; referenceIds: string[]; referenceHashes: string[]; count: number;
@@ -74,12 +77,12 @@ export class MediaRealStore {
     });
   }
 
-  async saveQuote(scope: string, value: Omit<MediaRealQuote, 'quoteId'>, usdToCnyRate: number, connectionFingerprint?: string) {
+  async saveQuote(scope: string, value: Omit<MediaRealQuote, 'quoteId'>, usdToCnyRate: number | null, connectionFingerprint?: string, compute?: ComputeMediaSnapshot) {
     return this.safe(async () => {
       MediaRealAnyQuoteSchema.parse({ ...value, quoteId: 'pending' });
-      if (!Number.isFinite(usdToCnyRate) || usdToCnyRate <= 0) realMediaStorageUnavailable();
+      if (compute ? usdToCnyRate !== null : !Number.isFinite(usdToCnyRate) || usdToCnyRate <= 0) realMediaStorageUnavailable();
       const row = await this.prisma.mediaRealQuote.create({ data: {
-        scope, metadata: { quote: value, usdToCnyRate, ...(connectionFingerprint ? { connectionFingerprint } : {}) }, expiresAt: new Date(value.expiresAt),
+        scope, metadata: { quote: value, usdToCnyRate, ...(connectionFingerprint ? { connectionFingerprint } : {}), ...(compute ? { compute } : {}) }, expiresAt: new Date(value.expiresAt),
       } });
       return MediaRealAnyQuoteSchema.parse({ ...value, quoteId: row.id });
     });
@@ -90,9 +93,10 @@ export class MediaRealStore {
       const row = await this.prisma.mediaRealQuote.findUnique({ where: { id } });
       if (!row) return null;
       const metadata = row.metadata as Prisma.JsonObject;
-      if (typeof metadata.usdToCnyRate !== 'number' || !Number.isFinite(metadata.usdToCnyRate) || metadata.usdToCnyRate <= 0) realMediaStorageUnavailable();
+      const compute = metadata.compute ? ComputeMediaSnapshotSchema.parse(metadata.compute) : undefined;
+      if (compute ? metadata.usdToCnyRate !== null : typeof metadata.usdToCnyRate !== 'number' || !Number.isFinite(metadata.usdToCnyRate) || metadata.usdToCnyRate <= 0) realMediaStorageUnavailable();
       if (metadata.connectionFingerprint !== undefined && (typeof metadata.connectionFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(metadata.connectionFingerprint))) realMediaStorageUnavailable();
-      return { scope: row.scope, usdToCnyRate: metadata.usdToCnyRate,
+      return { scope: row.scope, usdToCnyRate: metadata.usdToCnyRate as number | null, compute,
         connectionFingerprint: metadata.connectionFingerprint as string | undefined, value: MediaRealAnyQuoteSchema.parse({
         ...(metadata.quote as Prisma.JsonObject), quoteId: row.id,
       }) };

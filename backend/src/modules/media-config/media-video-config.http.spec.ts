@@ -9,6 +9,8 @@ import { EnterpriseContextService } from '../enterprise/enterprise-context.servi
 import { SettingService } from '../setting/setting.service';
 import { MediaVideoConfigController } from './media-video-config.controller';
 import { MediaVideoConfigService } from './media-video-config.service';
+import { ComputeModelCatalogService } from '../compute-integration/compute-model-catalog.service';
+import { mediaCatalogStub } from '../../../test/stubs/compute-catalog.stub';
 
 describe('video configuration HTTP (real controller + service, mock Prisma, no upstream)', () => {
   let app: INestApplication;
@@ -56,6 +58,7 @@ describe('video configuration HTTP (real controller + service, mock Prisma, no u
     const module = await Test.createTestingModule({
       controllers: [MediaVideoConfigController],
       providers: [MediaVideoConfigService,
+        { provide: ComputeModelCatalogService, useValue: mediaCatalogStub() },
         { provide: SettingService, useValue: settings },
         { provide: PrismaService, useValue: prisma },
         { provide: ConfigService, useValue: { get: key => key === 'NODE_ENV' ? nodeEnv

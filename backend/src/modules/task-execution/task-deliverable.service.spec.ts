@@ -11,6 +11,7 @@ import {
 } from 'shared';
 import { GatewayModelPolicyService } from '../gateway/gateway-model-policy.service';
 import { TaskDeliverableService } from './task-deliverable.service';
+import { enterpriseConnectionStub } from '../../../test/stubs/enterprise-connection.stub';
 
 describe('TaskDeliverableService model admission', () => {
   const snapshot: ModelRuntimePolicySnapshot = {
@@ -98,6 +99,8 @@ describe('TaskDeliverableService model admission', () => {
       runtimePolicy,
       admission,
       new GatewayModelPolicyService({} as never, {} as never, {} as never),
+      enterpriseConnectionStub('https://relay.example/v1', 'settings-key') as never,
+      { checkBalanceBeforeConversation: jest.fn().mockResolvedValue({ allowed: true }) } as never,
     );
   });
 
@@ -120,13 +123,14 @@ describe('TaskDeliverableService model admission', () => {
       bounded,
     );
     const request = JSON.parse(upstream.mock.calls[0][1].body);
-    expect(request).toMatchObject({ model: 'planner-model', max_tokens: 1500 });
+    expect(request).toMatchObject({ model: 'planner-model', max_tokens: 4000 });
+    expect(prisma.platformModel.findUnique).not.toHaveBeenCalled();
     expect(request.messages[1].content).toContain('Step output');
     expect(admission.reserve).toHaveBeenCalledWith(
       { enterpriseId: 'enterprise-1', memberId: 'member-1' },
       bounded,
       request,
-      1500,
+      4000,
     );
     expect(admission.reserve.mock.invocationCallOrder[0]).toBeLessThan(
       upstream.mock.invocationCallOrder[0],

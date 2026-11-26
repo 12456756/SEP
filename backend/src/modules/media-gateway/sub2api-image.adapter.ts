@@ -1,4 +1,4 @@
-import { HttpException, Injectable } from '@nestjs/common';
+import { HttpException, Injectable, Optional } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { MediaImageSpecV3, MediaRealAnyQuoteRequest, MediaRealQuoteRequestV3 } from 'shared';
@@ -11,7 +11,9 @@ import { MediaUpstreamException, mediaFailure, mediaDispatchFailure, readMediaUp
 import type { MediaUpstreamError } from 'shared';
 import { errorMessage, hasBusinessError, sanitizeError } from '../../common/errors/error-diagnostics';
 import { upstreamHeaders } from '../../common/errors/upstream-http.exception';
-import { IMAGE_CREATE_TIMEOUT_MS, LongdaoReceiptMetadataFields, longdaoMediaFetch, readLongdaoMedia } from './longdao-media-contract';
+import { IMAGE_CREATE_TIMEOUT_MS, LongdaoReceiptMetadataFields, readLongdaoMedia } from './longdao-media-contract';
+import { ComputeProtocolClient } from '../compute-integration/compute-protocol.client';
+import type { ComputeMediaIdentity } from '../compute-integration/compute-media.service';
 
 const ModelIdSchema = z.string().min(1).max(160).regex(/^[^\s\p{Cc}\p{Cf}]+$/u);
 const ModelsSchema = z.object({
@@ -22,12 +24,14 @@ const ModelsSchema = z.object({
 });
 const PricingSchema = z.object({
   ...LongdaoReceiptMetadataFields,
-  object: z.literal('sub2api.image_pricing'), schema_version: z.union([z.literal(1), z.literal(2)]), currency: z.literal('USD'),
+  object: z.literal('sub2api.image_pricing'), schema_version: z.union([z.literal(1), z.literal(2)]), currency: z.enum(['USD', 'CNY']),
   model: ModelIdSchema, operation: z.enum(['generate', 'edit']), size: z.string(), n: z.number().int(),
   quality: z.string().min(1).max(128), billing_mode: z.enum(['image', 'per_request', 'token']),
   pricing_status: z.enum(['quoted', 'unavailable']), pricing_source: z.string().min(1),
   pricing_authority: z.literal('sub2api_customer_billing').optional(),
-  amount_usd: z.string().regex(/^\d+(?:\.\d{1,12})?$/).nullable(), pricing_version: z.string().min(1).max(128),
+  amount_usd: z.string().regex(/^\d+(?:\.\d{1,12})?$/).nullable().optional().transform(value => value ?? null), pricing_version: z.string().min(1).max(128),
+  contract_version: z.literal(1).optional(), enterprise_id: z.string().optional(), exchange_rate: z.string().optional(),
+  amount_cny: z.string().regex(/^\d+\.[0-9]{6}$/).nullable().optional(), quote_id: z.string().min(1).max(128).optional(),
   effective_rate_multiplier: z.number().finite().nonnegative(),
   observed_at: z.string().datetime({ offset: true }), expires_at: z.string().datetime({ offset: true }),
 });
@@ -40,7 +44,7 @@ const UsageSchema = z.object({
   image_count: z.number().int().nonnegative().nullable().optional(),
 });
 export type Sub2apiImageUsage = z.infer<typeof UsageSchema>;
-export interface Sub2apiImageConnection { base: string; key: string }
+export interface Sub2apiImageConnection { base: string; key: string; compute?: ComputeMediaIdentity }
 export const SUB2API_IMAGE_ADAPTER_VERSION = 'sub2api-image-async-v1';
 export class ImageDispatchError extends HttpException {
   readonly upstreamError?: MediaUpstreamError;
@@ -79,7 +83,7 @@ export function resolveSub2apiImageSpec(input: MediaRealAnyQuoteRequest, stage: 
 }
 @Injectable()
 export class Sub2apiImageAdapter {
-  constructor(private readonly settings: SettingService) {}
+  constructor(private readonly settings: SettingService, @Optional() private readonly computeProtocol?: ComputeProtocolClient) {}
 
   async connectionFingerprint(): Promise<string> {
     const connection = await this.connection();
@@ -124,7 +128,7 @@ export class Sub2apiImageAdapter {
     const price = parsed.data;
     if (price.model !== modelId || price.operation !== input.operation || price.size !== spec.size ||
       price.n !== spec.count || price.quality !== spec.quality || price.pricing_status !== 'quoted' ||
-      price.billing_mode === 'token' || price.amount_usd === null || Date.parse(price.expires_at) <= Date.now() ||
+      price.billing_mode === 'token' || (snapshot?.compute ? price.currency !== 'CNY' || price.contract_version !== 1 || price.enterprise_id !== snapshot.compute.enterpriseId || price.amount_cny == null || !price.quote_id || price.quote_id !== price.pricing_version : price.currency !== 'USD' || price.amount_usd === null) || Date.parse(price.expires_at) <= Date.now() ||
       Date.parse(price.expires_at) > Date.now() + 120_000 || Date.parse(price.observed_at) > Date.now() + 5000 ||
       (/fallback|default|unknown/i.test(price.pricing_source) &&
         !(price.pricing_source === 'fallback' && price.pricing_authority === 'sub2api_customer_billing'))) unavailable('PRICE_UNAVAILABLE', {
@@ -168,7 +172,7 @@ export class Sub2apiImageAdapter {
       for (const [field, value] of Object.entries(fields)) form.append(field, String(value));
       body = form;
     }
-    const response = await longdaoMediaFetch(this.normalizeConnection(connection),
+    const response = await this.asyncFetch(connection,
       `/images/${input.operation === 'generate' ? 'generations' : 'edits'}/async`, { method: 'POST', headers, body }, IMAGE_CREATE_TIMEOUT_MS);
     return readLongdaoMedia(response, connection.key, requestId, undefined, true);
   }
@@ -176,13 +180,13 @@ export class Sub2apiImageAdapter {
   async queryAsync(connection: Sub2apiImageConnection, requestId: string, taskId?: string | null) {
     if (!/^[A-Za-z0-9_.:-]{1,256}$/.test(requestId) || taskId && !/^[A-Za-z0-9_.:-]{1,256}$/.test(taskId)) unavailable('INVALID_PARAMETER');
     const path = `/images/tasks/${encodeURIComponent(taskId ?? requestId)}${taskId ? '' : '?id_type=request_id'}`;
-    const response = await longdaoMediaFetch(this.normalizeConnection(connection), path, { method: 'GET' }, IMAGE_CREATE_TIMEOUT_MS);
+    const response = await this.asyncFetch(connection, path, { method: 'GET' }, IMAGE_CREATE_TIMEOUT_MS);
     return readLongdaoMedia(response, connection.key, requestId, taskId);
   }
 
   async contentAsync(connection: Sub2apiImageConnection, taskId: string) {
     if (!/^[A-Za-z0-9_.:-]{1,256}$/.test(taskId)) unavailable('OUTPUT_FAILED');
-    const response = await longdaoMediaFetch(this.normalizeConnection(connection), `/images/tasks/${encodeURIComponent(taskId)}/content`,
+    const response = await this.asyncFetch(connection, `/images/tasks/${encodeURIComponent(taskId)}/content`,
       { method: 'GET' }, IMAGE_CREATE_TIMEOUT_MS);
     if (!response.ok) throw new MediaUpstreamException(protectMediaCredential(await readMediaUpstreamError(response), connection.key));
     const mimeType = response.headers.get('content-type')?.split(';')[0].trim().toLowerCase();
@@ -264,11 +268,23 @@ export class Sub2apiImageAdapter {
     } catch (error) { if (error instanceof HttpException) throw error; unavailable('PRICE_UNAVAILABLE', error); }
   }
 
+  private async asyncFetch(connection: Sub2apiImageConnection, path: string, options: RequestInit, timeout: number) {
+    const frozen = this.normalizeConnection(connection);
+    if (!frozen.compute || !this.computeProtocol) unavailable('CONFIG_CHANGED', '图片任务缺少企业凭证或签名上下文');
+    try {
+      return await this.computeProtocol.fetchSigned(frozen.base + path, {
+        ...options, signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout),
+      }, { ...frozen.compute, apiKey: frozen.key });
+    } catch (failure) {
+      throw new MediaUpstreamException(protectMediaCredential(mediaFailure(failure), frozen.key));
+    }
+  }
+
   private normalizeConnection(connection: Sub2apiImageConnection): Sub2apiImageConnection {
     try {
-      const url = new URL(connection.base);
-      if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || !connection.key || /[^\x21-\x7e]/.test(connection.key)) unavailable();
-      return { base: url.href.replace(/\/+$/, '').replace(/\/v1$/, '') + '/v1', key: connection.key };
+      const url = this.computeProtocol ? this.computeProtocol.validateAddress(connection.base) : new URL(connection.base);
+      if ((!this.computeProtocol && url.protocol !== 'https:') || url.username || url.password || url.search || url.hash || !connection.key || /[^\x21-\x7e]/.test(connection.key)) unavailable();
+      return { ...connection, base: url.href.replace(/\/+$/, '').replace(/\/v1$/, '') + '/v1', key: connection.key };
     } catch (error) { if (error instanceof HttpException) throw error; unavailable('PRICE_UNAVAILABLE', error); }
   }
 
@@ -276,9 +292,11 @@ export class Sub2apiImageAdapter {
     const connection = snapshot ? this.normalizeConnection(snapshot) : await this.connection();
     let requestId: string | null = null;
     try {
-      const response = await fetch(connection.base + path, { ...options, headers: {
+      const requestOptions = { ...options, headers: {
         ...options.headers, Authorization: `Bearer ${connection.key}`, Accept: 'application/json',
-      }, redirect: 'error', signal: AbortSignal.timeout(timeout) });
+      }, redirect: 'error' as const, signal: AbortSignal.timeout(timeout) };
+      const response = connection.compute ? await this.computeProtocol.fetchSigned(connection.base + path, requestOptions,
+        { ...connection.compute, apiKey: connection.key }) : await fetch(connection.base + path, requestOptions);
       // sub2api bills by its client correlation ID; X-Request-ID may belong to the upstream.
       const clientId = response.headers.get('x-client-request-id');
       const rawId = clientId === null ? response.headers.get('x-request-id') : `client:${clientId}`;
@@ -301,7 +319,7 @@ export class Sub2apiImageAdapter {
           ['unsupported_spec', 'unsupported_parameter', 'unsupported_size', 'unsupported_quality'].includes(rejected.data.error.code);
         // V3 supplier errors do not prove that no upstream execution or billing occurred.
         // Keep the historical rejection contract isolated to legacy requests.
-        if (dispatch) throw new ImageDispatchError(requestId, !classifySpec && [400, 401, 403, 404, 413, 422, 429].includes(response.status), unsupported ? 'UPSTREAM_SPEC_UNSUPPORTED' : 'UPSTREAM_FAILED', upstreamError);
+        if (dispatch) throw new ImageDispatchError(requestId, !connection.compute && !classifySpec && [400, 401, 403, 404, 413, 422, 429].includes(response.status), unsupported ? 'UPSTREAM_SPEC_UNSUPPORTED' : 'UPSTREAM_FAILED', upstreamError);
         throw new MediaUpstreamException(upstreamError);
       }
       if (!response.headers.get('content-type')?.includes('application/json') || !response.body) throw new Error('Upstream response must contain a JSON body');

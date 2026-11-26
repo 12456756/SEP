@@ -28,11 +28,11 @@ export default function ModelsSettingsPage() {
       <div className="border-b border-border px-6 py-4">
         <h1 className="text-2xl font-bold">模型偏好</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          查看企业允许使用的模型列表和当前默认模型
+          企业可用模型与当前默认模型
         </p>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6">
+      <div className="flex-1 overflow-y-auto p-6 pb-28 md:pb-6">
         <div className="mx-auto max-w-4xl">
           {isLoading ? (
             <div className="flex h-64 items-center justify-center">
@@ -53,11 +53,12 @@ export default function ModelsSettingsPage() {
                 <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950/20 dark:text-amber-200">
                   <p className="font-medium">企业管理员权限</p>
                   <p className="mt-1">
-                    你可以修改全局模型策略。修改后将影响所有成员的模型使用权限。
+                    修改后将影响本企业所有成员的模型使用权限。
                   </p>
                 </div>
               )}
               <ModelConfigForm
+                key={configQuery.data.updatedAt}
                 config={configQuery.data}
                 availableModels={modelsQuery.data}
                 readOnly={!isAdmin}

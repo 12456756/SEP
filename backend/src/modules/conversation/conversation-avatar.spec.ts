@@ -20,7 +20,6 @@ describe('conversation employee avatars', () => {
     service = new ConversationService(
       prisma,
       { assertActiveSubscription: jest.fn() } as any,
-      {} as any,
       { get: jest.fn().mockResolvedValue({ defaultChatModel: 'model-1' }) } as any,
       {} as any,
       { checkBalanceBeforeConversation: jest.fn().mockResolvedValue({ allowed: true }) } as any,

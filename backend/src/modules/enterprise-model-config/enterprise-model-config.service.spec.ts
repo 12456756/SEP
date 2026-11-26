@@ -51,6 +51,7 @@ describe('EnterpriseModelConfigService', () => {
   let ctxSvc: any;
   let billing: any;
   let settings: any;
+  let catalog: any;
   let svc: EnterpriseModelConfigService;
 
   beforeEach(() => {
@@ -84,7 +85,9 @@ describe('EnterpriseModelConfigService', () => {
       ]),
     };
     settings = { getEffectiveValue: jest.fn().mockResolvedValue('platform-default') };
-    svc = new EnterpriseModelConfigService(prisma, ctxSvc, undefined, billing, settings);
+    catalog = { chatModels: jest.fn(async () => (await prisma.platformModel.findMany()).filter(model => model.enabled !== false)),
+      assertChatModels: jest.fn().mockResolvedValue(undefined) };
+    svc = new EnterpriseModelConfigService(prisma, ctxSvc, catalog, undefined, billing, settings);
   });
 
   describe('get', () => {
@@ -192,6 +195,11 @@ describe('EnterpriseModelConfigService', () => {
   });
 
   describe('getAvailableModels', () => {
+    it('does not fall back to the public catalog when enterprise credentials or catalog lookup fail', async () => {
+      catalog.chatModels.mockRejectedValueOnce(new ServiceUnavailableException('企业对话 Key 未就绪'));
+      await expect(svc.getAvailableModels('u1')).rejects.toThrow('未就绪');
+      expect(billing.describe).not.toHaveBeenCalled(); expect(prisma.platformModel.findMany).not.toHaveBeenCalled();
+    });
     it('返回 modelId 而非主键 —— 调用模型用的是 modelId', async () => {
       prisma.platformModel.findMany.mockResolvedValue([
         {
@@ -212,22 +220,16 @@ describe('EnterpriseModelConfigService', () => {
       const models = await svc.getAvailableModels('u1');
 
       expect(models[0].modelId).toBe('claude-sonnet-5');
-      expect(models[0]).toMatchObject({
-        billingMultiplier: '1',
-        discountLabel: '按中转倍率计费',
-        isFree: false,
-      });
+      expect(catalog.chatModels).toHaveBeenCalledWith('ent-acme');
+      expect(billing.describe).not.toHaveBeenCalled();
       // 元数据列目前大多为空，必须原样透传 null 让前端降级，不能塞 0 / ''
       expect(models[0].contextLength).toBeNull();
       expect(models[0].pricingInputPer1M).toBeNull();
     });
 
-    it('只取 enabled 且未下架的模型', async () => {
+    it('只读取本企业对话 Key 的模型目录', async () => {
       await svc.getAvailableModels('u1');
-      expect(prisma.platformModel.findMany.mock.calls[0][0].where).toEqual({
-        enabled: true,
-        isStale: false,
-      });
+      expect(catalog.chatModels).toHaveBeenCalledWith('ent-acme');
     });
   });
 
@@ -411,9 +413,7 @@ describe('EnterpriseModelConfigService', () => {
       });
       expect(ctxSvc.resolve).not.toHaveBeenCalled();
       expect(result.allowedChatModels).toEqual(['gpt-4o']);
-      expect(prisma.platformModel.findMany).toHaveBeenCalledWith(expect.objectContaining({
-        where: { enabled: true, isStale: false },
-      }));
+      expect(catalog.chatModels).toHaveBeenCalledWith('ent-acme');
     });
 
     it('雇佣关系 config 里 modelId 不是字符串时不当成有效值', async () => {
@@ -590,11 +590,12 @@ describe('EnterpriseModelConfigService', () => {
   });
 
   describe('编排与分析模型', () => {
-    it('企业没指定时返回 null —— 由调用方落到平台默认', async () => {
+    it('企业没指定时跟随本企业默认模型并校验企业权限', async () => {
       prisma.enterpriseModelConfig.findUnique.mockResolvedValue(
         makeConfig({ plannerModel: null }),
       );
-      expect(await svc.getPlannerModel('ent-acme')).toBeNull();
+      expect(await svc.getPlannerModel('ent-acme')).toBe('gemini-3.5-flash-high');
+      expect(catalog.assertChatModels).toHaveBeenCalledWith('ent-acme', ['gemini-3.5-flash-high']);
     });
 
     it('企业指定了就用企业的', async () => {
@@ -609,6 +610,7 @@ describe('EnterpriseModelConfigService', () => {
       prisma.platformModel.findMany.mockResolvedValue([
         { modelId: 'gemini-3.5-flash', enabled: false, isStale: false },
       ]);
+      catalog.assertChatModels.mockRejectedValueOnce(new BadRequestException('企业 Key 不支持此模型'));
 
       await expect(
         svc.update('u1', { plannerModel: 'gemini-3.5-flash' }),

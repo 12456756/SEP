@@ -1,4 +1,5 @@
-import { Injectable } from '@nestjs/common';
+import { ConflictException, Injectable, Optional } from '@nestjs/common';
+import { ComputeIntegrationService } from '../compute-integration/compute-integration.service';
 import { Prisma } from '@prisma/client';
 import { StorageService } from '../upload/storage/storage.service';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -27,9 +28,12 @@ export class EnterpriseDeletionCleanupService {
     private readonly mediaBilling: MediaRealBillingService,
     private readonly byteCache: MediaByteCacheService,
     private readonly videoCache: VideoFileCacheService,
+    @Optional() private readonly computeIntegration?: ComputeIntegrationService,
   ) {}
 
   async buildManifest(tx: Prisma.TransactionClient, enterpriseId: string): Promise<EnterpriseDeletionManifest> {
+    if (await this.computeIntegration?.hasOpenAccounting(enterpriseId, tx)) throw new ConflictException({ code: 'COMPUTE_ACCOUNTING_OPEN',
+      message: '企业还有未确认的算力任务、账务或远端算力余额，请先结清并退回余额后删除' });
     const scopePrefix = `[${JSON.stringify(enterpriseId)},`;
     const [documents, documentVersions, versions, taskRuns, usage, members, reservations, gatewayRequests, realRequests,
       gatewayReferences, gatewayQuotes, realReferences, realQuotes] = await Promise.all([
@@ -130,6 +134,13 @@ export class EnterpriseDeletionCleanupService {
   }
 
   async deleteDatabase(tx: Prisma.TransactionClient, enterpriseId: string, _manifest: EnterpriseDeletionManifest): Promise<void> {
+    // Keep accounting evidence, but erase local keys and stop undeliverable work for a deleted tenant.
+    await tx.enterpriseComputeCredential.deleteMany({ where: { enterpriseId } });
+    await tx.computePasswordSync.updateMany({ where: { enterpriseId }, data: {
+      status: 'CANCELLED', encryptedPasswordHash: null, lastErrorCode: 'ENTERPRISE_UNAVAILABLE', lastErrorMessage: null,
+    } });
+    await tx.computeIntegrationJob.updateMany({ where: { enterpriseId, status: { not: 'SUCCEEDED' } },
+      data: { status: 'BLOCKED', leaseToken: null, leaseUntil: null, lastErrorCode: 'ENTERPRISE_UNAVAILABLE' } });
     await tx.conversationSession.deleteMany({ where: { id: { in: _manifest.conversationSessionIds } } });
     await tx.taskRun.deleteMany({ where: { enterpriseId } });
     await tx.taskTemplate.deleteMany({ where: { enterpriseId } });

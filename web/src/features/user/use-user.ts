@@ -5,6 +5,7 @@ import { api, uploadForm } from '@/lib/api-client';
 import { qk } from '@/lib/query-keys';
 import { useAuthStore } from '@/lib/auth-store';
 import type { UserProfile } from '@/lib/types';
+import type { PasswordUpdateResult } from 'shared/compute-integration.dto';
 
 export function useMe() {
   return useQuery({
@@ -46,7 +47,7 @@ export function useUpdateProfile() {
 export function useChangePassword() {
   return useMutation({
     mutationFn: (body: { currentPassword: string; newPassword: string }) =>
-      api.post<void>('/auth/password/change', body),
+      api.post<PasswordUpdateResult>('/auth/password/change', body),
   });
 }
 

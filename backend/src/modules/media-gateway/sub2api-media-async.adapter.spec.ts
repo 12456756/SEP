@@ -1,4 +1,5 @@
 import { Sub2apiImageAdapter } from './sub2api-image.adapter';
+import { signedMediaProtocolStub } from '../../../test/stubs/enterprise-media.stub';
 import { Sub2apiVideoAdapter } from './sub2api-video.adapter';
 import { contractResult } from './longdao-media.test-support';
 import { IMAGE_CREATE_TIMEOUT_MS, VIDEO_CREATE_TIMEOUT_MS } from './longdao-media-contract';
@@ -6,7 +7,7 @@ import { referenceFixture } from './media-reference.test-support';
 import { MEDIA_MOCK_PNG } from './media-gateway-mock.adapter';
 import { createHash } from 'node:crypto';
 
-const connection = { base: 'https://relay.example.test/v1', key: 'test-media-key', fingerprint: 'a'.repeat(64) };
+const connection = { base: 'https://relay.example.test/v1', key: 'test-media-key', fingerprint: 'a'.repeat(64), compute: { enterpriseId: 'enterprise', executionId: 'execution' } };
 connection.fingerprint = createHash('sha256').update(`${connection.base}\0${connection.key}`).digest('hex');
 const image = { protocolVersion: 3 as const, profileId: 'image', configVersion: 'cfg1', specRevision: 1,
   operation: 'generate' as const, referenceIds: [], creativeBrief: 'Product picture', requestedSpec: { size: '1024x1024', count: 1, quality: 'medium' } };
@@ -16,8 +17,8 @@ const video = { protocolVersion: 3 as const, profileId: 'video', configVersion: 
 describe('Longdao async adapters (mock fetch, no paid calls)', () => {
   let fetchMock: jest.SpyInstance;
   let timeout: jest.SpyInstance;
-  const images = new Sub2apiImageAdapter({} as never);
-  const videos = new Sub2apiVideoAdapter({} as never);
+  const images = new Sub2apiImageAdapter({} as never, signedMediaProtocolStub as never);
+  const videos = new Sub2apiVideoAdapter({} as never, signedMediaProtocolStub as never);
   const respond = (id: string, patch = {}, http = 202) => new Response(JSON.stringify(contractResult(id, patch, http).contract), {
     status: http, headers: { 'content-type': 'application/json' },
   });

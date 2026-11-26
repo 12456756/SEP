@@ -4,6 +4,7 @@ import { MODEL_RUNTIME_POLICY_FIELDS, type ModelRuntimePolicySnapshot } from 'sh
 import { ConversationStreamService } from './conversation-stream.service';
 import { GatewayModelPolicyService } from '../gateway/gateway-model-policy.service';
 import type { SseEvent } from './conversation.types';
+import { enterpriseConnectionStub } from '../../../test/stubs/enterprise-connection.stub';
 
 // Both SDK imports resolve to the same CJS stub in this repository's Jest config.
 jest.mock('ai', () => ({
@@ -60,7 +61,7 @@ describe('Web model runtime policy lifecycle', () => {
         checkBalanceBeforeConversation: jest.fn().mockResolvedValue({ allowed: true, enterpriseFundsAllowed: true }),
         chargeUsage: jest.fn().mockResolvedValue({ alreadyCharged: true }),
       } as never,
-      policies, admission, new GatewayModelPolicyService({} as never, {} as never, {} as never));
+      policies, admission, new GatewayModelPolicyService({} as never, {} as never, {} as never), enterpriseConnectionStub() as never);
     jest.spyOn(global, 'fetch').mockResolvedValue(new Response('{}'));
     mockStep('stop', [{ type: 'text-delta', text: 'reply' }]);
   });
@@ -101,9 +102,10 @@ describe('Web model runtime policy lifecycle', () => {
       expect(call[1].version).toBe(5);
       expect(call[2].messages[0]).toEqual({ role: 'system', content: 'system instructions' });
       expect(call[2].tools.length).toBe(1);
-      expect(call[3]).toBe(2000);
+      expect(call[3]).toBe(4096);
     }
     expect(release).toHaveBeenCalledTimes(1);
+    expect(prisma.platformModel.findUnique).not.toHaveBeenCalled();
     expect(stopRenewal).toHaveBeenCalledTimes(1);
     expect(sessionLock.releaseLock).toHaveBeenCalledWith('session', 'owner');
   });
@@ -208,7 +210,7 @@ describe('Web model runtime policy lifecycle', () => {
     await generator.next();
     await generator.return(undefined);
     expect(optionsSeen[0].abortSignal.aborted).toBe(true);
-    expect(optionsSeen[0].maxRetries).toBeUndefined();
+    expect(optionsSeen[0].maxRetries).toBe(0);
     expect(release).toHaveBeenCalledTimes(1);
     expect(prisma.message.create).toHaveBeenCalledTimes(1);
   });

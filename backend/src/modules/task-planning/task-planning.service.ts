@@ -2,11 +2,13 @@ import {
   BadGatewayException,
   BadRequestException,
   Injectable,
+  Optional,
   Logger,
   HttpException,
   ForbiddenException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ComputeConnectionService } from '../compute-integration/compute-connection.service';
 import { randomUUID } from 'node:crypto';
 import { localError } from '../../common/errors/error-diagnostics';
 import { fetchUpstream, readUpstreamJson } from '../../common/errors/upstream-http.exception';
@@ -16,7 +18,7 @@ import { SettingService } from '../setting/setting.service';
 import { EnterpriseModelConfigService } from '../enterprise-model-config/enterprise-model-config.service';
 import { resolveSub2ApiProviderConfig } from '../conversation/sub2api-provider-config';
 import { EnterpriseContextService } from '../enterprise/enterprise-context.service';
-import { type ModelRuntimePolicySnapshot } from 'shared';
+import { DEFAULT_MODEL_ID, SETTING_KEYS, type ModelRuntimePolicySnapshot } from 'shared';
 import { ModelRuntimePolicyService } from '../setting/model-runtime-policy.service';
 import { GatewayAdmissionService } from '../gateway/gateway-admission.service';
 import { GatewayModelPolicyService } from '../gateway/gateway-model-policy.service';
@@ -54,6 +56,7 @@ export class TaskPlanningService {
     private readonly admission: GatewayAdmissionService,
     private readonly modelPolicy: GatewayModelPolicyService,
     private readonly computeCredit: ComputeCreditService,
+    @Optional() private readonly connections?: ComputeConnectionService,
   ) {}
 
   async preview(userId: string, dto: TaskPlanPreviewDto, signal?: AbortSignal) {
@@ -130,8 +133,7 @@ export class TaskPlanningService {
     signal?.throwIfAborted();
     const policy = await this.runtimePolicies.getSnapshot();
     const identity = { enterpriseId: context.enterpriseId, memberId: context.memberId };
-    const model = await this.prisma.platformModel.findUnique({ where: { modelId: plannerModel }, select: { maxOutputTokens: true } });
-    const outputTokens = this.modelPolicy.internalOutputTokens(model, policy, policy.values.PLANNER_MAX_OUTPUT_TOKENS);
+    const outputTokens = this.modelPolicy.internalOutputTokens(null, policy, policy.values.PLANNER_MAX_OUTPUT_TOKENS);
     const lease = await this.admission.acquire(identity, policy);
     let plannerOutput: PlannerOutput;
     try {
@@ -199,8 +201,7 @@ export class TaskPlanningService {
     if (override) return override;
     const enterpriseChoice = await this.modelConfig.getPlannerModel(enterpriseId);
     if (enterpriseChoice) return enterpriseChoice;
-    const { defaultModel } = await resolveSub2ApiProviderConfig(this.settings);
-    return defaultModel;
+    return (await this.settings.getEffectiveValue(SETTING_KEYS.SUB2API_DEFAULT_MODEL)) || DEFAULT_MODEL_ID;
   }
 
   private async generatePlan(
@@ -215,7 +216,8 @@ export class TaskPlanningService {
     // 走系统设置而不是 env —— 这里原来直接读 ConfigService，而线上 env 里的
     // SUB2API_API_KEY 已失效、SystemSetting 里的是有效的，于是「对话正常、
     // 任务规划报 relay 401」，同一台机器两个功能两种结果。见该函数的注释。
-    const { baseURL, apiKey } = await resolveSub2ApiProviderConfig(this.settings);
+    const { baseURL, apiKey, fetch: modelFetch } = await resolveSub2ApiProviderConfig(this.settings,
+      this.connections ? { enterpriseId: identity.enterpriseId, connections: this.connections, funding: { memberId: identity.memberId } } : undefined);
     const catalog = JSON.stringify(candidates, null, 2);
 
     const body = {
@@ -247,7 +249,7 @@ export class TaskPlanningService {
     let response: Response | undefined;
     try {
       lifecycle.assertActive();
-      response = await lifecycle.wait(fetchUpstream(`${baseURL.replace(/\/$/, '')}/chat/completions`, {
+      response = await lifecycle.wait((modelFetch ?? fetchUpstream)(`${baseURL.replace(/\/$/, '')}/chat/completions`, {
         method: 'POST', signal: lifecycle.signal,
         headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
         body: JSON.stringify(body),

@@ -58,6 +58,9 @@ class LoggingTestController {
   @Get('long')
   long() { return { message: 'a'.repeat(5000), private: 'do-not-log' }; }
 
+  @Get('registration-hash')
+  registrationHash() { throw new HttpException(`Registration failed ${'$2b$10$' + 'a'.repeat(53)}`, 503); }
+
   @Get('object-message')
   objectMessage() { return { message: { password: 'secret-object-value' } }; }
 
@@ -177,6 +180,13 @@ describe('HTTP runtime logging', () => {
     expect(response.body.message).toHaveLength(5000);
     expect(entries()[0].message.length).toBeLessThanOrEqual(500);
     expect(JSON.stringify(entries())).not.toContain('do-not-log');
+  });
+
+  it('does not log bcrypt hashes echoed by registration failures', async () => {
+    await request(app.getHttpServer()).get('/api/registration-hash').expect(503);
+    expect(entries(error)[0].message).toContain('Registration failed');
+    expect(JSON.stringify(entries())).not.toContain('$2b$10$' + 'a'.repeat(53));
+    expect(JSON.stringify(entries())).toContain('[REDACTED]');
   });
 
   it('logs ingress rejections even though no controller runs', async () => {

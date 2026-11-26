@@ -40,6 +40,7 @@ describe('AuthService.createEnterprise', () => {
     tx = {
       $queryRaw: jest.fn().mockResolvedValue([{ id: USER.id }]),
       user: { findUnique: jest.fn().mockResolvedValue({ ...USER, status: 'ACTIVE' }) },
+      authCredential: { findUnique: jest.fn().mockResolvedValue({ passwordHash: '$2b$10$' + 'a'.repeat(53) }) },
       enterprise: {
         create: jest.fn((a: any) =>
           Promise.resolve({ id: 'ent-new', name: a.data.name }),
@@ -221,5 +222,29 @@ describe('AuthService.createEnterprise', () => {
     // tx 里只该有企业和成员两张表被写；部门若挤进事务，
     // 会把一个三写的短事务拉成 16 条 insert 的长事务
     expect(tx.department).toBeUndefined();
+  });
+
+  it('企业算力绑定和开户待办使用创建企业的同一个事务', async () => {
+    const integration = { ensureBinding: jest.fn().mockResolvedValue(undefined) };
+    const withIntegration = new AuthService(prisma, jwt, config, invitations, defaultDepartments, sessions,
+      undefined, undefined, undefined, undefined, undefined, undefined, integration as any);
+    await withIntegration.createEnterprise(USER.id, { name: '新公司' }, res);
+    expect(integration.ensureBinding).toHaveBeenCalledWith('ent-new', tx, {
+      companyName: '新公司', adminEmail: USER.email, adminUserId: USER.id, passwordHash: '$2b$10$' + 'a'.repeat(53),
+    });
+    expect(tx.authCredential.findUnique).toHaveBeenCalledWith({
+      where: { userId_type: { userId: USER.id, type: 'LOCAL_PASSWORD' } }, select: { passwordHash: true },
+    });
+  });
+
+  it('无本地密码时仍固定新企业开户身份，留待设置密码后恢复', async () => {
+    const integration = { ensureBinding: jest.fn().mockResolvedValue(undefined) };
+    tx.authCredential.findUnique.mockResolvedValue(null);
+    const withIntegration = new AuthService(prisma, jwt, config, invitations, defaultDepartments, sessions,
+      undefined, undefined, undefined, undefined, undefined, undefined, integration as any);
+    await withIntegration.createEnterprise(USER.id, { name: '新公司' }, res);
+    expect(integration.ensureBinding).toHaveBeenCalledWith('ent-new', tx, {
+      companyName: '新公司', adminEmail: USER.email, adminUserId: USER.id, passwordHash: undefined,
+    });
   });
 });

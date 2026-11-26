@@ -9,7 +9,6 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { withEmployeeAvatar } from '../../common/employee-avatar';
 import { SubscriptionService } from '../subscription/subscription.service';
-import { ModelService } from '../model/model.service';
 import { ComputeCreditService } from '../compute-credit/compute-credit.service';
 import { EnterpriseContextService } from '../enterprise/enterprise-context.service';
 import { EnterpriseModelConfigService } from '../enterprise-model-config/enterprise-model-config.service';
@@ -28,7 +27,6 @@ export class ConversationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly subscriptionService: SubscriptionService,
-    private readonly modelService: ModelService,
     private readonly modelConfig: EnterpriseModelConfigService,
     private readonly storage: StorageService,
     private readonly computeCredit: ComputeCreditService,
@@ -255,11 +253,16 @@ export class ConversationService {
   }
 
   async switchModel(sessionId: string, userId: string, modelId: string) {
-    await this.assertOwner(sessionId, userId);
-
-    // 只允许切到平台已启用的模型（防止绕过白名单调用未开放模型）
-    if (modelId && !(await this.modelService.isEnabled(modelId))) {
-      throw new BadRequestException(`模型 ${modelId} 未开放使用`);
+    const session = await this.assertOwner(sessionId, userId);
+    const context = await this.enterpriseContext.resolve(userId);
+    if (session.enterpriseId !== context.enterpriseId) throw new ForbiddenException();
+    const effective = await this.modelConfig.resolveEffectiveModel({
+      userId, enterpriseId: context.enterpriseId, departmentId: context.departmentId ?? undefined,
+      restrictToAvailableModels: true,
+    });
+    if (!effective.allowUserSwitchModel) throw new ForbiddenException('企业当前不允许切换会话模型');
+    if (modelId && !effective.allowedChatModels.includes(modelId)) {
+      throw new BadRequestException(`模型 ${modelId} 不在本企业对话 Key 和当前成员的允许范围内`);
     }
 
     return this.prisma.conversationSession.update({
@@ -302,10 +305,11 @@ export class ConversationService {
   private async assertOwner(sessionId: string, userId: string) {
     const session = await this.prisma.conversationSession.findUnique({
       where: { id: sessionId },
-      select: { userId: true },
+      select: { userId: true, enterpriseId: true },
     });
 
     if (!session) throw new NotFoundException(`Session ${sessionId} not found`);
     if (session.userId !== userId) throw new ForbiddenException();
+    return session;
   }
 }

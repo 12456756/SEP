@@ -76,7 +76,7 @@ export const MediaVideoPolicyPreviewReasonSchema = z.enum([
   'not-authorized', 'profile-missing', 'disabled', 'unverified', 'connection-unconfigured',
   'adapter-unsupported', 'operation-filtered', 'duration-intersection-empty',
   'aspect-ratio-intersection-empty', 'resolution-intersection-empty', 'protocol-unsupported',
-  'execution-disabled', 'unknown-capability',
+  'execution-disabled', 'unknown-capability', 'enterprise-model-unavailable', 'settlement-not-connected',
 ]);
 export const MediaVideoPolicyPreviewProfileSchema = z.object({
   profileId: ProfileFields.shape.profileId,

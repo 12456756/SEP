@@ -1,5 +1,6 @@
 import { Controller, ExecutionContext, Get, INestApplication, Post, UnauthorizedException, UseGuards } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { mediaCatalogStub } from '../../../test/stubs/compute-catalog.stub';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, realpath, rm, stat } from 'node:fs/promises';
@@ -16,6 +17,7 @@ import { MediaVideoRealStore } from './media-video-real.store';
 import { fingerprint, videoClaims, videoRealPrisma } from './media-video-real.test-support';
 import { VideoFileCacheService } from './video-file-cache.service';
 import { VideoReferenceUploadService } from './video-reference-upload.service';
+import { enterpriseMediaStub } from '../../../test/stubs/enterprise-media.stub';
 
 const run = promisify(execFile);
 
@@ -23,7 +25,7 @@ class VideoRealIntegrationState {
   readonly db = videoRealPrisma();
   readonly config = { get: (key: string) => key === 'MEDIA_VIDEO_REAL_ENABLED' ? 'true' : 'test' };
   readonly runtime = new MediaVideoConfigService(this.db as never, {} as never, this.config as never,
-    undefined, undefined, undefined, { getMediaConnection: async () => ({
+    mediaCatalogStub() as never, undefined, undefined, undefined, { getMediaConnection: async () => ({
       baseUrl: 'https://synthetic.invalid/v1', apiKey: 'synthetic', source: 'environment',
     }) } as never);
   revoked = false;
@@ -85,7 +87,7 @@ acceptance('real-mode video HTTP, cache and Electron host integration (synthetic
     const adapter = {
       connection: async () => ({ base: 'https://synthetic.invalid/v1', key: 'synthetic', fingerprint }),
       pricing: async (_connection, input) => ({ model: 'minimax-h3', operation: input.operation, resolution: '720p',
-        duration_seconds: 4, pricing_status: 'quoted', amount_usd: '0.2', pricing_version: 'synthetic-v1',
+        duration_seconds: 4, pricing_status: 'quoted', amount_usd: null, amount_cny: '1.400000', quote_id: 'synthetic-v1', pricing_version: 'synthetic-v1',
         expires_at: new Date(Date.now() + 60_000).toISOString() }),
       submit: async (_connection, input, _model, references: Buffer[], clientId) => {
         state.submitIds.push(clientId);
@@ -105,14 +107,16 @@ acceptance('real-mode video HTTP, cache and Electron host integration (synthetic
       },
       status: async receiptId => state.db.state.reservations.get(receiptId)?.status ?? 'RESERVED',
       release: async receiptId => { state.db.state.reservations.get(receiptId).status = 'RELEASED'; },
-      settleVideo: async (receiptId, actualCostCny) => {
+      settleCompute: async (receiptId) => {
         state.settledIds.add(receiptId);
-        Object.assign(state.db.state.reservations.get(receiptId), { status: 'SETTLED', settledCny: actualCostCny });
+        Object.assign(state.db.state.reservations.get(receiptId), { status: 'SETTLED', settledCny: '0.700000' });
         return 'SETTLED';
       },
     };
+    const enterprise = enterpriseMediaStub('https://synthetic.invalid/v1', 'synthetic', fingerprint, '0.700000');
     const service = new MediaVideoRealService(state.config as never, state.db as never,
-      { getEffectiveValue: async () => '7' } as never, state.runtime, adapter as never, cache, billing as never, store);
+      { getEffectiveValue: async () => '7' } as never, state.runtime, adapter as never, cache, billing as never, store,
+      enterprise.connections as never, enterprise.media as never);
     const module = await Test.createTestingModule({ controllers: [MediaVideoRealController, VideoRealIntegrationController],
       providers: [MediaVideoRealGuard, { provide: MediaVideoRealService, useValue: service }, { provide: VideoReferenceUploadService, useValue: {} },
         { provide: VideoRealIntegrationState, useValue: state }],

@@ -38,6 +38,7 @@ import { GatewayLifecycleService } from '../../common/lifecycle/gateway-lifecycl
 import { gatewayUpstreamError, validGatewayCompletion, validGatewayUsage } from './gateway-response';
 import { streamErrorDetails, upstreamException, upstreamHeaders } from '../../common/errors/upstream-http.exception';
 import { exceptionDetails, hasBusinessError } from '../../common/errors/error-diagnostics';
+import { createGatewayStreamDelivery } from './gateway-stream-delivery';
 
 @ApiTags('gateway')
 @Controller('gateway/v1')
@@ -104,7 +105,7 @@ export class GatewayController {
         code: 'MODEL_RUNTIME_POLICY_UNAVAILABLE',
       } });
       const authorization = await waitForGatewayOperation(this.gatewayService.validateAndAuthorize(claims, dto.model), 'PLATFORM_AUTHORIZATION_TIMEOUT');
-      res.setHeader('X-SEP-Payment-Mode', authorization.billingSnapshot?.paymentMode ?? 'AUTO');
+      res.setHeader('X-SEP-Payment-Mode', authorization.paymentMode ?? authorization.billingSnapshot?.paymentMode ?? 'AUTO');
       const { request: prepared } = await waitForGatewayOperation(this.gatewayService.prepareRequest(claims, dto, snapshot), 'PLATFORM_MODEL_POLICY_TIMEOUT');
       client.signal.throwIfAborted();
       const execution = await waitForGatewayOperation(this.executions.start(claims, authorization.employeeId, prepared.model, requestId, snapshot, authorization.billingSnapshot));
@@ -128,6 +129,8 @@ export class GatewayController {
         snapshot,
         requestId,
         client.signal,
+        { enterpriseId: claims.enterpriseId, userId: claims.sub, memberId: claims.memberId,
+          subscriptionId: claims.subscriptionId, employeeId: authorization.employeeId, gatewayId: executionId },
       );
       const streamMetrics = {
         headerLatencyMs: Date.now() - startedAt,
@@ -166,7 +169,7 @@ export class GatewayController {
             ...(failure.readDiagnostics ?? {}),
           });
         }
-        // Successful frames retain their bytes; upstream failure frames have already been redacted.
+        // Content remains streamed; the success marker waits for EOF and durable finalization.
         for (const [name, value] of Object.entries(upstreamHeaders(upstreamRes))) {
           res.setHeader(name === 'x-request-id' ? 'X-Compute-Request-ID' : name, value);
         }
@@ -177,11 +180,15 @@ export class GatewayController {
         res.flushHeaders();
 
         const observer = this.gatewayService.observeChatCompletionStream();
+        const delivery = createGatewayStreamDelivery();
         let complete = false;
+        let finalized = false;
         let errorCode: string | undefined;
         let savedUsage: ChatCompletionUsage | null = null;
         let checkpointError: unknown;
         const streamLogger = this.logger;
+        let finalizationError: unknown;
+        const controller = this;
         const checkpoint = async (usage: ChatCompletionUsage | null) => {
           if (!usage || (savedUsage?.prompt_tokens === usage.prompt_tokens && savedUsage?.completion_tokens === usage.completion_tokens)) return;
           try { await saveUsage(usage); }
@@ -206,14 +213,32 @@ export class GatewayController {
                   }
                   observer.write(chunk);
                   await checkpoint(observer.snapshot().usage);
-                  streamMetrics.bytesForwarded += chunk.byteLength;
-                  yield chunk;
+                  for (const frame of delivery.write(chunk)) {
+                    streamMetrics.bytesForwarded += frame.byteLength;
+                    yield frame;
+                  }
                 }
                 const summary = observer.finish();
                 await checkpoint(summary.usage);
+                for (const frame of delivery.finish()) {
+                  streamMetrics.bytesForwarded += frame.byteLength;
+                  yield frame;
+                }
                 if (!summary.finishReason || summary.protocolError) {
                   upstreamFailed = true;
                   throw gatewayUpstreamError('UPSTREAM_INCOMPLETE_STREAM', 'sub2api 流未完整结束');
+                }
+                try {
+                  await waitForGatewayOperation(controller.executions.finish(executionId!, {
+                    finishReason: summary.finishReason, done: summary.done,
+                  }));
+                  finalized = true;
+                } catch (error) { finalizationError = error; throw error; }
+                client.signal.throwIfAborted();
+                const terminal = delivery.complete();
+                if (terminal) {
+                  streamMetrics.bytesForwarded += terminal.byteLength;
+                  yield terminal;
                 }
                 complete = true;
               } catch (error) {
@@ -245,6 +270,7 @@ export class GatewayController {
         }
         const { usage, finishReason, done } = observer.finish();
         if (checkpointError) throw checkpointError;
+        if (finalizationError) throw finalizationError;
         await checkpoint(usage);
         if (complete) {
           const summary = {
@@ -259,7 +285,7 @@ export class GatewayController {
           else this.logger.log(summary);
         }
 
-        await waitForGatewayOperation(this.executions.finish(executionId, { finishReason, done, errorCode }));
+        if (!finalized) await waitForGatewayOperation(this.executions.finish(executionId, { finishReason, done, errorCode }));
       } else {
         const json = await this.gatewayService.readCompletion(upstreamRes);
         const usage = validGatewayUsage((json as { usage?: unknown } | null)?.usage);

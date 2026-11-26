@@ -12,6 +12,7 @@ import { TaskReconcileService } from './task-reconcile.service';
 import { TaskRunnerService } from './task-runner.service';
 import { TaskStepExecutor } from './task-step-executor.service';
 import { GatewayPolicyModule } from '../gateway/gateway-policy.module';
+import { ComputeCreditModule } from '../compute-credit/compute-credit.module';
 
 /**
  * 任务执行引擎。
@@ -22,6 +23,7 @@ import { GatewayPolicyModule } from '../gateway/gateway-policy.module';
  */
 @Module({
   imports: [
+    ComputeCreditModule,
     ConversationModule,
     SettingModule,
     EnterpriseModelConfigModule,

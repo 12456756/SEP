@@ -1,4 +1,5 @@
-import { HttpException } from '@nestjs/common';
+import { HttpException, ConflictException } from '@nestjs/common';
+import { enterpriseMediaStub, signedMediaProtocolStub } from '../../../test/stubs/enterprise-media.stub';
 import { Readable } from 'node:stream';
 import { MediaVideoRealService } from './media-video-real.service';
 import { MediaVideoRealStore } from './media-video-real.store';
@@ -17,9 +18,10 @@ describe('MediaVideoRealService legacy receipt compatibility', () => {
   let enabled: boolean;
   let adapter: { connection: jest.Mock; pricing: jest.Mock; submit: jest.Mock; query: jest.Mock; rawContent: jest.Mock; usage: jest.Mock };
   let cache: { saveReference: jest.Mock; readReference: jest.Mock; saveOutput: jest.Mock; readOutput: jest.Mock; streamOutput: jest.Mock };
-  let billing: { quoteFunding: jest.Mock; reserve: jest.Mock; release: jest.Mock; status: jest.Mock; settleVideo: jest.Mock };
+  let billing: { quoteFunding: jest.Mock; reserve: jest.Mock; release: jest.Mock; status: jest.Mock; settleVideo: jest.Mock; settleCompute?: jest.Mock };
   let runtime: { getRuntimeVideo: jest.Mock };
   let usdRate: string;
+  let enterprise: ReturnType<typeof enterpriseMediaStub>;
   beforeEach(() => {
     db = videoRealPrisma(); store = new MediaVideoRealStore(db as never); enabled = true;
     // Seed the pre-v2 dispatch format to exercise recovery of persisted legacy jobs.
@@ -37,7 +39,7 @@ describe('MediaVideoRealService legacy receipt compatibility', () => {
     adapter = {
       connection: jest.fn(async () => connection),
       pricing: jest.fn(async () => ({ object: 'sub2api.video_pricing', model: 'minimax-h3', operation: 'text-to-video',
-        resolution: '720p', duration_seconds: 4, pricing_status: 'quoted', amount_usd: '0.2', pricing_version: 'pricing-1',
+        resolution: '720p', duration_seconds: 4, pricing_status: 'quoted', amount_usd: null, amount_cny: '1.400000', quote_id: 'pricing-1', pricing_version: 'pricing-1',
         expires_at: new Date(Date.now() + 60_000).toISOString() })),
       submit: jest.fn(async () => ({ taskId: 'task-original', requestId: 'client:original', status: 'queued' })),
       query: jest.fn(async () => ({ id: 'task-original', model: 'minimax-h3', status: 'completed' })),
@@ -59,8 +61,13 @@ describe('MediaVideoRealService legacy receipt compatibility', () => {
     runtime = { getRuntimeVideo: jest.fn(async () => ({ protocolVersion: 1, executionAvailable: true, executionMode: 'real',
       profiles: [{ profileId: input.profileId, configVersion: input.configVersion, displayName: 'H3', kind: 'video',
         operations: ['text-to-video', 'image-to-video'], executionMode: 'async-query', capabilities }] })) };
+    enterprise = enterpriseMediaStub(connection.base, connection.key, fingerprint, '0.700000');
+    Object.assign(billing, { settleCompute: jest.fn(async (receiptId: string) => {
+      Object.assign(db.state.reservations.get(receiptId), { status: 'SETTLED', settledCny: '0.700000' }); return 'SETTLED';
+    }) });
     service = new MediaVideoRealService({ get: () => enabled ? 'true' : 'false' } as never, db as never,
-      { getEffectiveValue: async () => usdRate } as never, runtime as never, adapter as never, cache as never, billing as never, store);
+      { getEffectiveValue: async () => usdRate } as never, runtime as never, adapter as never, cache as never, billing as never, store,
+      enterprise.connections as never, enterprise.media as never);
   });
 
   async function quotedSubmit(clientRequestId = 'client-1') {
@@ -84,7 +91,7 @@ describe('MediaVideoRealService legacy receipt compatibility', () => {
     expect(cache.saveReference).toHaveBeenCalledWith(scope, reference.referenceId, original, reference.expiresAt);
     const value = { ...input, operation: 'image-to-video' as const, referenceIds: [reference.referenceId] };
     adapter.pricing.mockResolvedValue({ model: 'minimax-h3', operation: 'image-to-video', resolution: '720p',
-      duration_seconds: 4, pricing_status: 'quoted', amount_usd: '0.2', pricing_version: 'pricing-1',
+      duration_seconds: 4, pricing_status: 'quoted', amount_usd: null, amount_cny: '1.400000', quote_id: 'pricing-1', pricing_version: 'pricing-1',
       expires_at: new Date(Date.now() + 60000).toISOString() });
     const quote = await service.quote(videoClaims, value);
     await service.submit(videoClaims, { ...value, quoteId: quote.quoteId, clientRequestId: `original-${format}` });
@@ -109,7 +116,7 @@ describe('MediaVideoRealService legacy receipt compatibility', () => {
       db.state.references.set(id, { ...row, id });
     }
     adapter.pricing.mockImplementation(async () => ({ model: 'minimax-h3', operation: 'image-to-video', resolution: '720p',
-      duration_seconds: 4, pricing_status: 'quoted', amount_usd: '0.2', pricing_version: 'pricing-1',
+      duration_seconds: 4, pricing_status: 'quoted', amount_usd: null, amount_cny: '1.400000', quote_id: 'pricing-1', pricing_version: 'pricing-1',
       expires_at: new Date(Date.now() + 60000).toISOString() }));
     const quote = await service.quote(videoClaims, value);
     const request = { ...value, quoteId: quote.quoteId, clientRequestId: 'multi-video' };
@@ -176,7 +183,7 @@ describe('MediaVideoRealService legacy receipt compatibility', () => {
     const { receipt } = await quotedSubmit('failed-task-and-billing');
     const original = { code: 'reference_rejected', message: 'Reference 2 rejected', reference_index: 1 };
     adapter.query.mockResolvedValueOnce({ id: 'task-original', model: 'minimax-h3', status: 'failed', error: original });
-    adapter.usage.mockRejectedValueOnce(Object.assign(new Error('Billing query connection reset'), { code: 'ECONNRESET' }));
+    enterprise.media.fee.mockRejectedValueOnce(Object.assign(new Error('Billing query connection reset'), { code: 'ECONNRESET' }));
     const result = await service.receipt(videoClaims, receipt.receiptId);
     expect(result).toMatchObject({ status: 'FAILED', billingStatus: 'RECONCILING', upstreamError: { status: 200, body: {
       error: original, sepDiagnostics: { billing: { status: 502, body: { error: {
@@ -211,7 +218,7 @@ describe('MediaVideoRealService legacy receipt compatibility', () => {
       adapter: { available: true, operations: ['text-to-video'] },
     }] })) });
     adapter.pricing.mockResolvedValue({ model: 'minimax-h3', operation: input.operation, resolution: '720p', duration_seconds: durationSeconds,
-      pricing_status: 'quoted', amount_usd: '0.2', pricing_version: 'range-1', expires_at: new Date(Date.now() + 60_000).toISOString() });
+      pricing_status: 'quoted', amount_usd: null, amount_cny: '1.400000', quote_id: 'range-1', pricing_version: 'range-1', expires_at: new Date(Date.now() + 60_000).toISOString() });
     const value = MediaVideoGatewayQuoteRequestV3Schema.parse({ protocolVersion: 3, specRevision: 1,
       profileId: input.profileId, configVersion: input.configVersion, operation: input.operation,
       referenceIds: [], creativeBrief: 'Range check', requestedSpec: { durationSeconds, resolution: '720p' } });
@@ -250,7 +257,7 @@ describe('MediaVideoRealService legacy receipt compatibility', () => {
         configVersion: input.configVersion, operations: ['text-to-video'], authorized: true,
         adapter: { available: true, operations: ['text-to-video'] } }] })) });
     adapter.pricing.mockImplementation(async () => ({ model: 'minimax-h3', operation: input.operation,
-      resolution: value.requestedSpec.resolution, duration_seconds: 8, pricing_status: 'quoted', amount_usd: '0.2',
+      resolution: value.requestedSpec.resolution, duration_seconds: 8, pricing_status: 'quoted', amount_usd: null, amount_cny: '1.400000', quote_id: 'v3-pricing',
       pricing_version: 'v3-pricing', expires_at: new Date(Date.now() + 60_000).toISOString() }));
     adapter.usage.mockImplementation(async () => ({ request_id: 'client:original', status: 'settled',
       model: 'minimax-h3', actual_cost_usd: '0.1', video_count: 1, duration_seconds: 8,
@@ -269,7 +276,7 @@ describe('MediaVideoRealService legacy receipt compatibility', () => {
       outputs: [{ frameRate: actual.frameRate }] });
     expect(done.errorCode).toBe(deliveryStatus === 'mismatched' ? 'OUTPUT_SPEC_MISMATCH' : null);
     expect(adapter.submit).toHaveBeenCalledTimes(1);
-    expect(billing.settleVideo).toHaveBeenCalledWith(pending.receiptId, '0.700000', '0.100000', 'minimax-h3', 'minimax-h3');
+    expect(billing.settleCompute).toHaveBeenCalledWith(pending.receiptId, `execution_${pending.receiptId}`, 'minimax-h3');
     cache.streamOutput.mockResolvedValueOnce({ metadata: actual, stream: Readable.from(videoBytes) });
     await expect(service.content(videoClaims, done.receiptId, done.outputs[0].outputId)).resolves.toMatchObject({ output: done.outputs[0] });
     const tampered = Readable.from(videoBytes);
@@ -298,7 +305,7 @@ describe('MediaVideoRealService legacy receipt compatibility', () => {
     expect(receipt).toMatchObject({ status: 'SUBMISSION_UNKNOWN', errorCode: 'UPSTREAM_SPEC_UNSUPPORTED',
       billingStatus: 'RECONCILING' });
     expect(db.state.requests.get(receipt.receiptId).receipt.errorCode).toBe('UPSTREAM_SPEC_UNSUPPORTED');
-    adapter.usage.mockResolvedValue({ request_id: 'client:original', status: 'pending' });
+    enterprise.media.fee.mockResolvedValue({ feeStatus: 'PENDING' });
     await expect(service.submit(videoClaims, request)).resolves.toMatchObject({
       errorCode: 'UPSTREAM_SPEC_UNSUPPORTED', billingStatus: 'RECONCILING' });
     expect(adapter.submit).toHaveBeenCalledTimes(1);
@@ -307,23 +314,23 @@ describe('MediaVideoRealService legacy receipt compatibility', () => {
 
   it('freezes customer price/rate/funding and never persists prompts, keys or supplier URLs', async () => {
     const quote = await service.quote(videoClaims, input);
-    expect(quote).toMatchObject({ mock: false, amountCny: '1.400000', amountUsd: '0.2', usdToCnyRate: 7, billingStatus: 'NOT_RESERVED' });
+    expect(quote).toMatchObject({ mock: false, amountCny: '1.400000', amountUsd: null, usdToCnyRate: null, billingStatus: 'NOT_RESERVED' });
     const raw = JSON.stringify([...db.state.quotes.values()]);
     expect(raw).not.toContain(input.creativeBrief);
     expect(raw).not.toContain('secret-never-persist');
-    expect(raw).not.toContain('https://');
+    expect(db.state.quotes.get(quote.quoteId).metadata.configuration.compute).toMatchObject({ credentialId: 'enterprise-key' });
     expect(billing.reserve).not.toHaveBeenCalled();
     expect(adapter.submit).not.toHaveBeenCalled();
   });
 
-  it('converts the Sub2 customer quote once using the frozen SEP exchange rate', async () => {
+  it('uses compute CNY pricing without applying SEP exchange rates again', async () => {
     usdRate = '7.2';
     adapter.pricing.mockResolvedValue({ model: 'minimax-h3', operation: input.operation,
-      resolution: '720p', duration_seconds: 4, pricing_status: 'quoted', amount_usd: '4.0000000000',
+      resolution: '720p', duration_seconds: 4, pricing_status: 'quoted', amount_usd: null, amount_cny: '28.800000', quote_id: 'pricing-1',
       pricing_version: 'pricing-1', expires_at: new Date(Date.now() + 60_000).toISOString() });
     const quote = await service.quote(videoClaims, input);
-    expect(quote).toMatchObject({ amountUsd: '4.0000000000', amountCny: '28.800000', usdToCnyRate: 7.2 });
-    expect(db.state.quotes.get(quote.quoteId).metadata.configuration).toMatchObject({ amountUsd: '4.0000000000', amountCny: '28.800000', usdToCnyRate: 7.2 });
+    expect(quote).toMatchObject({ amountUsd: null, amountCny: '28.800000', usdToCnyRate: null });
+    expect(db.state.quotes.get(quote.quoteId).metadata.configuration).toMatchObject({ amountUsd: null, amountCny: '28.800000', usdToCnyRate: null });
   });
 
   it('lists only real runtime profiles and never enables the mock branch', async () => {
@@ -347,8 +354,8 @@ describe('MediaVideoRealService legacy receipt compatibility', () => {
     'passes the strict adapter contract and sends exactly one %s HTTP submission', async operation => {
       const connection = { base: 'https://relay.invalid/v1', key: 'private-test-key', fingerprint: '' };
       connection.fingerprint = createHash('sha256').update(connection.base + '\0' + connection.key).digest('hex');
-      adapter.connection.mockResolvedValue(connection);
-      const realAdapter = new Sub2apiVideoAdapter({} as never);
+      enterprise.media.connection.mockResolvedValue({ ...await enterprise.media.connection('enterprise', 'video'), ...connection });
+      const realAdapter = new Sub2apiVideoAdapter({} as never, signedMediaProtocolStub as never);
       adapter.submit.mockImplementation(realAdapter.submit.bind(realAdapter));
       const quoteInput = { ...input, operation, referenceIds: [] as string[] };
       if (operation === 'image-to-video') {
@@ -359,7 +366,7 @@ describe('MediaVideoRealService legacy receipt compatibility', () => {
         quoteInput.referenceIds = [reference.referenceId];
       }
       adapter.pricing.mockImplementation(async () => ({ model: 'minimax-h3', operation,
-        resolution: '720p', duration_seconds: 4, pricing_status: 'quoted', amount_usd: '0.2',
+        resolution: '720p', duration_seconds: 4, pricing_status: 'quoted', amount_usd: null, amount_cny: '1.400000', quote_id: 'pricing-1',
         pricing_version: 'pricing-1', expires_at: new Date(Date.now() + 60_000).toISOString() }));
       const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue(new Response(JSON.stringify({
         object: 'video', id: 'task-original', model: 'minimax-h3', status: 'queued',
@@ -404,7 +411,7 @@ describe('MediaVideoRealService legacy receipt compatibility', () => {
       outputs: [{ outputId: `${receipt.receiptId}-output-1`, ...outputMetadata, durationSeconds: 4.458333, width: 1344, height: 768 }] });
     expect(adapter.query).toHaveBeenCalledWith(expect.objectContaining({ fingerprint }), 'task-original', 'minimax-h3');
     expect(cache.saveOutput).toHaveBeenCalledWith(scope, `${receipt.receiptId}-output-1`, expect.any(Response), expect.any(String));
-    expect(billing.settleVideo).toHaveBeenCalledWith(receipt.receiptId, '0.700000', '0.100000', 'minimax-h3');
+    expect(billing.settleCompute).toHaveBeenCalledWith(receipt.receiptId, `execution_${receipt.receiptId}`, 'minimax-h3');
     const download = await service.content(videoClaims, receipt.receiptId, completed.outputs[0].outputId);
     const chunks: Buffer[] = [];
     for await (const chunk of download.stream) chunks.push(Buffer.from(chunk));
@@ -430,10 +437,10 @@ describe('MediaVideoRealService legacy receipt compatibility', () => {
         outputs: [{ durationSeconds: 15, ...dimensions }] });
       const [record] = [...db.state.requests.values()];
       expect(record.configuration.parameters.durationSeconds).toBe(4);
-      expect(billing.settleVideo).toHaveBeenCalledWith(receipt.receiptId, '0.700000', '0.100000', 'minimax-h3');
+      expect(billing.settleCompute).toHaveBeenCalledWith(receipt.receiptId, `execution_${receipt.receiptId}`, 'minimax-h3');
       await service.receipt(videoClaims, receipt.receiptId);
       expect(adapter.submit).toHaveBeenCalledTimes(1);
-      expect(billing.settleVideo).toHaveBeenCalledTimes(1);
+      expect(billing.settleCompute).toHaveBeenCalledTimes(1);
     });
 
   it.each([false, undefined])('does not deliver an audio-required output with hasAudio=%s', async hasAudio => {
@@ -475,7 +482,7 @@ describe('MediaVideoRealService legacy receipt compatibility', () => {
 
   it('preserves UNKNOWN and frozen funds after lost submit response; replay never resubmits', async () => {
     adapter.submit.mockRejectedValue(new VideoDispatchError('client:original', false));
-    adapter.usage.mockResolvedValue({ request_id: 'client:original', status: 'pending', actual_cost_usd: null });
+    enterprise.media.fee.mockResolvedValue({ feeStatus: 'PENDING' });
     const { receipt, request } = await quotedSubmit();
     expect(receipt).toMatchObject({ status: 'SUBMISSION_UNKNOWN', billingStatus: 'RECONCILING' });
     await expect(service.submit(videoClaims, request)).resolves.toMatchObject({ status: 'SUBMISSION_UNKNOWN' });
@@ -495,9 +502,10 @@ describe('MediaVideoRealService legacy receipt compatibility', () => {
 
   it('releases only a definitely rejected unsubmitted task', async () => {
     adapter.submit.mockRejectedValue(new VideoDispatchError('client:original', true));
+    billing.settleCompute.mockResolvedValueOnce('RELEASED');
     const { receipt } = await quotedSubmit();
     expect(receipt).toMatchObject({ status: 'FAILED', billingStatus: 'RELEASED' });
-    expect(billing.release).toHaveBeenCalledTimes(1);
+    expect(billing.settleCompute).toHaveBeenCalledTimes(1);
     expect(adapter.submit.mock.calls[0].at(-1)).toBe('pricing-1');
     expect(billing.settleVideo).not.toHaveBeenCalled();
   });
@@ -506,7 +514,7 @@ describe('MediaVideoRealService legacy receipt compatibility', () => {
     const { receipt } = await quotedSubmit();
     db.state.requests.get(receipt.receiptId).configuration.outputExpiresAt = new Date(Date.now() - 1000).toISOString();
     adapter.query.mockResolvedValue({ id: 'task-original', model: 'minimax-h3', status });
-    adapter.usage.mockResolvedValue({ request_id: 'client:original', status: 'pending', actual_cost_usd: null });
+    enterprise.media.fee.mockResolvedValue({ feeStatus: 'PENDING' });
     const result = await service.receipt(videoClaims, receipt.receiptId);
     expect(result).toMatchObject({ status: status.toUpperCase(), pollAfterMs: null, billingStatus: 'RECONCILING', recovery: { canQuery: true, canDownload: false } });
     await expect(service.receipt(videoClaims, receipt.receiptId)).resolves.toMatchObject({ status: status.toUpperCase(), billingStatus: 'RECONCILING' });
@@ -520,15 +528,15 @@ describe('MediaVideoRealService legacy receipt compatibility', () => {
   it.each(['failed', 'cancelled'])('settles a %s task only after exact original usage evidence', async status => {
     const { receipt } = await quotedSubmit();
     adapter.query.mockResolvedValue({ id: 'task-original', model: 'minimax-h3', status });
-    const usage = await adapter.usage();
-    adapter.usage.mockResolvedValue({ ...usage, video_count: 2 });
+    const fee = await enterprise.media.fee('enterprise', 'video', receipt.receiptId);
+    enterprise.media.fee.mockResolvedValue({ feeStatus: 'PENDING' });
     await expect(service.receipt(videoClaims, receipt.receiptId)).resolves.toMatchObject({ status: status.toUpperCase(),
       billingStatus: 'RECONCILING', recovery: { canQuery: true } });
-    expect(billing.settleVideo).not.toHaveBeenCalled();
-    adapter.usage.mockResolvedValue(usage);
+    expect(billing.settleCompute).not.toHaveBeenCalled();
+    enterprise.media.fee.mockResolvedValue(fee);
     await expect(service.receipt(videoClaims, receipt.receiptId)).resolves.toMatchObject({ status: status.toUpperCase(),
       billingStatus: 'SETTLED', pollAfterMs: null, recovery: { canQuery: false, canDownload: false } });
-    expect(billing.settleVideo).toHaveBeenCalledTimes(1);
+    expect(billing.settleCompute).toHaveBeenCalledTimes(1);
     expect(billing.release).not.toHaveBeenCalled();
     expect(adapter.rawContent).not.toHaveBeenCalled();
   });
@@ -562,7 +570,7 @@ describe('MediaVideoRealService legacy receipt compatibility', () => {
       recovery: { canQuery: false } });
     expect(billing.release).toHaveBeenCalledTimes(1);
     expect(adapter.submit).not.toHaveBeenCalled();
-    expect(adapter.connection).toHaveBeenCalledTimes(2);
+    expect(adapter.connection).not.toHaveBeenCalled();
   });
 
   it('does not release an ambiguously settled undispatched reservation', async () => {
@@ -580,6 +588,7 @@ describe('MediaVideoRealService legacy receipt compatibility', () => {
 
   it('marks overdue dispatch with no returned IDs UNKNOWN without reposting or refunding', async () => {
     const { receipt } = await quotedSubmit();
+    enterprise.media.fee.mockResolvedValue({ feeStatus: 'PENDING' });
     const row = db.state.requests.get(receipt.receiptId);
     Object.assign(row.configuration, { upstreamTaskId: null, upstreamRequestId: null, dispatchState: 'DISPATCHING' });
     row.receipt.status = row.status = 'SUBMITTING'; row.submissionDeadline = new Date(Date.now() - 1000);
@@ -597,6 +606,7 @@ describe('MediaVideoRealService legacy receipt compatibility', () => {
     expect(row.configuration).toMatchObject({ upstreamTaskId: 'task-second', upstreamRequestId: null, dispatchState: 'ACCEPTED' });
     expect(second.receipt).toMatchObject({ status: 'QUEUED', billingStatus: 'RECONCILING' });
     adapter.query.mockResolvedValue({ id: 'task-second', model: 'minimax-h3', status: 'failed' });
+    enterprise.media.fee.mockRejectedValue(new ConflictException('原费用单归属不一致'));
     await expect(service.receipt(videoClaims, second.receipt.receiptId)).resolves.toMatchObject({ status: 'FAILED', billingStatus: 'RECONCILING' });
     expect(adapter.usage).not.toHaveBeenCalled();
     expect(billing.settleVideo).not.toHaveBeenCalled();
@@ -609,20 +619,19 @@ describe('MediaVideoRealService legacy receipt compatibility', () => {
     ['video_count', 2], ['request_id', 'client:another'],
   ])('does not settle mismatched %s evidence', async (field, value) => {
     const { receipt } = await quotedSubmit();
-    const usage = await adapter.usage();
-    adapter.usage.mockResolvedValue({ ...usage, [field]: value });
+    enterprise.media.fee.mockRejectedValue(new ConflictException(`远端费用证据 ${field} 不匹配：${value}`));
     await expect(service.receipt(videoClaims, receipt.receiptId)).resolves.toMatchObject({ status: 'SUCCEEDED', billingStatus: 'RECONCILING' });
-    expect(billing.settleVideo).not.toHaveBeenCalled();
+    expect(billing.settleCompute).not.toHaveBeenCalled();
     expect(billing.release).not.toHaveBeenCalled();
   });
 
   it('refuses changed connection fingerprints while billing is pending but allows authorized cached content', async () => {
     const { receipt } = await quotedSubmit();
-    adapter.usage.mockResolvedValue({ request_id: 'client:original', status: 'pending', actual_cost_usd: null });
+    enterprise.media.fee.mockResolvedValue({ feeStatus: 'PENDING' });
     const completed = await service.receipt(videoClaims, receipt.receiptId);
     expect(completed.billingStatus).toBe('RECONCILING');
     adapter.query.mockClear(); adapter.rawContent.mockClear();
-    adapter.connection.mockResolvedValue({ base: 'https://other.invalid/v1', key: 'other-secret', fingerprint: 'f'.repeat(64) });
+    enterprise.media.connection.mockResolvedValue({ ...await enterprise.media.connection('enterprise', 'video'), fingerprint: 'f'.repeat(64) });
     await expect(service.receipt(videoClaims, receipt.receiptId)).rejects.toMatchObject(code('CONFIG_CHANGED'));
     const download = await service.content(videoClaims, receipt.receiptId, completed.outputs[0].outputId);
     download.stream.destroy();

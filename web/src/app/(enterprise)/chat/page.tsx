@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { MessageSquare } from 'lucide-react';
+import { MessageSquare, MessageSquarePlus, X } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { cn } from '@/lib/utils';
 import { EmptyState } from '@/components/ui/feedback';
 import { toast } from '@/components/ui/toast';
 import { ApiError } from '@/lib/api-client';
@@ -29,6 +31,7 @@ export default function ChatPage() {
   const presetEmployee = searchParams.get('employeeId');
   const [activeId, setActiveId] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [mobileSessionsOpen, setMobileSessionsOpen] = useState(false);
   const handledPreset = useRef<string | null>(null);
 
   // 历史会话可能关联已下架员工；优先打开仍可用的会话，避免进入页面就被旧会话卡住。
@@ -45,6 +48,7 @@ export default function ChatPage() {
         onSuccess: (conv) => {
           setActiveId(conv.id);
           setPickerOpen(false);
+          setMobileSessionsOpen(false);
         },
         /*
           没有这个分支时，创建失败的表现是「点了开始对话，什么都不发生」——
@@ -86,33 +90,47 @@ export default function ChatPage() {
   };
 
   return (
-    <div className="flex h-full min-h-0 overflow-hidden">
-      <SessionList
-        sessions={sessions}
-        activeId={effectiveActive}
-        loading={isLoading}
-        onSelect={setActiveId}
-        onNew={() => setPickerOpen(true)}
-        onRename={(id, title) => renameConv.mutate({ id, title })}
-        onDelete={handleDelete}
-      />
-
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        {effectiveActive ? (
-          <ChatWindow
-            key={effectiveActive}
-            conversationId={effectiveActive}
-            onNewSession={() => setPickerOpen(true)}
+    <div className="flex h-full min-h-0 flex-col overflow-hidden pb-[calc(6rem+env(safe-area-inset-bottom))] md:flex-row md:pb-0">
+      <div className="flex shrink-0 items-center justify-between border-b border-border bg-sidebar px-3 py-2 md:hidden">
+        <Button variant="ghost" size="sm" aria-expanded={mobileSessionsOpen} aria-controls="chat-sessions"
+          onClick={() => setMobileSessionsOpen(open => !open)}>
+          {mobileSessionsOpen ? <X className="h-4 w-4" /> : <MessageSquare className="h-4 w-4" />}
+          {mobileSessionsOpen ? '收起会话' : '会话列表'}
+        </Button>
+        <Button variant="ghost" size="icon" aria-label="新建会话" title="新建会话" onClick={() => setPickerOpen(true)}>
+          <MessageSquarePlus className="h-4 w-4" />
+        </Button>
+      </div>
+      <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
+        <div id="chat-sessions" className={cn('absolute inset-0 z-30 md:static md:block md:shrink-0', !mobileSessionsOpen && 'hidden')}>
+          <SessionList
+            sessions={sessions}
+            activeId={effectiveActive}
+            loading={isLoading}
+            onSelect={(id) => { setActiveId(id); setMobileSessionsOpen(false); }}
+            onNew={() => setPickerOpen(true)}
+            onRename={(id, title) => renameConv.mutate({ id, title })}
+            onDelete={handleDelete}
           />
-        ) : (
-          <div className="flex h-full items-center justify-center p-6">
-            <EmptyState
-              icon={<MessageSquare className="h-8 w-8" />}
-              title="选择或新建一个会话"
-              description="从左侧选择已有会话，或点击新建会话挑选一位硅基员工开始对话。"
+        </div>
+
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+          {effectiveActive ? (
+            <ChatWindow
+              key={effectiveActive}
+              conversationId={effectiveActive}
+              onNewSession={() => setPickerOpen(true)}
             />
-          </div>
-        )}
+          ) : (
+            <div className="flex h-full items-center justify-center p-6">
+              <EmptyState
+                icon={<MessageSquare className="h-8 w-8" />}
+                title="选择或新建一个会话"
+                description="从左侧选择已有会话，或点击新建会话挑选一位硅基员工开始对话。"
+              />
+            </div>
+          )}
+        </div>
       </div>
 
       <NewSessionDialog

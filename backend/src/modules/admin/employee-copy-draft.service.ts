@@ -5,7 +5,7 @@ import { createSseErrorDiagnostics } from '../../common/errors/sse-error-diagnos
 import { EmployeeCopyDraftDtoSchema, type EmployeeCopyDraftDto } from '../../shared/employee-copy.dto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ModelRequestLifecycle } from '../conversation/model-request-lifecycle';
-import { resolveSub2ApiProviderConfig } from '../conversation/sub2api-provider-config';
+import { resolveAdminSub2ApiProviderConfig } from '../conversation/sub2api-provider-config';
 import { ModelRuntimePolicyService } from '../setting/model-runtime-policy.service';
 import { SettingService } from '../setting/setting.service';
 import { SETTING_KEYS } from 'shared';
@@ -76,7 +76,7 @@ export class EmployeeCopyDraftService {
     userContent: string;
   }) {
     const [provider, configuredDefault, enabledModels] = await Promise.all([
-      resolveSub2ApiProviderConfig(this.settings),
+      resolveAdminSub2ApiProviderConfig(this.settings),
       this.settings.getEffectiveValue(SETTING_KEYS.SUB2API_DEFAULT_MODEL),
       this.prisma.platformModel.findMany({
         where: { enabled: true, isStale: false },

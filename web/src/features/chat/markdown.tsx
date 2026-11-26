@@ -51,7 +51,7 @@ function MarkdownImpl({ content, className }: { content: string; className?: str
   return (
     <div
       className={cn(
-        'md-body markdown-body max-w-none text-[15px] leading-relaxed text-foreground',
+        'md-body markdown-body max-w-none [overflow-wrap:anywhere] text-[15px] leading-relaxed text-foreground',
         className,
       )}
     >

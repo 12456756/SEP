@@ -1,6 +1,8 @@
 import { ServiceUnavailableException } from "@nestjs/common";
 import { DEFAULT_MODEL_ID, SETTING_KEYS } from "shared";
 import { SettingService } from "../setting/setting.service";
+import type { ComputeConnectionService } from '../compute-integration/compute-connection.service';
+import type { ComputeChatFunding } from '../compute-integration/compute-model-transport.service';
 
 type SettingReader = Pick<SettingService, "getEffectiveValue">;
 
@@ -9,22 +11,26 @@ export interface Sub2ApiProviderConfig {
   apiKey: string;
   /** 系统设置里的默认模型，未配置时回落 DEFAULT_MODEL_ID。 */
   defaultModel: string;
+  fetch?: typeof fetch;
+  enterpriseBilling?: boolean;
 }
 
-/**
- * 中转（sub2api）连接参数的**唯一**解析口。
- *
- * 必须走系统设置而不是 ConfigService(env)：运营在管理端改的是 SystemSetting，
- * env 只是它的兜底。两者一旦不同步，「谁读 env 谁挂」——线上真出过：
- * 2026-09-05 生产环境 env 里的 SUB2API_API_KEY 已失效，而 SystemSetting 里是
- * 有效的，于是对话正常、任务规划报 relay 401 INVALID_API_KEY，同一台机器
- * 两个功能两种结果，排查时完全对不上。
- *
- * 所以任何要打中转的地方都用这个函数，不要再自己读 env。
- */
+/** Enterprise execution never falls back to an administrator credential. */
 export async function resolveSub2ApiProviderConfig(
   settings: SettingReader,
+  tenant?: { enterpriseId: string; connections: ComputeConnectionService; funding?: ComputeChatFunding },
 ): Promise<Sub2ApiProviderConfig> {
+  if (!tenant?.enterpriseId || !tenant.connections) throw new ServiceUnavailableException({
+    code: 'COMPUTE_ENTERPRISE_CONTEXT_REQUIRED', message: '模型调用缺少企业算力连接，无法使用企业凭证',
+  });
+  await tenant.connections.assertEnterpriseModeSupported(tenant.enterpriseId);
+  const enterprise = await tenant.connections.chatProvider(tenant.enterpriseId, tenant.funding);
+  if (!enterprise) throw new ServiceUnavailableException({ code: 'COMPUTE_SETTLEMENT_NOT_CONNECTED', message: '企业算力连接不可用' });
+  return { ...enterprise, defaultModel: (await settings.getEffectiveValue(SETTING_KEYS.SUB2API_DEFAULT_MODEL)) || DEFAULT_MODEL_ID, enterpriseBilling: true };
+}
+
+/** Explicit administrator-only operations, never used as an enterprise fallback. */
+export async function resolveAdminSub2ApiProviderConfig(settings: SettingReader): Promise<Sub2ApiProviderConfig> {
   const [baseURL, apiKey, defaultModel] = await Promise.all([
     settings.getEffectiveValue(SETTING_KEYS.SUB2API_BASE_URL),
     settings.getEffectiveValue(SETTING_KEYS.SUB2API_API_KEY),

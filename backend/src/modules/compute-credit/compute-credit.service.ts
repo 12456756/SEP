@@ -5,8 +5,10 @@ import {
   ConflictException,
   NotFoundException,
   ForbiddenException,
+  Optional,
 } from "@nestjs/common";
 import { Prisma } from "@prisma/client";
+import { createHash } from 'node:crypto';
 import { Decimal } from "@prisma/client/runtime/library";
 import { PrismaService } from "../../prisma/prisma.service";
 import { assertActiveEnterpriseInTx, assertActiveUserInTx } from '../../common/enterprise-write-lock';
@@ -25,7 +27,8 @@ import {
   type PaymentMode,
 } from "shared";
 import { calculateBilledCost, ModelBillingService } from '../model/model-billing.service';
-import { ModelBillingSnapshotSchema } from 'shared';
+import { ComputeSettlementDecisionSchema, ModelBillingSnapshotSchema, PaymentModeSchema } from 'shared';
+import { ComputeIntegrationService } from '../compute-integration/compute-integration.service';
 import { readPaymentMode } from './payment-preference';
 import type {
   BalanceCheckResult,
@@ -69,6 +72,7 @@ export class ComputeCreditService {
     private readonly memberAllowance: MemberAllowanceService,
     private readonly allowanceNotifier: AllowanceNotifierService,
     private readonly modelBilling: ModelBillingService,
+    @Optional() private readonly integrations?: ComputeIntegrationService,
   ) {}
 
   async getPaymentPreference(enterpriseId: string, userId: string) {
@@ -191,6 +195,67 @@ export class ComputeCreditService {
 
   // ── 对话前余额检查 ─────────────────────────────────────────────────────────
 
+  /** Recover enterprise funding for an existing chat without generating or repricing. */
+  async recoverUnpaidSettlements() {
+    const pending = await this.prisma.computeIntegrationSettlement.findMany({ where: { kind: 'chat', status: 'UNPAID' },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], take: 50 });
+    for (const decision of pending) {
+      try { await this.recoverUnpaidSettlement(decision.id, decision.executionId); }
+      catch (error) { this.logger.warn({ event: 'compute_local_debt_recovery_pending', settlementId: decision.id,
+        message: error instanceof Error ? error.message : '原欠费账单补扣暂未完成' }); }
+    }
+  }
+
+  private async recoverUnpaidSettlement(settlementId: string, executionId: string) {
+    await this.prisma.$transaction(async tx => {
+      const execution = await tx.computeIntegrationExecution.findUnique({ where: { id: executionId } });
+      if (!execution?.localUsageRecordId) return;
+      const original = await tx.computeUsageRecord.findUnique({ where: { id: execution.localUsageRecordId } });
+      if (!original || original.enterpriseId !== execution.enterpriseId) throw new ConflictException('原欠费账单关联不一致');
+      if (original.userId) await assertActiveUserInTx(tx, original.userId);
+      await assertActiveEnterpriseInTx(tx, original.enterpriseId);
+      const row = await tx.computeIntegrationSettlement.findUniqueOrThrow({ where: { id: settlementId } });
+      const usage = await tx.computeUsageRecord.findUniqueOrThrow({ where: { id: original.id } });
+      if (row.status !== 'UNPAID' || usage.unpaidCNY.lte(0)) return;
+      if (row.enterpriseId !== execution.enterpriseId || row.executionId !== execution.id || row.kind !== 'chat'
+        || row.billId !== execution.billId || row.billVersion !== execution.billVersion
+        || !row.grossCny.eq(execution.grossCny ?? -1) || !row.grossCny.eq(usage.costCNY)
+        || !row.freeCny.eq(usage.creditPaidCNY)
+        || !row.paidCny.eq(usage.memberWalletPaidCNY.add(usage.walletPaidCNY).add(usage.personalPaidCNY))
+        || !row.unpaidCny.eq(usage.unpaidCNY) || !row.grossCny.eq(row.freeCny.add(row.paidCny).add(row.unpaidCny))) {
+        throw new ConflictException('原欠费账单金额或费用单关联不一致');
+      }
+      const personalOnly = original.paymentMode === 'PERSONAL_ONLY';
+      if (personalOnly && !original.userId) throw new ConflictException('个人付款原账单缺少付款成员');
+      const funds = personalOnly
+        ? await this.personalWallet.consumeUpTo(tx, original.userId, usage.unpaidCNY,
+          { relatedId: usage.id, description: '已执行模型原账单补扣' })
+        : original.userId
+          ? await this.memberAllowance.consumeMemberWalletUpTo(tx, original.enterpriseId, original.userId, usage.unpaidCNY)
+          : await this.wallet.consumeComputeUpTo(tx, original.enterpriseId, usage.unpaidCNY,
+            { relatedId: usage.id, description: '已执行模型原账单补扣' });
+      if (funds.paid.isZero()) return;
+      const unpaid = usage.unpaidCNY.sub(funds.paid), paid = row.paidCny.add(funds.paid);
+      const parsed = ComputeSettlementDecisionSchema.parse({ enterpriseId: row.enterpriseId, executionId: row.executionId,
+        kind: row.kind, billId: row.billId, billVersion: row.billVersion, currency: 'CNY', grossCny: row.grossCny.toFixed(6),
+        freeCny: row.freeCny.toFixed(6), paidCny: paid.toFixed(6), unpaidCny: unpaid.toFixed(6) });
+      const decisionHash = createHash('sha256').update(JSON.stringify(parsed)).digest('hex');
+      await tx.computeUsageRecord.update({ where: { id: usage.id }, data: { unpaidCNY: unpaid,
+        ...(personalOnly ? { personalPaidCNY: { increment: funds.paid } }
+          : original.userId ? { memberWalletPaidCNY: { increment: funds.paid } } : { walletPaidCNY: { increment: funds.paid } }) } });
+      if (personalOnly) {
+        if (!('transactionId' in funds) || typeof funds.transactionId !== 'string' || !funds.transactionId) throw new ConflictException('个人补扣缺少钱包流水');
+        await this.integrations.recordTransfer(tx, { enterpriseId: row.enterpriseId,
+          businessId: `personal_debt_${funds.transactionId}`, direction: 'credit_compute', currency: 'CNY',
+          amountCny: funds.paid.toFixed(6), fundingRef: funds.transactionId });
+      }
+      await tx.computeIntegrationSettlement.update({ where: { id: row.id }, data: { paidCny: paid, unpaidCny: unpaid,
+        decisionHash, status: unpaid.isZero() ? 'LOCAL_CONFIRMED' : 'UNPAID' } });
+      if (unpaid.isZero()) await tx.computeIntegrationJob.upsert({ where: { businessId: `settle_${row.id}` }, update: {},
+        create: { enterpriseId: row.enterpriseId, businessId: `settle_${row.id}`, kind: 'SETTLEMENT', status: 'PENDING' } });
+    });
+  }
+
   /**
    * 对话前的余额闸门。
    *
@@ -208,7 +273,8 @@ export class ComputeCreditService {
   ): Promise<BalanceCheckResult> {
     const paymentMode = typeof model === 'object' ? model.paymentMode ?? 'AUTO'
       : userId ? await readPaymentMode(this.prisma, enterpriseId, userId) : 'AUTO';
-    if (model) {
+    const enterpriseMode = await this.integrations?.isEnterpriseMode(enterpriseId) ?? false;
+    if (model && !enterpriseMode) {
       const free = typeof model === 'string'
         ? (await this.prisma.platformModel.findUnique({ where: { modelId: model }, select: { isFree: true } }))?.isFree === true
         : model.billingMultiplier === 0;
@@ -264,7 +330,8 @@ export class ComputeCreditService {
         ? Decimal.max(0, credit.grantedCNY.sub(credit.usedCNY))
         : new Decimal(0);
     const memberScoped = Boolean(userId && this.memberAllowance.getMemberWalletBalance);
-    const walletBalance = memberScoped ? new Decimal(0) : Decimal.max(0, wallet.balance);
+    const walletBalance = memberScoped ? new Decimal(0) : enterpriseMode
+      ? await this.wallet.getAvailableComputeBalance(enterpriseId) : Decimal.max(0, wallet.balance);
     // 成员充值余额是专属企业资金来源，但仍受本周期额度闸门约束；
     // 普通成员不自动使用企业公共钱包，避免专款耗尽后越权消费公共余额。
     const memberWalletBalance = Decimal.max(0, memberWallet);
@@ -337,17 +404,20 @@ export class ComputeCreditService {
    * 会重复触发计费，靠调用方自觉挡不住 —— 命中唯一约束即视为已入账。
    */
   async chargeUsage(params: ChargeUsageParams): Promise<ChargeUsageResult> {
-    const idempotencyKey = `${params.sessionId}:${params.messageId}`;
-
-    // 计价参数在事务外读：它们是配置读取，放进事务只会拉长持锁时间
-    const billingSnapshot = params.billingSnapshot
+    const idempotencyKey = params.computeExecutionId ? `compute:${params.computeExecutionId}` : `${params.sessionId}:${params.messageId}`;
+    const execution = params.computeExecutionId ? await this.prisma.computeIntegrationExecution.findUnique({ where: { id: params.computeExecutionId } }) : null;
+    if (params.computeExecutionId && (!execution || execution.enterpriseId !== params.enterpriseId || execution.kind !== 'chat'
+      || execution.feeStatus !== 'FINAL' || execution.grossCny === null)) throw new ConflictException('算力平台尚未确认该次模型调用的最终人民币费用');
+    if (!execution && !params.billingSnapshot && await this.integrations?.isEnterpriseMode(params.enterpriseId)) throw new ConflictException('企业模式必须使用算力执行费用结算');
+    const billingSnapshot = execution ? null : params.billingSnapshot
       ? ModelBillingSnapshotSchema.parse(params.billingSnapshot)
       : await this.getBillingSnapshot(params.modelId);
-    if (billingSnapshot.modelId !== params.modelId) throw new BadRequestException('模型计费快照不匹配');
-    const cost = calculateBilledCost(billingSnapshot, params.inputTokens, params.outputTokens);
-    const rate = billingSnapshot.rate;
-    const costCNY = money(cost.costCNY);
-    const paymentMode = billingSnapshot.paymentMode ?? 'AUTO';
+    if (billingSnapshot && billingSnapshot.modelId !== params.modelId) throw new BadRequestException('模型计费快照不匹配');
+    const cost = billingSnapshot ? calculateBilledCost(billingSnapshot, params.inputTokens, params.outputTokens) : null;
+    const rate = billingSnapshot?.rate;
+    const costCNY = money(execution ? execution.grossCny : cost.costCNY);
+    if (!costCNY.isFinite() || costCNY.lt(0) || costCNY.gt('99999999.999999')) throw new ConflictException('实际费用超出本地账本范围，需人工对账');
+    const paymentMode = execution ? PaymentModeSchema.parse((execution.fundingContext as { paymentMode?: string })?.paymentMode ?? 'AUTO') : billingSnapshot?.paymentMode ?? 'AUTO';
     const description = `对话算力消费（${params.modelId}，${params.inputTokens}+${params.outputTokens} tokens）`;
 
     // 钱包必须在事务前就位：事务内新建钱包会和乐观锁的版本比对纠缠在一起
@@ -384,6 +454,12 @@ export class ComputeCreditService {
 
         if (params.userId) await assertActiveUserInTx(tx, params.userId);
         await assertActiveEnterpriseInTx(tx, params.enterpriseId);
+        if (execution) {
+          const replay = await tx.computeUsageRecord.findUnique({ where: { idempotencyKey } });
+          if (replay) return { result: { alreadyCharged: true, usageRecordId: replay.id, costCNY: replay.costCNY,
+            creditPaidCNY: replay.creditPaidCNY, memberWalletPaidCNY: replay.memberWalletPaidCNY, walletPaidCNY: replay.walletPaidCNY,
+            personalPaidCNY: replay.personalPaidCNY, unpaidCNY: replay.unpaidCNY, fallbackPricing: replay.fallbackPricing }, notify: null };
+        }
         // 2. 额度闸门：这一笔企业最多能出多少（不限额时为 null）
         const plan = paymentMode === 'PERSONAL_ONLY' ? {
           windowId: null, enterpriseCapCNY: new Decimal(0), regularRemainingCNY: new Decimal(0),
@@ -494,10 +570,10 @@ export class ComputeCreditService {
             modelId: params.modelId,
             inputTokens: params.inputTokens,
             outputTokens: params.outputTokens,
-            inputPriceUsdPerMillion: money(cost.inputPriceUsdPerMillion),
-            outputPriceUsdPerMillion: money(cost.outputPriceUsdPerMillion),
-            usdToCnyRate: new Decimal(rate).toDecimalPlaces(4),
-            fallbackPricing: cost.isFallback,
+            inputPriceUsdPerMillion: cost ? money(cost.inputPriceUsdPerMillion) : null,
+            outputPriceUsdPerMillion: cost ? money(cost.outputPriceUsdPerMillion) : null,
+            usdToCnyRate: rate === undefined ? null : new Decimal(rate).toDecimalPlaces(4),
+            fallbackPricing: cost?.isFallback ?? false,
             costCNY,
             creditPaidCNY: creditPaid,
             memberWalletPaidCNY: memberWalletResult.paid,
@@ -512,6 +588,17 @@ export class ComputeCreditService {
           },
         });
 
+        if (execution) {
+          await this.integrations.recordSettlement(tx, { enterpriseId: params.enterpriseId, executionId: execution.id,
+            kind: 'chat', currency: 'CNY', billId: execution.billId, billVersion: execution.billVersion,
+            grossCny: costCNY.toFixed(6), freeCny: creditPaid.toFixed(6),
+            paidCny: memberWalletResult.paid.add(walletResult.paid).add(personalResult.paid).toFixed(6), unpaidCny: unpaid.toFixed(6) });
+          if (personalResult.paid.gt(0)) await this.integrations.recordTransfer(tx, { enterpriseId: params.enterpriseId,
+            businessId: `personal_${record.id}`, direction: 'credit_compute', currency: 'CNY',
+            amountCny: personalResult.paid.toFixed(6), fundingRef: personalResult.transactionId });
+          await tx.computeIntegrationExecution.update({ where: { id: execution.id }, data: { localUsageRecordId: record.id } });
+        }
+
         return {
           result: {
             alreadyCharged: false,
@@ -522,7 +609,7 @@ export class ComputeCreditService {
             walletPaidCNY: walletResult.paid,
             personalPaidCNY: personalResult.paid,
             unpaidCNY: unpaid,
-            fallbackPricing: cost.isFallback,
+            fallbackPricing: cost?.isFallback ?? false,
           },
           // 通知判定所需的一切都在这儿了：闸门刚读出的额度快照 + 这一笔的实际去向。
           // 攒成一个对象带出事务，是为了让「要不要发通知」这一步不必再打库。

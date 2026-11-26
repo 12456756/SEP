@@ -2,6 +2,7 @@ import { BadRequestException, GatewayTimeoutException, HttpException, Logger } f
 import { MODEL_RUNTIME_POLICY_FIELDS } from 'shared';
 import { GatewayModelPolicyService } from '../gateway/gateway-model-policy.service';
 import { TaskPlanningService } from './task-planning.service';
+import { enterpriseConnectionStub } from '../../../test/stubs/enterprise-connection.stub';
 
 describe('TaskPlanningService', () => {
   const subscriptions = { findAll: jest.fn() };
@@ -48,6 +49,7 @@ describe('TaskPlanningService', () => {
     admission as never,
     new GatewayModelPolicyService({} as never, {} as never, {} as never),
     { checkBalanceBeforeConversation: jest.fn().mockResolvedValue({ allowed: true }) } as never,
+    enterpriseConnectionStub() as never,
   );
 
   const validPlan = {
@@ -172,7 +174,8 @@ describe('TaskPlanningService', () => {
     expect(runtimePolicies.getSnapshot).toHaveBeenCalledTimes(1);
     expect(admission.acquire).toHaveBeenCalledWith({ enterpriseId: 'enterprise-1', memberId: 'member-1' }, boundedPolicy);
     expect(admission.reserve).toHaveBeenCalledWith(expect.anything(), boundedPolicy,
-      expect.objectContaining({ max_tokens: 1000, messages: expect.any(Array) }), 1000);
+      expect.objectContaining({ max_tokens: 4000, messages: expect.any(Array) }), 4000);
+    expect(prisma.platformModel.findUnique).not.toHaveBeenCalled();
     expect(release).toHaveBeenCalledTimes(1);
   });
 

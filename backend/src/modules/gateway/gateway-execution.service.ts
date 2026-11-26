@@ -1,4 +1,5 @@
-import { Injectable, Logger, ServiceUnavailableException, OnModuleInit, UnauthorizedException } from '@nestjs/common';
+import { Injectable, Logger, ServiceUnavailableException, OnModuleInit, UnauthorizedException, Optional } from '@nestjs/common';
+import { ComputeIntegrationService } from '../compute-integration/compute-integration.service';
 import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -19,6 +20,7 @@ export class GatewayExecutionService implements OnModuleInit {
     private readonly prisma: PrismaService,
     private readonly credit: ComputeCreditService,
     private readonly config: ConfigService,
+    @Optional() private readonly integrations?: ComputeIntegrationService,
   ) {}
 
   onModuleInit() {
@@ -34,7 +36,8 @@ export class GatewayExecutionService implements OnModuleInit {
       timeoutValue(this.config, 'GATEWAY_STREAM_TOTAL_TIMEOUT_MS', 600000),
       timeoutValue(this.config, 'GATEWAY_NON_STREAM_TIMEOUT_MS', 120000),
     );
-    const frozenBilling = ModelBillingSnapshotSchema.parse(billingSnapshot ?? await this.credit.getBillingSnapshot(modelId));
+    const enterpriseMode = await this.integrations?.isEnterpriseMode(claims.enterpriseId) ?? false;
+    const frozenBilling = enterpriseMode ? { source: 'compute', currency: 'CNY' } : ModelBillingSnapshotSchema.parse(billingSnapshot ?? await this.credit.getBillingSnapshot(modelId));
     try {
       return await this.prisma.$transaction(async tx => {
         const users = await tx.$queryRaw<Array<{ id: string; status: string }>>`SELECT id, status FROM users WHERE id = ${claims.sub} FOR UPDATE`;
@@ -72,6 +75,13 @@ export class GatewayExecutionService implements OnModuleInit {
       where: { id, status: { in: ['STARTED', 'USAGE_PENDING'] }, settlementReady: false, settlementLeaseUntil: null },
       data: { status: 'USAGE_PENDING', inputTokens: usage.prompt_tokens, outputTokens: usage.completion_tokens },
     });
+    if (!saved.count) {
+      const current = await this.prisma.gatewayExecution.findUniqueOrThrow({ where: { id } });
+      if (current.status === 'SETTLED' && (current.billingSnapshot as { source?: string })?.source === 'compute') {
+        await this.prisma.gatewayExecution.update({ where: { id }, data: { inputTokens: usage.prompt_tokens, outputTokens: usage.completion_tokens } });
+        return;
+      }
+    }
     if (!saved.count) throw new ServiceUnavailableException({ error: {
       code: 'EXECUTION_USAGE_CHECKPOINT_REJECTED', type: 'server_error', source: 'platform',
       message: '模型用量记录状态不确定，需要对账', param: null,
@@ -118,6 +128,10 @@ export class GatewayExecutionService implements OnModuleInit {
       const execution = await waitForGatewayOperation(this.prisma.gatewayExecution.findUniqueOrThrow({ where: { id } }));
       requestId = execution.requestId;
       if (execution.status !== 'USAGE_PENDING' || execution.settlementLeaseUntil?.getTime() !== leaseUntil.getTime()) return;
+      if ((execution.billingSnapshot as { source?: string })?.source === 'compute') {
+        await this.prisma.gatewayExecution.updateMany({ where: owned, data: { settlementLeaseUntil: null } });
+        return;
+      }
       const frozenBilling = execution.billingSnapshot
         ? ModelBillingSnapshotSchema.parse(execution.billingSnapshot)
         : await this.credit.getLegacyBillingSnapshot(execution.modelId);

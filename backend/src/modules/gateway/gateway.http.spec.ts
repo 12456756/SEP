@@ -196,8 +196,8 @@ describe('Gateway tool-call HTTP round trip', () => {
   it.each([
     [null, 8192, 8192],
     [65536, 8192, 8192],
-    [2048, 32768, 2048],
-  ])('returns the effective output ceiling before execution for model=%p platform=%s', async (maxOutputTokens, platformLimit, limit) => {
+    [2048, 32768, 32768],
+  ])('enforces the platform ceiling independently of retired model cap %p with platform=%s', async (maxOutputTokens, platformLimit, limit) => {
     policies.getSnapshot.mockResolvedValue(policySnapshot({ MODEL_MAX_OUTPUT_TOKENS: platformLimit }));
     model.findFirst.mockResolvedValue({ maxOutputTokens, supportedFeatures: null });
     const res = await request(app.getHttpServer()).post(endpoint).send({ ...body, max_tokens: limit + 1 }).expect(400);
@@ -374,19 +374,52 @@ describe('Gateway tool-call HTTP round trip', () => {
     expect(releaseRequest).toHaveBeenCalledTimes(1);
   });
 
-  it('reports incomplete SSE at EOF while persisting observed usage and releasing resources', async () => {
+  it('reports incomplete SSE without publishing DONE while persisting observed usage and releasing resources', async () => {
     const sse = `data: ${JSON.stringify({ choices: [{ delta: { content: 'partial' }, finish_reason: null }], usage })}\n\n` + 'data: [DONE]\n\n';
     fetchMock.mockResolvedValue(new Response(sse, { headers: { 'Content-Type': 'text/event-stream' } }));
-    const response = await request(app.getHttpServer()).post(endpoint).send({ ...body, stream: true }).expect(200);
-    expect(response.text).toContain('partial');
-    expect(response.text).toContain('event: error');
-    expect(response.text).toContain('UPSTREAM_INCOMPLETE_STREAM');
+    const res = await request(app.getHttpServer()).post(endpoint).send({ ...body, stream: true }).expect(200);
+    expect(res.text).toContain('event: error'); expect(res.text).toContain('UPSTREAM_INCOMPLETE_STREAM');
+    expect(res.text).not.toContain('[DONE]');
     await new Promise((resolve) => setImmediate(resolve));
     const { id } = await executions.start.mock.results[0].value;
     expect(executions.saveUsage).toHaveBeenCalledWith(id, usage);
     expect(executions.finish).toHaveBeenCalledWith(id, { finishReason: null, done: true, errorCode: 'UPSTREAM_INCOMPLETE_STREAM' });
     expect(releaseAdmission).toHaveBeenCalledTimes(1);
     expect(releaseRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['before', 'after'])('preserves the actual upstream SSE failure %s DONE without sending success', async position => {
+    const error = { code: 'PROVIDER_STREAM_FAILED', message: 'Provider could not finish this request',
+      details: { cause: 'connection lost', apiKey: 'test-key' } };
+    const failure = `event: error\ndata: ${JSON.stringify({ error })}\n\n`;
+    const done = 'data: [DONE]\n\n';
+    const prefix = `data: ${JSON.stringify({ choices: [{ delta: { content: 'partial' }, finish_reason: 'stop' }], usage })}\n\n`;
+    const sse = prefix + (position === 'before' ? failure + done : done + failure);
+    const raw = Buffer.from(sse);
+    fetchMock.mockResolvedValue(new Response(new ReadableStream({ start(controller) {
+      for (const byte of raw) controller.enqueue(Uint8Array.of(byte)); controller.close();
+    } }), { headers: { 'Content-Type': 'text/event-stream' } }));
+    const res = await request(app.getHttpServer()).post(endpoint).set('x-request-id', 'stream-error-order').send({ ...body, stream: true }).expect(200);
+    expect(res.text).not.toContain('[DONE]'); expect(res.text).not.toContain('test-key');
+    expect(res.text.match(/event: error/g)).toHaveLength(1);
+    expect(res.text).toContain('PROVIDER_STREAM_FAILED'); expect(res.text).toContain(error.message); expect(res.text).toContain('connection lost');
+    expect(res.text).toContain('[REDACTED]');
+    expect(executions.finish).toHaveBeenCalledWith(res.headers['x-sep-execution-id'], {
+      finishReason: 'stop', done: true, errorCode: 'PROVIDER_STREAM_FAILED',
+    });
+    expect(executions.saveUsage).toHaveBeenCalledWith(res.headers['x-sep-execution-id'], usage);
+    expect(releaseAdmission).toHaveBeenCalledTimes(1); expect(releaseRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a finalization failure before the retained success marker', async () => {
+    const sse = `data: ${JSON.stringify({ choices: [{ delta: { content: 'OK' }, finish_reason: 'stop' }], usage })}\n\ndata: [DONE]\n\n`;
+    fetchMock.mockResolvedValue(new Response(sse, { headers: { 'Content-Type': 'text/event-stream' } }));
+    executions.finish.mockRejectedValueOnce(new ServiceUnavailableException({ error: { code: 'EXECUTION_JOURNAL_TIMEOUT', message: 'Completion journal unavailable' } }));
+    const res = await request(app.getHttpServer()).post(endpoint).send({ ...body, stream: true }).expect(200);
+    expect(res.text).toContain('event: error'); expect(res.text).toContain('EXECUTION_JOURNAL_TIMEOUT');
+    expect(res.text).not.toContain('[DONE]'); expect(executions.finish).toHaveBeenCalledTimes(1);
+    expect(executions.fail).toHaveBeenCalledWith(res.headers['x-sep-execution-id'], 'EXECUTION_JOURNAL_TIMEOUT', false, false);
+    expect(releaseAdmission).toHaveBeenCalledTimes(1); expect(releaseRequest).toHaveBeenCalledTimes(1);
   });
 
   it('reproduces the SDK no-body message for the legacy nonempty Nest error envelope', () => {

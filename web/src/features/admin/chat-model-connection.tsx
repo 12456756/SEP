@@ -27,8 +27,8 @@ export function ChatModelConnection() {
     } catch (failure) { setError(failure instanceof Error ? failure.message : '连接保存失败'); }
   };
   return <section aria-label="会话模型连接" className="space-y-4 rounded-lg border border-border p-4">
-    <h2 className="text-base font-semibold">会话模型连接</h2>
-    <p className="text-xs text-fg-muted">此连接独立于图片和视频。保存后使用下方「同步上游」检测会话模型。</p>
+    <h2 className="text-base font-semibold">管理员模型连接</h2>
+    <p className="text-xs text-fg-muted">用于平台管理操作。企业模型调用使用各企业凭证。</p>
     <form onSubmit={submit} className="grid min-w-0 gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end">
       <label className="min-w-0 text-sm"><span className="mb-1 block font-medium">Base URL</span>
         <Input aria-label="Base URL" type="url" required disabled={save.isPending} value={form.baseUrl} onChange={(event) => { setDirty(true); setForm({ ...form, baseUrl: event.target.value }); }}/>

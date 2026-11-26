@@ -71,7 +71,7 @@ export function VideoPolicyPanel() {
         : error ? <div className="flex flex-wrap items-center gap-3"><p role="alert" className="text-sm text-danger">{errorText(error)}</p><Button variant="outline" size="sm" onClick={() => { void config.refetch(); void available.refetch(); }}><RefreshCw className="h-4 w-4" />重试视频授权</Button></div>
           : !policy ? <p className="text-sm text-fg-muted">暂无视频授权策略</p> : <>
             {!canEdit && <p className="border border-border bg-muted/30 px-4 py-3 text-sm text-fg-muted">当前为只读视图，视频授权由企业管理员维护。</p>}
-            {!config.data?.configured && <p className="border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">平台{mock ? ' Mock ' : ''}视频尚未开放或没有已启用且已校验的视频 Profile。</p>}
+            {!config.data?.configured && <p className="border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">本企业视频 Key 尚未就绪。</p>}
             {available.error && <div className="flex flex-wrap items-center gap-2 text-sm"><p role="alert">能力目录加载失败：{errorText(available.error)}。仍可保存授权。</p><Button type="button" variant="outline" size="sm" onClick={() => { void available.refetch(); }}><RefreshCw className="h-4 w-4" />刷新目录</Button></div>}
             <form aria-label="视频授权策略" className="max-w-3xl space-y-5" onSubmit={submit}>
               <fieldset disabled={!canEdit || save.isPending} className="min-w-0 space-y-5">

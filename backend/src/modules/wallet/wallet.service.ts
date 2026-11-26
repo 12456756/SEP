@@ -3,16 +3,21 @@ import {
   NotFoundException,
   BadRequestException,
   ConflictException,
+  Optional,
 } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
 import { Prisma, WalletTransactionType } from "@prisma/client";
 import { Decimal } from "@prisma/client/runtime/library";
 import { assertActiveEnterpriseInTx } from '../../common/enterprise-write-lock';
 import { depositRefundableAmount } from './deposit-refund';
+import { ComputeIntegrationService } from '../compute-integration/compute-integration.service';
+import { ComputeFundsService } from '../compute-integration/compute-funds.service';
 
 @Injectable()
 export class WalletService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService,
+    @Optional() private readonly integrations?: ComputeIntegrationService,
+    @Optional() private readonly computeFunds?: ComputeFundsService) {}
 
   /**
    * 获取企业钱包余额
@@ -30,6 +35,11 @@ export class WalletService {
       totalConsume: wallet.totalConsume,
       totalRefund: wallet.totalRefund,
     };
+  }
+
+  async getAvailableComputeBalance(enterpriseId: string) {
+    const wallet = await this.ensureWallet(enterpriseId);
+    return this.computeFunds ? this.computeFunds.availableReserve(this.prisma, enterpriseId, wallet.computeReservedCNY) : wallet.computeReservedCNY;
   }
 
   /**
@@ -606,7 +616,9 @@ export class WalletService {
     }
 
     const balanceBefore = wallet.balance;
-    const paid = Decimal.min(balanceBefore, amount);
+    const enterpriseMode = await this.integrations?.isEnterpriseMode(enterpriseId, client) ?? false;
+    const available = enterpriseMode ? await this.computeFunds.availableReserve(client, enterpriseId, wallet.computeReservedCNY) : balanceBefore;
+    const paid = Decimal.min(available, amount);
     const unpaid = amount.sub(paid);
 
     if (paid.lessThanOrEqualTo(0)) {
@@ -661,7 +673,8 @@ export class WalletService {
     await assertActiveEnterpriseInTx(client, enterpriseId);
     const wallet = await client.enterpriseWallet.findUnique({ where: { enterpriseId } });
     if (!wallet) throw new NotFoundException(`企业钱包不存在: ${enterpriseId}`);
-    if (wallet.computeReservedCNY.lessThan(amount)) {
+    const available = this.computeFunds ? await this.computeFunds.availableReserve(client, enterpriseId, wallet.computeReservedCNY) : wallet.computeReservedCNY;
+    if (available.lessThan(amount)) {
       throw new BadRequestException(
         `企业算力余额不足。当前可用 ¥${wallet.computeReservedCNY.toFixed(2)}，需要 ¥${amount.toFixed(2)}；请先给企业钱包充值并划入算力余额`,
       );
@@ -731,6 +744,7 @@ export class WalletService {
       throw new BadRequestException("划转金额必须大于 0");
     }
     const delta = new Decimal(amount);
+    if (!delta.eq(delta.toDecimalPlaces(6)) || delta.gt('99999999.999999')) throw new BadRequestException('划转金额最多 6 位小数且不能超出钱包范围');
 
     return this.prisma.$transaction(async (client) => {
       await assertActiveEnterpriseInTx(client, enterpriseId);
@@ -742,6 +756,8 @@ export class WalletService {
       }
 
       const reservedBefore = wallet.computeReservedCNY;
+      const enterpriseMode = await this.integrations?.isEnterpriseMode(enterpriseId, client) ?? false;
+      const available = enterpriseMode ? await this.computeFunds.availableReserve(client, enterpriseId, reservedBefore) : reservedBefore;
       const spendable = wallet.balance.sub(reservedBefore);
 
       if (direction === "RESERVE" && spendable.lessThan(delta)) {
@@ -749,7 +765,7 @@ export class WalletService {
           `可划入金额不足。钱包余额 ¥${wallet.balance}，已划入专款 ¥${reservedBefore}，本次最多可划入 ¥${spendable}`,
         );
       }
-      if (direction === "RELEASE" && reservedBefore.lessThan(delta)) {
+      if (direction === "RELEASE" && available.lessThan(delta)) {
         throw new BadRequestException(
           `可划回金额不足。算力专款余额 ¥${reservedBefore}，本次请求 ¥${amount}`,
         );
@@ -758,7 +774,7 @@ export class WalletService {
       const reservedAfter =
         direction === "RESERVE"
           ? reservedBefore.add(delta)
-          : reservedBefore.sub(delta);
+          : enterpriseMode ? reservedBefore : reservedBefore.sub(delta);
 
       const updated = await client.enterpriseWallet.updateMany({
         where: { enterpriseId, version: wallet.version },
@@ -773,7 +789,7 @@ export class WalletService {
 
       // 余额没变，动的是用途标签 —— 所以 before == after，
       // amount 记的是标签的增减（正数划入、负数划回），便于对账时区分。
-      await client.walletTransaction.create({
+      const transaction = await client.walletTransaction.create({
         data: {
           walletId: wallet.id,
           type:
@@ -792,10 +808,13 @@ export class WalletService {
         },
       });
 
+      const transfer = enterpriseMode ? await this.computeFunds.record(client, enterpriseId, transaction.id, delta, direction) : null;
+
       return {
         balance: wallet.balance,
         computeReservedCNY: reservedAfter,
         spendableCNY: wallet.balance.sub(reservedAfter),
+        ...(transfer ? { transferId: transfer.businessId, syncStatus: 'PENDING' } : {}),
       };
     });
   }

@@ -11,6 +11,8 @@ import { MediaRealService } from './media-real.service';
 import { MediaRealStore } from './media-real.store';
 import { videoClaims } from './media-video-real.test-support';
 import { Sub2apiImageAdapter } from './sub2api-image.adapter';
+import { enterpriseMediaStub, signedMediaProtocolStub } from '../../../test/stubs/enterprise-media.stub';
+import { createHash } from 'node:crypto';
 
 const prefix = '/api/gateway/v1/media/real';
 const profileId = 'image.future';
@@ -83,17 +85,17 @@ describe('V3 image HTTP with production adapter, store and cache and fake upstre
       reserve: async (_claims: unknown, id: string) => { reservations.set(id, 'RESERVED'); },
       status: async (id: string) => reservations.get(id) ?? 'RESERVED',
       release: async (id: string) => { reservations.set(id, 'RELEASED'); },
-      settleNegotiated: async (id: string, cny: string, usd: string, actualModel: string, frozenModel: string) => {
-        expect(cny).toBe('0.700000'); expect(usd).toBe('0.100000');
-        expect(actualModel).toBe(modelId); expect(frozenModel).toBe(modelId);
+      settleCompute: async (id: string, executionId: string, frozenModel: string) => {
+        expect(executionId).toBe(`execution_${id}`); expect(frozenModel).toBe(modelId);
         reservations.set(id, 'SETTLED'); return 'SETTLED';
       } };
     fetchSpy = jest.spyOn(globalThis, 'fetch').mockImplementation(async (target, options) => {
       const url = new URL(String(target));
       if (url.origin !== 'https://image-upstream.invalid') throw new Error('Unexpected upstream destination');
       if (url.pathname === '/v1/sub2api/images/pricing') return json({ object: 'sub2api.image_pricing', schema_version: 1,
-        currency: 'USD', ...JSON.parse(String(options?.body)), billing_mode: 'image', pricing_status: 'quoted',
-        pricing_source: 'group', pricing_authority: 'sub2api_customer_billing', amount_usd: '0.2', pricing_version: pricingVersion,
+        currency: 'CNY', contract_version: 1, enterprise_id: videoClaims.enterpriseId, quote_id: pricingVersion,
+        ...JSON.parse(String(options?.body)), billing_mode: 'image', pricing_status: 'quoted',
+        pricing_source: 'group', pricing_authority: 'sub2api_customer_billing', amount_usd: null, amount_cny: '1.400000', pricing_version: pricingVersion,
         effective_rate_multiplier: 1, observed_at: new Date().toISOString(), expires_at: new Date(Date.now() + 60_000).toISOString() });
       if (url.pathname === '/v1/images/generations/async') {
         const fields = JSON.parse(String(options?.body)); dispatches.push(fields);
@@ -121,9 +123,11 @@ describe('V3 image HTTP with production adapter, store and cache and fake upstre
         request_id: url.searchParams.get('request_id'), status: 'settled', model: modelId, actual_cost_usd: '0.1' });
       throw new Error('Unexpected fake upstream path: ' + url.pathname);
     });
-    const adapter = new Sub2apiImageAdapter(settings as never);
+    const adapter = new Sub2apiImageAdapter(settings as never, signedMediaProtocolStub as never);
+    const enterprise = enterpriseMediaStub('https://image-upstream.invalid/v1', 'synthetic-key',
+      createHash('sha256').update('https://image-upstream.invalid/v1\0synthetic-key').digest('hex'), '0.700000');
     const service = new MediaRealService({ get: () => 'true' } as never, prisma as never, settings as never,
-      mediaConfig as never, adapter, cache, billing as never, new MediaRealStore(prisma as never));
+      mediaConfig as never, adapter, cache, billing as never, new MediaRealStore(prisma as never), enterprise.connections as never, enterprise.media as never);
     const module = await Test.createTestingModule({ controllers: [MediaRealController], providers: [MediaRealGuard,
       { provide: MediaRealService, useValue: service }] }).overrideGuard(ClientEmploymentGuard).useValue({
       canActivate(context: ExecutionContext) {
@@ -192,15 +196,15 @@ describe('V3 image HTTP with production adapter, store and cache and fake upstre
     await get('/requests/' + result.body.receiptId + '/outputs/' + result.body.outputs[0].outputId + '/content').expect(200);
   });
 
-  it('rejects a changed price and invalid specifications before generation or reservation', async () => {
+  it('retains the original compute quote across price changes and rejects invalid specifications', async () => {
     const quote = await post('/quotes', input).expect(201);
     const count = dispatches.length; const frozen = reservations.size;
     pricingVersion = 'price-changed';
-    await post('/requests', { ...input, quoteId: quote.body.quoteId, clientRequestId: 'changed-price' }).expect(409);
+    await post('/requests', { ...input, quoteId: quote.body.quoteId, clientRequestId: 'changed-price' }).expect(202);
     const missing = await post('/quotes', { ...input, requestedSpec: { count: 2 } });
     expect(missing.body.error).toMatchObject({ code: 'MISSING_SPEC', source: 'request', submissionState: 'not_submitted' });
     const conflict = await post('/quotes', { ...input, requestedSpec: { ...input.requestedSpec, aspectRatio: '16:9' } }).expect(400);
     expect(conflict.body.error).toMatchObject({ code: 'SPEC_CONFLICT', source: 'request', submissionState: 'not_submitted' });
-    expect(dispatches).toHaveLength(count); expect(reservations.size).toBe(frozen);
+    expect(dispatches).toHaveLength(count + 1); expect(reservations.size).toBe(frozen + 1);
   });
 });

@@ -65,7 +65,7 @@ export type MediaPolicyPreviewRequest = z.infer<typeof MediaPolicyPreviewRequest
 export const MediaPolicyPreviewReasonSchema = z.enum([
   'not-authorized', 'profile-missing', 'disabled', 'unverified', 'connection-unconfigured',
   'adapter-unsupported', 'operation-filtered', 'size-intersection-empty', 'protocol-unsupported',
-  'execution-disabled', 'unknown-capability',
+  'execution-disabled', 'unknown-capability', 'enterprise-model-unavailable', 'settlement-not-connected',
 ]);
 export const MediaPolicyPreviewProfileSchema = z.object({
   profileId: MediaProfileSchema.shape.profileId,

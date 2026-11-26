@@ -6,9 +6,11 @@ import { SkillVersionModule } from '../skill-version/skill-version.module';
 import { CapabilityInsightController } from './capability-insight.controller';
 import { CapabilityInsightService } from './capability-insight.service';
 import { GatewayPolicyModule } from '../gateway/gateway-policy.module';
+import { ComputeCreditModule } from '../compute-credit/compute-credit.module';
 
 @Module({
   imports: [
+    ComputeCreditModule,
     EnterpriseModule,
     SkillVersionModule,
     SettingModule,

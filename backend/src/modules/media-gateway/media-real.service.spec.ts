@@ -8,6 +8,17 @@ import { MEDIA_MOCK_PNG } from './media-gateway-mock.adapter';
 import { createHash } from 'node:crypto';
 
 describe('MediaRealService asynchronous client receipts', () => {
+  it('closes a credential rotation race before reservation without polling or generation', async () => {
+    const h = imageHarness();
+    h.enterprise.media.begin.mockRejectedValueOnce(new HttpException({ code: 'CREDENTIAL_VERSION_CONFLICT', message: 'credential changed' }, 409));
+    const { receipt } = await h.submit();
+    expect(receipt).toMatchObject({ status: 'FAILED', billingStatus: 'NOT_RESERVED', errorCode: 'CONFIG_CHANGED',
+      clientActions: { shouldPoll: false, canStartNewRequest: true } });
+    expect(await h.service.receipt(imageClaims, receipt.receiptId)).toMatchObject({ billingStatus: 'NOT_RESERVED' });
+    expect(h.billing.reserve).not.toHaveBeenCalled();
+    expect(h.adapter.submitAsync).not.toHaveBeenCalled();
+    expect(h.enterprise.media.fee).not.toHaveBeenCalled();
+  });
   it('keeps a changed payment preference failure definitive and never dispatches generation', async () => {
     const h = imageHarness();
     h.billing.reserve.mockRejectedValueOnce(new HttpException({ error: { code: 'PAYMENT_MODE_CHANGED', message: '付款方式已变化，请重新报价' } }, 409));
@@ -32,7 +43,7 @@ describe('MediaRealService asynchronous client receipts', () => {
     expect(h.billing.reserve).toHaveBeenCalledTimes(1);
     expect(h.adapter.queryAsync).not.toHaveBeenCalled();
     expect(h.adapter.contentAsync).not.toHaveBeenCalled();
-    expect(h.billing.settleNegotiated).not.toHaveBeenCalled();
+    expect(h.billing.settleCompute).not.toHaveBeenCalled();
     expect(h.records.get(receipt.receiptId)!.submissionDeadline.getTime() - Date.now()).toBeLessThanOrEqual(70000);
   });
 
@@ -46,14 +57,15 @@ describe('MediaRealService asynchronous client receipts', () => {
       upstreamError: { status: 502, body: { error: { message: 'original provider failure', details: { reason: 'connection closed' } } } } });
     await h.service.submit(imageClaims, request);
     expect(h.adapter.submitAsync).toHaveBeenCalledTimes(1);
-    expect(h.billing.release).toHaveBeenCalledTimes(1);
+    expect(h.billing.settleCompute).toHaveBeenCalledTimes(1);
+    expect(h.billing.release).not.toHaveBeenCalled();
   });
 
   it('returns refund failure separately and does not report released funds prematurely', async () => {
     const h = imageHarness();
     h.adapter.submitAsync.mockImplementation(async (_i, _r, _m, id) => contractResult(id, { task_id: null,
       submission_status: 'failed', status: null, billing: { status: 'not_charged', actual_cost_usd: '0' }, error: { message: 'EOF' } }, 502));
-    h.billing.release.mockRejectedValueOnce(new HttpException('database unavailable', 503));
+    h.billing.settleCompute.mockRejectedValueOnce(new HttpException('database unavailable', 503));
     const { receipt } = await h.submit();
     expect(receipt).toMatchObject({ status: 'FAILED', billingStatus: 'RECONCILING',
       billingError: { status: 503 }, clientActions: { generationFinished: true, canStartNewRequest: true, pollPurpose: 'billing' } });
@@ -71,7 +83,7 @@ describe('MediaRealService asynchronous client receipts', () => {
     expect(receipt).toMatchObject({ status: 'FAILED', billingStatus: 'RECONCILING', execution: { billing: { status: 'unknown' } },
       clientActions: { generationFinished: true, canStartNewRequest: true, pollPurpose: 'billing' } });
     expect(h.billing.release).not.toHaveBeenCalled();
-    expect(h.billing.settleNegotiated).not.toHaveBeenCalled();
+    expect(h.billing.settleCompute).not.toHaveBeenCalled();
   });
 
   it('recovers a lost POST response by original request ID without a second POST', async () => {
@@ -111,9 +123,9 @@ describe('MediaRealService asynchronous client receipts', () => {
     const complete = await h.service.receipt(imageClaims, receipt.receiptId);
     expect(complete.outputs[0].mimeType).toBe(mimeType);
     expect(h.cache.put).toHaveBeenCalledWith('output', expect.any(String), expect.any(String), bytes, expect.any(String));
-    expect(h.billing.settleNegotiated).toHaveBeenCalledWith(receipt.receiptId, '0.576000', '0.080000', 'gpt-image-2', 'gpt-image-2');
+    expect(h.billing.settleCompute).toHaveBeenCalledWith(receipt.receiptId, `execution_${receipt.receiptId}`, 'gpt-image-2');
     await h.service.receipt(imageClaims, receipt.receiptId);
-    expect(h.billing.settleNegotiated).toHaveBeenCalledTimes(1);
+    expect(h.billing.settleCompute).toHaveBeenCalledTimes(1);
     expect(h.adapter.contentAsync).toHaveBeenCalledTimes(1);
   });
 
@@ -137,7 +149,7 @@ describe('MediaRealService asynchronous client receipts', () => {
     const complete = await h.service.receipt(imageClaims, receipt.receiptId);
     expect(complete).toMatchObject({ status: 'SUCCEEDED', fileStatus: 'available', billingStatus: 'RECONCILING',
       recovery: { canDownload: true }, clientActions: { generationFinished: true, canStartNewRequest: true, pollPurpose: 'billing' } });
-    expect(h.billing.settleNegotiated).not.toHaveBeenCalled();
+    expect(h.billing.settleCompute).not.toHaveBeenCalled();
   });
 
   it('retries upstream task query to drive a failed upstream settlement', async () => {
@@ -159,7 +171,7 @@ describe('MediaRealService asynchronous client receipts', () => {
     expect(h.adapter.submitAsync).toHaveBeenCalledTimes(1);
     await Promise.all([h.service.receipt(imageClaims, results[0].receiptId), h.service.receipt(imageClaims, results[0].receiptId)]);
     expect(h.adapter.contentAsync).toHaveBeenCalledTimes(1);
-    expect(h.billing.settleNegotiated).toHaveBeenCalledTimes(1);
+    expect(h.billing.settleCompute).toHaveBeenCalledTimes(1);
   });
 
   it('rejects changed payload under an existing client ID without dispatching', async () => {
@@ -265,16 +277,17 @@ describe('MediaRealService asynchronous client receipts', () => {
       status: 'settled', model: 'gpt-image-2', actual_cost_usd: '0.08' } as any));
     const { receipt } = await h.submit();
     expect(await h.service.receipt(imageClaims, receipt.receiptId)).toMatchObject({ billingStatus: 'SETTLED' });
-    expect(h.billing.settleNegotiated).toHaveBeenCalledTimes(1);
+    expect(h.billing.settleCompute).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['model', 'request_id', 'actual_cost_usd'] as const)('keeps invalid %s billing evidence pending while delivering the original', async field => {
-    const h = imageHarness(); h.adapter.usage.mockImplementation(async request_id => ({ request_id, status: 'settled',
-      model: 'gpt-image-2', actual_cost_usd: '0.08', image_count: 1, [field]: field === 'actual_cost_usd' ? '0.2' : 'wrong' }));
+  it.each(['model', 'execution_id', 'gross_cny'] as const)('keeps invalid %s final fee evidence pending while delivering the original', async field => {
+    const h = imageHarness(); h.enterprise.media.fee.mockRejectedValue(new HttpException({
+      error: { code: 'COMPUTE_CONTRACT_INVALID', message: `Final fee ${field} differs from the original execution` },
+    }, 409));
     const { receipt } = await h.submit();
     expect(await h.service.receipt(imageClaims, receipt.receiptId)).toMatchObject({ status: 'SUCCEEDED', billingStatus: 'RECONCILING',
       billingError: { status: 409 }, clientActions: { canStartNewRequest: true, pollPurpose: 'billing' } });
-    expect(h.billing.settleNegotiated).not.toHaveBeenCalled();
+    expect(h.billing.settleCompute).not.toHaveBeenCalled();
   });
 
   it('preserves measured size mismatch, allows original download and leaves quality unverified', async () => {

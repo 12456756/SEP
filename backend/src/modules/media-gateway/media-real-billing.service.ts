@@ -1,4 +1,5 @@
-import { ConflictException, HttpException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { ConflictException, HttpException, Injectable, UnauthorizedException, Optional } from '@nestjs/common';
+import { ComputeIntegrationService } from '../compute-integration/compute-integration.service';
 import { Prisma, type MediaRealBillingReservation } from '@prisma/client';
 import { Decimal } from '@prisma/client/runtime/library';
 import type { ClientEmploymentClaims } from '../client/client-employment.guard';
@@ -15,6 +16,7 @@ export interface MediaFunding { creditCny: string; memberWalletCny: string; pers
 type MutableJsonObject = { [key: string]: Prisma.InputJsonValue | null };
 
 type Status = 'RESERVED' | 'SETTLED' | 'RELEASED' | 'RECONCILING';
+type SettlementStatus = Exclude<Status, 'RESERVED'>;
 const zero = () => new Decimal(0);
 const MAX_MONEY = new Decimal('99999999.999999');
 const forbidden = (code: 'INSUFFICIENT_FUNDS' | 'INVALID_PARAMETER' | 'IDEMPOTENCY_CONFLICT' | 'BILLING_PENDING'): never => {
@@ -36,20 +38,21 @@ class BillingConcurrencyConflict extends ConflictException {
 
 @Injectable()
 export class MediaRealBillingService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, @Optional() private readonly integrations?: ComputeIntegrationService) {}
 
   async quoteFunding(claims: ClientEmploymentClaims, amountCny: string): Promise<MediaFunding> {
-    const amount = this.amount(amountCny);
+    const amount = this.amount(amountCny, true);
     const split = await this.transaction(tx => this.allocate(tx, claims, amount));
     return { creditCny: split.creditCny.toFixed(6), memberWalletCny: split.memberWalletCny.toFixed(6), personalCny: split.personalCny.toFixed(6), paymentMode: split.paymentMode };
   }
 
-  async reserve(claims: ClientEmploymentClaims, receiptId: string, amountCny: string, usdToCnyRate: number, paymentMode: PaymentMode = 'AUTO'): Promise<void> {
-    const amount = this.amount(amountCny);
-    if (!Number.isFinite(usdToCnyRate) || usdToCnyRate <= 0) forbidden('INVALID_PARAMETER');
-    const rate = new Decimal(usdToCnyRate);
+  async reserve(claims: ClientEmploymentClaims, receiptId: string, amountCny: string, usdToCnyRate: number | null, paymentMode: PaymentMode = 'AUTO'): Promise<void> {
+    const enterpriseMode = usdToCnyRate === null && await this.integrations?.isEnterpriseMode(claims.enterpriseId);
+    const amount = this.amount(amountCny, !!enterpriseMode);
+    if (!enterpriseMode && (!Number.isFinite(usdToCnyRate) || usdToCnyRate <= 0)) forbidden('INVALID_PARAMETER');
+    const rate = enterpriseMode ? null : new Decimal(usdToCnyRate);
     // Decimal(10,4): reject loss of precision rather than silently freezing a different rate.
-    if (rate.greaterThan('999999.9999') || !rate.equals(rate.toDecimalPlaces(4))) forbidden('INVALID_PARAMETER');
+    if (rate && (rate.greaterThan('999999.9999') || !rate.equals(rate.toDecimalPlaces(4)))) forbidden('INVALID_PARAMETER');
     await this.transaction(async tx => {
       const users = await tx.$queryRaw<Array<{ id: string; status: string }>>`SELECT id, status FROM users WHERE id = ${claims.sub} FOR UPDATE`;
       if (!users[0] || users[0].status !== 'ACTIVE') throw new UnauthorizedException('Account is not active');
@@ -58,7 +61,7 @@ export class MediaRealBillingService {
       const prior = await tx.mediaRealBillingReservation.findUnique({ where: { receiptId } });
       if (prior) {
         if (prior.enterpriseId !== claims.enterpriseId || prior.userId !== claims.sub || prior.subscriptionId !== claims.subscriptionId
-          || !prior.reservedCny.equals(amount) || !prior.usdToCnyRate.equals(rate)) forbidden('IDEMPOTENCY_CONFLICT');
+          || !prior.reservedCny.equals(amount) || (rate ? !prior.usdToCnyRate?.equals(rate) : prior.usdToCnyRate !== null)) forbidden('IDEMPOTENCY_CONFLICT');
         if (prior.status !== 'RESERVED') forbidden('BILLING_PENDING');
         return;
       }
@@ -72,35 +75,42 @@ export class MediaRealBillingService {
     });
   }
 
-  async settle(receiptId: string, actualCny: string, actualUsd: string, verifiedModel: string): Promise<'SETTLED' | 'RECONCILING'> {
+  async settle(receiptId: string, actualCny: string, actualUsd: string, verifiedModel: string): Promise<SettlementStatus> {
     if (!isSupportedImageModel(verifiedModel)) forbidden('INVALID_PARAMETER');
     return this.settleVerified(receiptId, actualCny, actualUsd, verifiedModel);
   }
 
-  async settleVideo(receiptId: string, actualCny: string, actualUsd: string, verifiedModel: string): Promise<'SETTLED' | 'RECONCILING'> {
+  async settleVideo(receiptId: string, actualCny: string, actualUsd: string, verifiedModel: string): Promise<SettlementStatus> {
     if (verifiedModel !== 'minimax-h3') forbidden('INVALID_PARAMETER');
     return this.settleVerified(receiptId, actualCny, actualUsd, verifiedModel);
   }
 
   async settleNegotiated(receiptId: string, actualCny: string, actualUsd: string,
-    verifiedModel: string, frozenModel: string): Promise<'SETTLED' | 'RECONCILING'> {
+    verifiedModel: string, frozenModel: string): Promise<SettlementStatus> {
     if (typeof frozenModel !== 'string' || !/^[^\s\p{Cc}\p{Cf}]{1,160}$/u.test(frozenModel)
       || verifiedModel !== frozenModel) forbidden('BILLING_PENDING');
     return this.settleVerified(receiptId, actualCny, actualUsd, verifiedModel);
   }
 
-  private async settleVerified(receiptId: string, actualCny: string, actualUsd: string, verifiedModel: string): Promise<'SETTLED' | 'RECONCILING'> {
-    const cny = this.amount(actualCny, true); const usd = this.amount(actualUsd, true);
+  async settleCompute(receiptId: string, executionId: string, modelId: string): Promise<SettlementStatus> {
+    const execution = await this.prisma.computeIntegrationExecution.findUniqueOrThrow({ where: { id: executionId } });
+    if (execution.sourceRef !== receiptId || execution.feeStatus !== 'FINAL' || execution.kind === 'chat' || execution.grossCny === null) forbidden('BILLING_PENDING');
+    return this.settleVerified(receiptId, execution.grossCny.toFixed(6), null, modelId, executionId);
+  }
+
+  private async settleVerified(receiptId: string, actualCny: string, actualUsd: string | null, verifiedModel: string, executionId?: string): Promise<SettlementStatus> {
+    const cny = this.amount(actualCny, true); const usd = actualUsd === null ? null : this.amount(actualUsd, true);
     return this.transaction(async tx => {
       const row = await tx.mediaRealBillingReservation.findUnique({ where: { receiptId } });
       if (!row) forbidden('BILLING_PENDING');
       await this.lockExistingUser(tx, row.userId);
-      if (row.status === 'SETTLED' || row.status === 'RECONCILING') {
-        if (!row.settledCny?.equals(cny) || !row.settledUsd?.equals(usd)) forbidden('IDEMPOTENCY_CONFLICT');
-        return row.status;
+      if (executionId) await tx.$queryRaw`SELECT id FROM enterprises WHERE id = ${row.enterpriseId} FOR UPDATE`;
+      if (row.status === 'SETTLED' || row.status === 'RECONCILING' || executionId && row.status === 'RELEASED' && row.settledCny !== null) {
+        if (!row.settledCny?.equals(cny) || (usd ? !row.settledUsd?.equals(usd) : row.settledUsd !== null)) forbidden('IDEMPOTENCY_CONFLICT');
+        return row.status as SettlementStatus;
       }
       if (row.status !== 'RESERVED') forbidden('BILLING_PENDING');
-      const status = cny.greaterThan(row.reservedCny) ? 'RECONCILING' : 'SETTLED';
+      const status = cny.greaterThan(row.reservedCny) ? 'RECONCILING' : executionId && cny.isZero() ? 'RELEASED' : 'SETTLED';
       // Claim the transition before refunding. All source mutations and audit records roll back
       // together if a competing settle/release wins or any source balance has changed.
       await this.transition(tx, receiptId, { status, settledCny: cny, settledUsd: usd });
@@ -110,12 +120,12 @@ export class MediaRealBillingService {
       });
       const snapshot = this.snapshot(row);
       const refund = await this.refundDifference(tx, row, row.reservedCny.sub(cny));
-      await tx.computeUsageRecord.create({ data: {
+      const record = await tx.computeUsageRecord.create({ data: {
         paymentMode: snapshot.paymentMode === 'PERSONAL_ONLY' ? 'PERSONAL_ONLY' : snapshot.paymentMode === 'ENTERPRISE_ONLY' ? 'ENTERPRISE_ONLY' : 'AUTO',
         enterpriseId: row.enterpriseId, subscriptionId: row.subscriptionId, creditId: row.creditId,
         employeeId: subscription?.employeeId ?? null,
         userId: row.userId, modelId: verifiedModel, inputTokens: 0, outputTokens: 0,
-        inputPriceUsdPerMillion: 0, outputPriceUsdPerMillion: 0, usdToCnyRate: row.usdToCnyRate,
+        inputPriceUsdPerMillion: executionId ? null : 0, outputPriceUsdPerMillion: executionId ? null : 0, usdToCnyRate: row.usdToCnyRate,
         costCNY: cny, creditPaidCNY: Decimal.min(row.creditCny, cny),
         memberWalletPaidCNY: Decimal.min(row.memberWalletCny, Decimal.max(0, cny.sub(row.creditCny))),
         personalPaidCNY: Decimal.max(0, cny.sub(row.creditCny).sub(row.memberWalletCny)),
@@ -123,6 +133,17 @@ export class MediaRealBillingService {
         personalWalletTransactionId: typeof snapshot.personalWalletTransactionId === 'string' ? snapshot.personalWalletTransactionId : null,
         unpaidCNY: 0, idempotencyKey: `media-real:${receiptId}`,
       } });
+      if (executionId) {
+        const execution = await tx.computeIntegrationExecution.findUniqueOrThrow({ where: { id: executionId } });
+        if (execution.enterpriseId !== row.enterpriseId) forbidden('IDEMPOTENCY_CONFLICT');
+        await this.integrations.recordSettlement(tx, { enterpriseId: row.enterpriseId, executionId, kind: execution.kind as 'image' | 'video',
+          billId: execution.billId, billVersion: execution.billVersion, currency: 'CNY', grossCny: cny.toFixed(6),
+          freeCny: record.creditPaidCNY.toFixed(6), paidCny: cny.sub(record.creditPaidCNY).toFixed(6), unpaidCny: '0.000000' });
+        if (record.personalPaidCNY.gt(0)) await this.integrations.recordTransfer(tx, { enterpriseId: row.enterpriseId,
+          businessId: `personal_${record.id}`, direction: 'credit_compute', currency: 'CNY',
+          amountCny: record.personalPaidCNY.toFixed(6), fundingRef: record.personalWalletTransactionId });
+        await tx.computeIntegrationExecution.update({ where: { id: executionId }, data: { localUsageRecordId: record.id } });
+      }
       await tx.mediaRealBillingReservation.update({ where: { receiptId }, data: { sourceSnapshot: { ...snapshot, refund } } });
       return status;
     });

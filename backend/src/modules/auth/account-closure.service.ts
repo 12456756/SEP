@@ -1,4 +1,5 @@
-import { BadRequestException, ConflictException, HttpException, HttpStatus, Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, HttpException, HttpStatus, Injectable, UnauthorizedException, Optional } from '@nestjs/common';
+import { ComputeIntegrationService } from '../compute-integration/compute-integration.service';
 import { ConfigService } from '@nestjs/config';
 import { Prisma, User } from '@prisma/client';
 import { createHash, randomBytes } from 'crypto';
@@ -16,6 +17,7 @@ export class AccountClosureService {
     private readonly mail: MailService,
     private readonly config: ConfigService,
     private readonly limits: AuthRateLimitService,
+    @Optional() private readonly computeIntegration?: ComputeIntegrationService,
   ) {}
 
   private link(token: string): string {
@@ -71,6 +73,8 @@ export class AccountClosureService {
         continue;
       }
       enterprisesToClose.push({ id: enterprise.id, name: enterprise.name });
+      if (await this.computeIntegration?.hasOpenAccounting(enterprise.id, tx)) blockers.push({ code: 'BILLING_RECONCILIATION',
+        message: `企业「${enterprise.name}」仍有未结清的算力任务、账务或远端余额，请先完成对账并退回余额` });
     }
     const enterpriseIds = enterprisesToClose.map((enterprise) => enterprise.id);
     const scope = { OR: [{ userId: user.id }, { enterpriseId: { in: enterpriseIds } }] };

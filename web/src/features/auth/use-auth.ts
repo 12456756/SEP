@@ -10,6 +10,7 @@ import {
 } from '@/lib/auth-store';
 import type { EnterpriseRole, InvitationPreview } from '@/lib/types';
 import type { RequestEmailChangeDto } from 'shared/index';
+import type { PasswordUpdateResult } from 'shared/compute-integration.dto';
 import { qk } from '@/lib/query-keys';
 import type {
   AccountClosureEligibility,
@@ -327,10 +328,10 @@ export function useResetPassword() {
   const router = useRouter();
   return useMutation({
     mutationFn: (body: { token: string; newPassword: string }) =>
-      api.post<{ message: string }>('/auth/password/reset', body, {
+      api.post<PasswordUpdateResult>('/auth/password/reset', body, {
         skipAuthRetry: true,
       }),
-    onSuccess: () => router.replace('/login?reset=success'),
+    onSuccess: result => router.replace(`/login?reset=${result.computePasswordSync === 'PENDING' ? 'sync-pending' : result.computePasswordSync === 'SYNCED' ? 'synced' : 'success'}`),
   });
 }
 

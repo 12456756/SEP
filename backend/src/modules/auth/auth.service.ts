@@ -25,6 +25,7 @@ import {
   ForgotPasswordDto,
   ResetPasswordDto,
   ChangePasswordDto,
+  PasswordUpdateResult,
   ConfirmEmailVerificationDto,
   RequestEmailChangeDto,
   ConfirmEmailChangeDto,
@@ -39,6 +40,8 @@ import { AuthEventService } from './auth-event.service';
 import { AuthRiskService, LoginAuditContext } from './auth-risk.service';
 import { AuthRateLimitService } from './auth-rate-limit.service';
 import { RegistrationEmailCodeService } from './registration-email-code.service';
+import { ComputeIntegrationService } from '../compute-integration/compute-integration.service';
+import { ComputePasswordSyncService } from '../compute-integration/compute-password-sync.service';
 
 const ACCESS_EXPIRES = '15m';
 const DEFAULT_REFRESH_COOKIE = '__Host-sep_refresh';
@@ -60,6 +63,8 @@ export class AuthService {
     @Optional() private readonly risk?: AuthRiskService,
     @Optional() private readonly rateLimit?: AuthRateLimitService,
     @Optional() private readonly registrationEmailCodes?: RegistrationEmailCodeService,
+    @Optional() private readonly computeIntegration?: ComputeIntegrationService,
+    @Optional() private readonly computePasswordSync?: ComputePasswordSyncService,
   ) {}
 
   // ──────────────── helpers ────────────────
@@ -251,6 +256,9 @@ export class AuthService {
           },
         });
 
+        if (this.computeIntegration) await this.computeIntegration.ensureBinding(enterprise.id, tx, {
+          companyName: enterprise.name, adminEmail: user.email, adminUserId: user.id, passwordHash: hashedPassword,
+        });
         return { user, enterprise, member };
       },
     );
@@ -434,6 +442,15 @@ export class AuthService {
         },
       });
 
+      if (this.computeIntegration) {
+        const credential = await tx.authCredential.findUnique({
+          where: { userId_type: { userId, type: 'LOCAL_PASSWORD' } }, select: { passwordHash: true },
+        });
+        await this.computeIntegration.ensureBinding(enterprise.id, tx, {
+          companyName: enterprise.name, adminEmail: lockedUser.email, adminUserId: lockedUser.id,
+          passwordHash: credential?.passwordHash,
+        });
+      }
       return { enterprise, member };
     }, { isolationLevel: 'ReadCommitted' }).catch((error: unknown) => {
       if (typeof error === 'object' && error && 'code' in error && error.code === 'P2034') {
@@ -560,8 +577,8 @@ export class AuthService {
     return { message: '如果该邮箱已注册，你会收到密码重置邮件' };
   }
 
-  async resetPassword(dto: ResetPasswordDto): Promise<{ message: string }> {
-    const { tokens, mail } = this.requireOneTimeServices();
+  async resetPassword(dto: ResetPasswordDto): Promise<PasswordUpdateResult> {
+    const { tokens } = this.requireOneTimeServices();
     const consumed = await tokens.consume(dto.token, 'PASSWORD_RESET');
     const user = await this.prisma.user.findUnique({ where: { id: consumed.userId } });
     if (!user || user.status !== 'ACTIVE') throw new BadRequestException('令牌无效或已过期');
@@ -574,34 +591,52 @@ export class AuthService {
         create: { userId: user.id, type: 'LOCAL_PASSWORD', passwordHash, lastUsedAt: new Date() },
         update: { passwordHash, failedCount: 0, lockedUntil: null, lastUsedAt: new Date() },
       });
+      await this.computePasswordSync?.enqueue(tx, user, passwordHash);
     });
     await this.sessions.revokeAllUserSessions(user.id, 'password_reset');
-    await mail.sendPasswordChanged({ to: user.email });
-    await this.events?.record({ userId: user.id, action: 'PASSWORD_RESET_COMPLETED' });
-    return { message: '密码已重置，请使用新密码登录' };
+    const result = await this.passwordUpdateResult(user.id, true);
+    await this.notifyPasswordUpdate(user.id, user.email, 'PASSWORD_RESET_COMPLETED');
+    return result;
   }
 
-  async changePassword(userId: string, dto: ChangePasswordDto, currentSessionId?: string): Promise<void> {
-    const { mail } = this.requireOneTimeServices();
+  async changePassword(userId: string, dto: ChangePasswordDto, currentSessionId?: string): Promise<PasswordUpdateResult> {
+    this.requireOneTimeServices();
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user || user.status !== 'ACTIVE') throw new UnauthorizedException('账号当前不可用');
-    const currentHash = await this.passwordHashFor(userId);
-    if (!currentHash || !(await bcrypt.compare(dto.currentPassword, currentHash))) {
-      throw new UnauthorizedException('当前密码不正确');
-    }
     const passwordHash = await bcrypt.hash(dto.newPassword, 12);
     await this.prisma.$transaction(async (tx) => {
       const rows = await tx.$queryRaw<Array<{ id: string; status: string }>>`SELECT id, status FROM users WHERE id = ${userId} FOR UPDATE`;
       if (!rows[0] || rows[0].status !== 'ACTIVE') throw new UnauthorizedException('账号当前不可用');
+      const current = await tx.authCredential.findUnique({ where: { userId_type: { userId, type: 'LOCAL_PASSWORD' } }, select: { passwordHash: true } });
+      if (!current?.passwordHash || !(await bcrypt.compare(dto.currentPassword, current.passwordHash))) throw new UnauthorizedException('当前密码不正确');
       await tx.authCredential.upsert({
         where: { userId_type: { userId, type: 'LOCAL_PASSWORD' } },
         create: { userId, type: 'LOCAL_PASSWORD', passwordHash, lastUsedAt: new Date() },
         update: { passwordHash, failedCount: 0, lockedUntil: null, lastUsedAt: new Date() },
       });
+      await this.computePasswordSync?.enqueue(tx, user, passwordHash);
     });
     await this.sessions.revokeAllUserSessionsExcept(userId, currentSessionId, 'password_changed');
-    await mail.sendPasswordChanged({ to: user.email });
-    await this.events?.record({ userId, action: 'PASSWORD_CHANGED', sessionId: currentSessionId });
+    const result = await this.passwordUpdateResult(userId, false);
+    await this.notifyPasswordUpdate(userId, user.email, 'PASSWORD_CHANGED', currentSessionId);
+    return result;
+  }
+
+  private async notifyPasswordUpdate(userId: string, email: string, action: 'PASSWORD_CHANGED' | 'PASSWORD_RESET_COMPLETED', sessionId?: string) {
+    try { await this.mail!.sendPasswordChanged({ to: email }); }
+    catch { this.logger.warn({ event: 'password_notification_pending', userId }); }
+    try { await this.events?.record({ userId, action, ...(sessionId ? { sessionId } : {}) }); }
+    catch { this.logger.warn({ event: 'password_audit_pending', userId }); }
+  }
+
+  private async passwordUpdateResult(userId: string, reset: boolean): Promise<PasswordUpdateResult> {
+    let computePasswordSync: PasswordUpdateResult['computePasswordSync'] = 'NOT_REQUIRED';
+    try { computePasswordSync = await this.computePasswordSync?.syncUser(userId) ?? 'NOT_REQUIRED'; }
+    catch { computePasswordSync = 'PENDING'; this.logger.warn({ event: 'compute_password_delivery_pending', userId }); }
+    const message = computePasswordSync === 'PENDING' ? 'SEP 密码已修改，算力平台密码同步中，后台将自动重试'
+      : computePasswordSync === 'SYNCED' ? 'SEP 和算力平台密码已同步修改'
+        : reset ? '密码已重置，请使用新密码登录' : '密码已修改，其他设备已退出';
+    return { message, computePasswordSync };
   }
 
   async requestEmailVerification(userId: string, force = false, context: Pick<LoginAuditContext, 'ipAddress'> = {}): Promise<{ message: string }> {

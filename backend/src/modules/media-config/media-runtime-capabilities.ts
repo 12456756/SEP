@@ -26,6 +26,8 @@ export const MEDIA_UNAVAILABLE_MESSAGES: Record<string, string> = {
   PROFILE_DISABLED: '该配置已停用', PROFILE_UNVERIFIED: '该配置尚未通过验证',
   EXECUTION_DISABLED: '平台暂未开启此类生成服务', CONNECTION_UNAVAILABLE: '生成服务连接尚未就绪，请联系管理员',
   ADAPTER_PROTOCOL_UNSUPPORTED: '当前适配器不支持该执行方式', ADAPTER_OPERATION_UNSUPPORTED: '当前适配器不支持该操作',
+  ENTERPRISE_MODEL_UNAVAILABLE: '本企业的算力 Key 没有此模型的使用权限',
+  SETTLEMENT_NOT_CONNECTED: '企业算力结算尚未接通，暂不能生成',
 };
 
 function parameter(label: string, type: MediaParameter['type'], operations: MediaParameter['operations'],

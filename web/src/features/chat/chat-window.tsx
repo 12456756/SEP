@@ -279,7 +279,6 @@ export function ChatWindow({ conversationId, onNewSession }: ChatWindowProps) {
                     employeeAvatar={author?.avatar}
                     employeeAvatarAsset={author?.avatarAsset}
                     createdAt={m.createdAt}
-                    enableTextGenerate={m.role === 'ASSISTANT'}
                   />
                 );
               })}

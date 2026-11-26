@@ -30,15 +30,14 @@ export interface EnterpriseModelConfig {
   embeddingTimeoutMs: number;
   employeeModelPolicy: EmployeeModelPolicy;
   employeeDefaultModel: string | null;
-  /** Decimal 序列化为字符串；null = 不限预算 */
-  /** 编排与分析模型（工作安排 / 迭代建议 / 交付物生成共用）。null = 跟随平台默认 */
+  /** 编排与分析模型。null = 跟随企业默认会话模型 */
   plannerModel: string | null;
   createdAt: string;
   updatedAt: string;
 }
 
 /**
- * 平台可用模型。
+ * 企业对话 Key 可用模型。
  *
  * 除 modelId / label 外的元数据列目前大多为空（等模型同步任务补齐），
  * 所以全部按 nullable 处理，UI 需要降级展示。
@@ -100,12 +99,15 @@ export function useUpdateModelConfig(enterpriseId: string) {
   });
 }
 
-/** 平台可用模型列表（enabled=true）。 */
+/** 当前企业对话 Key 的可用模型列表。 */
 export function useAvailableModels(enterpriseId: string) {
   return useQuery({
     queryKey: qk.availableModels(enterpriseId),
     queryFn: () => api.get<PlatformModel[]>('/enterprise/model-config/available-models'),
     enabled: !!enterpriseId,
+    staleTime: 0,
+    refetchOnMount: true,
+    refetchOnWindowFocus: true,
   });
 }
 

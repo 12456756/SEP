@@ -3,6 +3,7 @@ import { MediaRuntimeSchema, MediaVideoRuntimeSchema } from 'shared';
 import { MediaConfigService } from './media-config.service';
 import { MediaVideoConfigService } from './media-video-config.service';
 import { MediaModelSyncService, mediaConnectionFingerprint } from './media-model-sync.service';
+import { mediaCatalogStub } from '../../../test/stubs/compute-catalog.stub';
 
 function setup() {
   let rows: any[] = [];
@@ -49,9 +50,10 @@ function setup() {
   };
   const files: any = { assertAvailable: jest.fn() };
   const sync = new MediaModelSyncService(prisma, settings);
+  const catalog = mediaCatalogStub();
   return {
-    image: new MediaConfigService(prisma, settings, context, config, imageAdapter, sync),
-    video: new MediaVideoConfigService(prisma, context, config, videoAdapter, files, sync, settings),
+    image: new MediaConfigService(prisma, settings, context, catalog as any, config, imageAdapter, sync),
+    video: new MediaVideoConfigService(prisma, context, config, catalog as any, videoAdapter, files, sync, settings),
     rows: () => rows, prisma, imageAdapter, videoAdapter, files,
     authorize: (value: unknown) => { policy = value; }, enable: () => { real = true; },
     replaceConnection: () => { connection = { ...connection, apiKey: 'other-test-key' }; },
@@ -76,7 +78,7 @@ describe('automatic media discovery → stored contract → authorized runtime (
     const runtime = await f.image.getRuntimeMedia('ent-1');
     expect(MediaRuntimeSchema.safeParse(runtime).success).toBe(true);
     expect(runtime).toMatchObject({ executionAvailable: true, defaultProfileId: row.profileId,
-      profiles: [{ capabilities: { maxOutputs: 4 } }] });
+      profiles: [{ capabilities: { maxOutputs: 1 } }] });
     const before = structuredClone(f.rows());
     await f.image.discoverModels();
     expect(f.rows()).toEqual(before);

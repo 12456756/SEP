@@ -1,10 +1,13 @@
 import {
   ForbiddenException,
   Injectable,
+  Optional,
   Logger,
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { ComputeConnectionService } from '../compute-integration/compute-connection.service';
+import { ComputeCreditService } from '../compute-credit/compute-credit.service';
 import {
   generateText,
   isStepCount,
@@ -43,6 +46,8 @@ export class DigitalEmployeeRunner {
     private readonly runtimePolicy: ModelRuntimePolicyService,
     private readonly admission: GatewayAdmissionService,
     private readonly modelPolicy: GatewayModelPolicyService,
+    @Optional() private readonly connections?: ComputeConnectionService,
+    @Optional() private readonly computeCredit?: ComputeCreditService,
   ) {}
 
   async run(
@@ -121,16 +126,18 @@ export class DigitalEmployeeRunner {
       };
     }
 
-    const { baseURL, apiKey, defaultModel } =
-      await resolveSub2ApiProviderConfig(this.settings);
+    const { baseURL, apiKey, defaultModel, fetch: modelFetch, enterpriseBilling } =
+      await resolveSub2ApiProviderConfig(this.settings,
+        this.connections ? { enterpriseId: identity.enterpriseId, connections: this.connections,
+          funding: { ...executionContext, memberId: identity.memberId, employeeId, sessionId } } : undefined);
     const snapshot = await this.runtimePolicy.getSnapshot();
     const modelId = employee.modelId || defaultModel;
-    const model = await this.prisma.platformModel.findUnique({
-      where: { modelId },
-      select: { maxOutputTokens: true },
-    });
+    if (enterpriseBilling) {
+      const balance = await this.computeCredit.checkBalanceBeforeConversation(identity.enterpriseId, executionContext.subscriptionId, userId);
+      if (!balance.allowed) throw new ForbiddenException({ code: 'INSUFFICIENT_BALANCE', message: balance.reason });
+    }
     const maxOutputTokens = this.modelPolicy.internalOutputTokens(
-      model,
+      null,
       snapshot,
       snapshot.values.WEB_DEFAULT_MAX_OUTPUT_TOKENS,
     );
@@ -168,11 +175,12 @@ export class DigitalEmployeeRunner {
               lifecycle.signal,
               ...(init.signal ? [init.signal] : []),
             ]),
-          }, [apiKey]);
+          }, [apiKey], modelFetch);
         },
       });
       const { text, steps } = await lifecycle.wait(
         generateText({
+          ...(enterpriseBilling ? { maxRetries: 0 } : {}),
           model: provider(modelId),
           system: employee.systemPrompt,
           prompt: userMessage,

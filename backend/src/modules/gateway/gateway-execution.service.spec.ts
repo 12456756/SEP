@@ -34,6 +34,13 @@ describe('Gateway execution journal and recovery', () => {
     service = new GatewayExecutionService(prisma, credit, new ConfigService());
   });
 
+  it('accepts a late usage checkpoint after the remote final fee has already been settled', async () => {
+    execution.status = 'SETTLED'; execution.billingSnapshot = { source: 'compute', currency: 'CNY' };
+    prisma.gatewayExecution.updateMany.mockResolvedValue({ count: 0 });
+    await expect(service.saveUsage('server-execution', usage)).resolves.toBeUndefined();
+    expect(credit.chargeUsage).not.toHaveBeenCalled();
+  });
+
   it('creates a server-owned journal before any model request and rejects storage failure', async () => {
     await service.start(claims, 'employee', 'model', 'request');
     expect(prisma.gatewayExecution.create).toHaveBeenCalledWith({ data: expect.objectContaining({

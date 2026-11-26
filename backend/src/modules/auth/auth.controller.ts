@@ -246,15 +246,15 @@ export class AuthController {
   @Post('password/change')
   @Throttle({ auth: { ttl: 60000, limit: 10 } })
   @UseGuards(JwtAuthGuard)
-  @HttpCode(HttpStatus.NO_CONTENT)
+  @HttpCode(HttpStatus.OK)
   @ApiBearerAuth()
   @ApiOperation({ summary: '登录后修改密码并撤销其它会话' })
-  @ApiResponse({ status: 204, description: '密码修改成功' })
+  @ApiResponse({ status: 200, description: 'SEP 密码已修改，返回算力账号密码同步状态' })
   async changePassword(
     @Request() req: ExpressRequest & { user: { id: string; sid?: string } },
     @Body(new ZodValidationPipe(ChangePasswordDtoSchema)) dto: ChangePasswordDto,
   ) {
-    await this.authService.changePassword(req.user.id, dto, req.user.sid);
+    return this.authService.changePassword(req.user.id, dto, req.user.sid);
   }
 
   @Post('email/verification/request')

@@ -20,8 +20,8 @@ import type {
   EmployeeModelPolicy,
 } from '@/lib/types';
 
-/** Radix Select 不接受空字符串作为 value，用它表示「跟随平台默认」。 */
-const FOLLOW_PLATFORM = '__platform__';
+/** Radix Select 不接受空字符串，用哨兵表示跟随企业默认。 */
+const FOLLOW_ENTERPRISE = '__enterprise__';
 
 interface ModelConfigFormProps {
   config: EnterpriseModelConfig;
@@ -31,7 +31,7 @@ interface ModelConfigFormProps {
   readOnly?: boolean;
 }
 
-/** 表单内部状态。`plannerModel` 用空串表示「跟随平台默认」（Radix Select 不接受 null）。 */
+/** 表单内部状态。`plannerModel` 用哨兵表示跟随企业默认。 */
 type FormState = {
   defaultChatModel: string;
   allowedChatModels: string[];
@@ -48,8 +48,7 @@ function toFormState(config: EnterpriseModelConfig): FormState {
     allowUserSwitchModel: config.allowUserSwitchModel,
     employeeModelPolicy: config.employeeModelPolicy,
     employeeDefaultModel: config.employeeDefaultModel,
-    // null → 空串：Radix Select 的 value 不能是 null，用 FOLLOW_PLATFORM 当哨兵
-    plannerModel: config.plannerModel ?? FOLLOW_PLATFORM,
+    plannerModel: config.plannerModel ?? FOLLOW_ENTERPRISE,
   };
 }
 
@@ -90,9 +89,14 @@ export function ModelConfigForm({
   );
   const labelOf = (modelId: string) =>
     availableModels.find((m) => m.modelId === modelId)?.label ?? modelId;
+  const selectedIds = [...new Set([form.defaultChatModel, ...form.allowedChatModels,
+    ...(form.employeeModelPolicy === 'FORCE_DEFAULT' && form.employeeDefaultModel ? [form.employeeDefaultModel] : []),
+    ...(form.plannerModel !== FOLLOW_ENTERPRISE ? [form.plannerModel] : [])])].filter(Boolean);
+  const unavailableIds = selectedIds.filter(id => !chatModels.some(model => model.modelId === id));
 
   return (
     <div className="space-y-6">
+      {unavailableIds.length > 0 && <p role="alert" className="break-all text-sm text-amber-700 dark:text-amber-400">当前不可用的已选模型：{unavailableIds.join('、')}</p>}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
         <TabsList className="grid w-full grid-cols-3">
           <TabsTrigger value="chat">会话模型</TabsTrigger>
@@ -140,7 +144,7 @@ export function ModelConfigForm({
             <div>
               <h3 className="text-lg font-semibold">可用模型白名单</h3>
               <p className="mt-1 text-sm text-muted-foreground">
-                成员在会话中可切换的模型范围。留空表示不限制，等同于平台全部已启用模型。
+                成员在会话中可切换的模型范围。留空表示允许本企业对话 Key 下的全部可用模型。
               </p>
             </div>
             <ModelWhitelistPicker
@@ -250,10 +254,10 @@ export function ModelConfigForm({
                 disabled={readOnly}
               >
                 <SelectTrigger>
-                  <SelectValue placeholder="跟随平台默认" />
+                  <SelectValue placeholder="跟随企业默认" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={FOLLOW_PLATFORM}>跟随平台默认</SelectItem>
+                  <SelectItem value={FOLLOW_ENTERPRISE}>跟随企业默认</SelectItem>
                   {chatModels.map((m) => (
                     <SelectItem key={m.modelId} value={m.modelId}>
                       {m.label}
@@ -286,9 +290,9 @@ export function ModelConfigForm({
             onClick={() =>
               onSave({
                 ...form,
-                // 哨兵值不能落库 —— 后端把空/空白都当作「跟随平台」，这里显式转 null
+                // 哨兵值不落库；null 表示跟随企业默认。
                 plannerModel:
-                  form.plannerModel === FOLLOW_PLATFORM ? null : form.plannerModel,
+                  form.plannerModel === FOLLOW_ENTERPRISE ? null : form.plannerModel,
               })
             }
             disabled={!isDirty || isSaving}

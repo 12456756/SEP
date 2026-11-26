@@ -1,15 +1,16 @@
-import { Injectable, ForbiddenException, BadRequestException } from '@nestjs/common';
+import { Injectable, ForbiddenException, ServiceUnavailableException, Optional } from '@nestjs/common';
+import { ComputeConnectionService } from '../compute-integration/compute-connection.service';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SettingService } from '../setting/setting.service';
-import { DEFAULT_MODEL_ID, SETTING_KEYS } from 'shared';
-import type { ChatCompletionRequest, ModelRuntimePolicySnapshot, ModelBillingSnapshot } from 'shared';
+import type { ChatCompletionRequest, ModelRuntimePolicySnapshot, ModelBillingSnapshot, PaymentMode } from 'shared';
 import { ComputeCreditService } from '../compute-credit/compute-credit.service';
 import { createGatewayStreamLifecycle, createChatCompletionStreamObserver, timeoutValue } from './gateway-stream';
 import { readGatewayJson } from './gateway-response';
 import { GatewayModelPolicyService } from './gateway-model-policy.service';
 import { localError } from '../../common/errors/error-diagnostics';
 import { assertUpstreamPayload, upstreamException, redactUpstreamStream } from '../../common/errors/upstream-http.exception';
+import type { ComputeChatFunding } from '../compute-integration/compute-model-transport.service';
 
 @Injectable()
 export class GatewayService {
@@ -21,6 +22,7 @@ export class GatewayService {
     private settingService: SettingService,
     private computeCreditService: ComputeCreditService,
     private modelPolicy: GatewayModelPolicyService,
+    @Optional() private readonly connections?: ComputeConnectionService,
   ) {}
 
   /**
@@ -37,9 +39,11 @@ export class GatewayService {
     subscriptionId: string;
     memberId: string;
     employeeId: string;
+    paymentMode?: PaymentMode;
     billingSnapshot?: ModelBillingSnapshot;
   }> {
     const { enterpriseId, subscriptionId, memberId } = claims;
+    await this.connections?.assertEnterpriseModeSupported(enterpriseId);
 
     // 1. 检查订阅状态
     const subscription = await this.prisma.subscription.findFirst({
@@ -85,7 +89,9 @@ export class GatewayService {
 
     // 3. 使用统一算力账本检查余额。不要读取已废弃的 ComputeAccount，
     // 否则 Web 展示的钱包余额与客户端网关会继续使用两套账本。
-    const billingSnapshot = modelId ? await this.computeCreditService.getBillingSnapshot(modelId, enterpriseId, claims.sub) : undefined;
+    const enterpriseMode = await this.connections?.isEnterpriseMode(enterpriseId) ?? false;
+    const paymentMode = enterpriseMode ? (await this.computeCreditService.getPaymentPreference(enterpriseId, claims.sub)).paymentMode : undefined;
+    const billingSnapshot = modelId && !enterpriseMode ? await this.computeCreditService.getBillingSnapshot(modelId, enterpriseId, claims.sub) : undefined;
     const balance = await this.computeCreditService.checkBalanceBeforeConversation(
       enterpriseId,
       subscriptionId,
@@ -96,11 +102,11 @@ export class GatewayService {
       const message = balance.reason || '企业算力余额不足，请联系管理员充值';
       throw new ForbiddenException({ message, error: {
         message, code: 'INSUFFICIENT_BALANCE', type: 'permission_error', source: 'platform', param: null,
-        paymentMode: billingSnapshot?.paymentMode ?? 'AUTO',
+        paymentMode: paymentMode ?? billingSnapshot?.paymentMode ?? 'AUTO',
       } });
     }
 
-    return { enterpriseId, subscriptionId, memberId, employeeId: subscription.employeeId, ...(billingSnapshot ? { billingSnapshot } : {}) };
+    return { enterpriseId, subscriptionId, memberId, employeeId: subscription.employeeId, paymentMode: paymentMode ?? billingSnapshot?.paymentMode ?? 'AUTO', ...(billingSnapshot ? { billingSnapshot } : {}) };
   }
 
   prepareRequest(claims: Parameters<GatewayModelPolicyService['prepare']>[0], dto: ChatCompletionRequest, snapshot: ModelRuntimePolicySnapshot) {
@@ -111,30 +117,15 @@ export class GatewayService {
     return this.modelPolicy.prepare(claims, request, snapshot);
   }
 
-  /**
-   * 获取 sub2api 配置
-   */
-  async getSub2ApiConfig(): Promise<{ baseUrl: string; apiKey: string; defaultModel: string }> {
-    const baseUrl =
-      (await this.settingService.getEffectiveValue(SETTING_KEYS.SUB2API_BASE_URL)) ||
-      'https://ai.longdaoec.com/v1';
-    const apiKey =
-      (await this.settingService.getEffectiveValue(SETTING_KEYS.SUB2API_API_KEY)) || '';
-    // 兜底值必须与 DEFAULT_MODEL_ID 一致。这里原来写死 'gpt-3.5-turbo'，
-    // 而中转早就不提供任何 gpt-* 模型（实测 /v1/models 只有 gemini-*），
-    // 系统设置一旦为空，客户端网关就会拿一个必然 404 的模型去请求。
-    const defaultModel =
-      (await this.settingService.getEffectiveValue(SETTING_KEYS.SUB2API_DEFAULT_MODEL)) ||
-      DEFAULT_MODEL_ID;
-
-    if (!apiKey) {
-      const message = 'sub2api API Key 未配置';
-      throw new BadRequestException({ message, error: {
-        message, code: 'GATEWAY_CONFIG_INVALID', type: 'server_error', source: 'platform', param: null,
-      } });
-    }
-
-    return { baseUrl, apiKey, defaultModel };
+  async getSub2ApiConfig(funding?: ComputeChatFunding & { enterpriseId: string }): Promise<{
+    baseUrl: string; apiKey: string; defaultModel?: string; fetch?: typeof fetch;
+  }> {
+    if (!funding?.enterpriseId || !this.connections) throw new ServiceUnavailableException({
+      code: 'COMPUTE_ENTERPRISE_CONTEXT_REQUIRED', message: '模型调用缺少企业算力连接，无法使用企业凭证',
+    });
+    const enterprise = await this.connections.chatProvider(funding.enterpriseId, funding);
+    if (!enterprise) throw new ServiceUnavailableException({ code: 'COMPUTE_SETTLEMENT_NOT_CONNECTED', message: '企业算力连接不可用' });
+    return { baseUrl: enterprise.baseURL, apiKey: enterprise.apiKey, fetch: enterprise.fetch };
   }
 
   /** 转发已校验的 OpenAI 兼容请求，并保留上游错误状态与字段定位信息。 */
@@ -142,14 +133,15 @@ export class GatewayService {
     return createChatCompletionStreamObserver();
   }
 
-  async forwardChatCompletion(dto: ChatCompletionRequest, snapshot: ModelRuntimePolicySnapshot, requestId?: string, clientSignal?: AbortSignal): Promise<Response> {
-    const { baseUrl, apiKey } = await this.getSub2ApiConfig();
+  async forwardChatCompletion(dto: ChatCompletionRequest, snapshot: ModelRuntimePolicySnapshot, requestId?: string, clientSignal?: AbortSignal,
+    funding?: { enterpriseId: string; userId: string; memberId: string; subscriptionId: string; employeeId: string; gatewayId: string }): Promise<Response> {
+    const { baseUrl, apiKey, fetch: enterpriseFetch } = await this.getSub2ApiConfig(funding);
     const stream = createGatewayStreamLifecycle(snapshot, clientSignal, !!dto.stream);
     let response: Response;
     try {
       const signal = stream.signal;
       signal.throwIfAborted();
-      response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+      response = await (enterpriseFetch ?? fetch)(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

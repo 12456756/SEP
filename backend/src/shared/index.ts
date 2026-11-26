@@ -16,6 +16,7 @@ export * from './media-runtime-parameters';
 export * from './media-video.dto';
 export * from './media-video-config.dto';
 export * from './media-video-real.dto';
+export * from './compute-integration.dto';
 
 // ============================================================================
 // Model Catalog —— 已删除（2026-09-05）
@@ -249,7 +250,7 @@ export const SETTING_FIELDS: readonly SettingFieldMeta[] = [
   },
   {
     key: SETTING_KEYS.MEDIA_API_KEY,
-    label: "媒体模型 API Key",
+    label: "管理员图片校验 API Key",
     secret: true,
     envFallback: "MEDIA_API_KEY",
     placeholder: "sk-...",
@@ -271,7 +272,7 @@ export const SETTING_FIELDS: readonly SettingFieldMeta[] = [
   },
   {
     key: SETTING_KEYS.MEDIA_VIDEO_API_KEY,
-    label: "视频模型 API Key",
+    label: "管理员视频校验 API Key",
     secret: true,
     envFallback: "MEDIA_VIDEO_API_KEY",
     placeholder: "sk-...",
@@ -2179,3 +2180,5 @@ export * from './skill-import-schema';
 export * from './employee-copy.dto';
 export * from './employee-bundle.dto';
 export * from './enterprise-deletion.dto';
+export * from './compute-balance-event.dto';
+export * from './compute-credential-rotation.dto';

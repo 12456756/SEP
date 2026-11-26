@@ -1,5 +1,6 @@
 import {
   Injectable,
+  Optional,
   Logger,
   NotFoundException,
   ForbiddenException,
@@ -7,6 +8,7 @@ import {
   GatewayTimeoutException,
 } from "@nestjs/common";
 import { streamText } from "ai";
+import { ComputeConnectionService } from '../compute-integration/compute-connection.service';
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { z } from "zod";
 import { randomUUID } from 'node:crypto';
@@ -63,6 +65,7 @@ export class ConversationStreamService {
     private readonly runtimePolicies: ModelRuntimePolicyService,
     private readonly admission: GatewayAdmissionService,
     private readonly modelPolicy: GatewayModelPolicyService,
+    @Optional() private readonly connections?: ComputeConnectionService,
   ) {}
 
   // ── main entry ────────────────────────────────────────────────────────────
@@ -185,8 +188,9 @@ export class ConversationStreamService {
       employeeTemplateModel: employee.modelId, departmentId: enterpriseCtx.departmentId ?? undefined,
     });
     const modelId = effective.chatModel;
-    const billingSnapshot = await this.computeCredit.getBillingSnapshot(modelId, enterpriseCtx.enterpriseId, userId);
-    Object.assign(handledByMetadata, { billingSnapshot });
+    const enterpriseBilling = await this.connections?.isEnterpriseMode(enterpriseCtx.enterpriseId) ?? false;
+    const billingSnapshot = enterpriseBilling ? undefined : await this.computeCredit.getBillingSnapshot(modelId, enterpriseCtx.enterpriseId, userId);
+    if (billingSnapshot) Object.assign(handledByMetadata, { billingSnapshot });
 
     // 1c. 额度 / 余额闸门 —— **每条消息**都要过，不能只在建会话时过一次。
     //
@@ -232,8 +236,7 @@ export class ConversationStreamService {
 
     signal?.throwIfAborted();
     const policy = await this.runtimePolicies.getSnapshot();
-    const model = await this.prisma.platformModel.findUnique({ where: { modelId }, select: { maxOutputTokens: true } });
-    const maxOutputTokens = this.modelPolicy.internalOutputTokens(model, policy, policy.values.WEB_DEFAULT_MAX_OUTPUT_TOKENS);
+    const maxOutputTokens = this.modelPolicy.internalOutputTokens(null, policy, policy.values.WEB_DEFAULT_MAX_OUTPUT_TOKENS);
     const requestId = randomUUID();
     Object.assign(handledByMetadata, { policyVersion: policy.version, requestId });
     const identity = { enterpriseId: enterpriseCtx.enterpriseId, memberId: enterpriseCtx.memberId };
@@ -341,8 +344,10 @@ export class ConversationStreamService {
       assertOwnership();
 
       // 6. 初始化 sub2api provider
-      const { baseURL, apiKey } = await resolveSub2ApiProviderConfig(
+      const { baseURL, apiKey, fetch: modelFetch } = await resolveSub2ApiProviderConfig(
         this.settingService,
+        this.connections ? { enterpriseId: enterpriseCtx.enterpriseId, connections: this.connections,
+          funding: { userId, memberId: identity.memberId, subscriptionId, employeeId: employee.id, sessionId } } : undefined,
       );
       const hasTools = Object.keys(tools).length > 0;
       // includeUsage 会往请求里加 stream_options，让上游回真实 usage —— 这是准确
@@ -389,7 +394,7 @@ export class ConversationStreamService {
         let reservation: Promise<void> | undefined;
         let reservationError: unknown;
         const provider = createOpenAICompatible({
-          name: "sub2api", baseURL, apiKey, includeUsage: !hasTools,
+          name: "sub2api", baseURL, apiKey, includeUsage: enterpriseBilling || !hasTools,
           fetch: async (url, options) => {
             lifecycle!.assertActive();
             assertOwnership();
@@ -402,7 +407,7 @@ export class ConversationStreamService {
             lifecycle!.assertActive();
             assertOwnership();
             bumpIdle();
-            return fetchModelUpstream(url, options, [apiKey]);
+            return fetchModelUpstream(url, options, [apiKey], modelFetch);
           },
         });
 
@@ -418,6 +423,7 @@ export class ConversationStreamService {
         // 🔴 修复 P0-1: 包裹异常处理
         try {
           result = streamText({
+            ...(enterpriseBilling ? { maxRetries: 0 } : {}),
             model: provider(modelId),
             instructions: this.buildSystemPrompt(employee.systemPrompt, knowledgeContext),
             messages: messages as Parameters<typeof streamText>[0]["messages"],
@@ -564,13 +570,13 @@ export class ConversationStreamService {
             usage?.completionTokens ?? usage?.outputTokens ?? 0;
 
           // 🔴 Fallback: 当上游未返回 token 数据时,使用文本长度估算(1 token ≈ 4 chars)
-          if (inputTokens === 0 && content.length > 0) {
+          if (!enterpriseBilling && inputTokens === 0 && content.length > 0) {
             inputTokens = Math.ceil(content.length / 4);
             this.logger.warn(
               `[Billing] Input tokens missing, estimated from content length: ${inputTokens}`,
             );
           }
-          if (outputTokens === 0 && accumulatedText.length > 0) {
+          if (!enterpriseBilling && outputTokens === 0 && accumulatedText.length > 0) {
             outputTokens = Math.ceil(accumulatedText.length / 4);
             this.logger.warn(
               `[Billing] Output tokens missing, estimated from response length: ${outputTokens}`,
@@ -583,7 +589,7 @@ export class ConversationStreamService {
 
           // 计算消息成本（用于账单明细和成本分析）。
           // 与 chargeUsage 共用调用开始时的快照，活动中途切换不会改变本笔价格。
-          const { costCNY } = calculateBilledCost(billingSnapshot, inputTokens, outputTokens);
+          const costCNY = billingSnapshot ? calculateBilledCost(billingSnapshot, inputTokens, outputTokens).costCNY : null;
 
           lifecycle.assertActive();
           assertOwnership();
@@ -605,7 +611,7 @@ export class ConversationStreamService {
           });
 
           // 计费记账 (只要有实际对话就记账,不能因上游数据缺失而漏计费)
-          if (inputTokens > 0 && outputTokens > 0) {
+          if (!enterpriseBilling && inputTokens > 0 && outputTokens > 0) {
             this.logger.log(
               `[Billing] Recording usage for session ${sessionId}: input=${inputTokens}, output=${outputTokens}`,
             );
@@ -621,7 +627,7 @@ export class ConversationStreamService {
               subscriptionId,
               billingSnapshot,
             });
-          } else {
+          } else if (!enterpriseBilling) {
             this.logger.error(
               `[Billing] Cannot record usage - both input and output tokens are 0 for session ${sessionId}`,
             );

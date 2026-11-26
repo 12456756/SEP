@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Injectable,
   NotFoundException,
   ServiceUnavailableException,
@@ -17,6 +16,7 @@ import type {
 import { ModelBillingService } from '../model/model-billing.service';
 import { DEFAULT_MODEL_ID, SETTING_KEYS } from 'shared';
 import { SettingService } from '../setting/setting.service';
+import { ComputeModelCatalogService } from '../compute-integration/compute-model-catalog.service';
 
 
 @Injectable()
@@ -24,6 +24,7 @@ export class EnterpriseModelConfigService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly ctx: EnterpriseContextService,
+    private readonly catalog: ComputeModelCatalogService,
     private readonly config?: ConfigService,
     private readonly billing?: ModelBillingService,
     private readonly settings?: SettingService,
@@ -61,7 +62,7 @@ export class EnterpriseModelConfigService {
     });
 
     if (!config) {
-      const defaultChatModel = await this.resolveInitialChatModel();
+      const defaultChatModel = await this.resolveInitialChatModel(enterpriseId);
       config = await this.prisma.enterpriseModelConfig.create({
         data: {
           enterpriseId,
@@ -86,19 +87,15 @@ export class EnterpriseModelConfigService {
     return this.serializeConfig(config);
   }
 
-  private async resolveInitialChatModel(): Promise<string> {
+  private async resolveInitialChatModel(enterpriseId: string): Promise<string> {
     const [configuredDefault, availableModels] = await Promise.all([
       this.settings?.getEffectiveValue(SETTING_KEYS.SUB2API_DEFAULT_MODEL),
-      this.prisma.platformModel.findMany({
-        where: { enabled: true, isStale: false },
-        orderBy: [{ sortOrder: 'asc' }, { modelId: 'asc' }],
-        select: { modelId: true },
-      }),
+      this.catalog.chatModels(enterpriseId),
     ]);
     const availableIds = availableModels.map((model: { modelId: string }) => model.modelId);
     if (configuredDefault && availableIds.includes(configuredDefault)) return configuredDefault;
     if (availableIds.length > 0) return availableIds[0];
-    throw new ServiceUnavailableException('平台没有已启用且有效的模型，无法初始化企业模型配置');
+    throw new ServiceUnavailableException('企业对话 Key 暂无可用模型，无法初始化模型偏好');
   }
 
   async update(userId: string, dto: UpdateEnterpriseModelConfigDto) {
@@ -106,7 +103,7 @@ export class EnterpriseModelConfigService {
     this.ctx.assertEnterpriseAdmin(context);
 
     await this.get(userId);
-    await this.assertSelectableModels(dto);
+    await this.assertSelectableModels(context.enterpriseId, dto);
 
     const updated = await this.prisma.enterpriseModelConfig.update({
       where: { enterpriseId: context.enterpriseId },
@@ -117,7 +114,7 @@ export class EnterpriseModelConfigService {
         ...(dto.rerankModel !== undefined && { rerankModel: dto.rerankModel }),
         ...(dto.employeeModelPolicy !== undefined && { employeeModelPolicy: dto.employeeModelPolicy }),
         ...(dto.employeeDefaultModel !== undefined && { employeeDefaultModel: dto.employeeDefaultModel }),
-        // 空串按「跟随平台默认」处理：下拉框清空时前端传的是 ''，
+        // 空串按「跟随企业默认」处理：下拉框清空时前端传的是 ''，
         // 原样落库会得到一个查不到的模型 id，规划直接 404
         ...(dto.plannerModel !== undefined && {
           plannerModel: dto.plannerModel?.trim() ? dto.plannerModel.trim() : null,
@@ -128,17 +125,7 @@ export class EnterpriseModelConfigService {
     return this.serializeConfig(updated);
   }
 
-  /**
-   * 把「默认模型 / 白名单」限制在平台已启用且上游仍在的模型内。
-   *
-   * 不校验的代价是真实的：某企业的 defaultChatModel 曾被设成 `gemini-3.5-flash`，
-   * 而中转对它的流式请求一个字节都不回 —— 该企业每次对话都停在「正在输入」，
-   * 而配置页看不出任何异常。写入时挡住，比事后从日志里刨要便宜得多。
-   *
-   * 只校验「是不是平台启用的模型」这一层：具体能不能跑由
-   * `POST /models/:id/test`（按流式测）回答，那是运营启用模型时的关卡。
-   */
-  private async assertSelectableModels(dto: UpdateEnterpriseModelConfigDto) {
+  private async assertSelectableModels(enterpriseId: string, dto: UpdateEnterpriseModelConfigDto) {
     const wanted = [
       dto.defaultChatModel,
       dto.employeeDefaultModel,
@@ -151,71 +138,12 @@ export class EnterpriseModelConfigService {
       .filter((id): id is string => typeof id === 'string' && id.length > 0);
     if (wanted.length === 0) return;
 
-    const rows = await this.prisma.platformModel.findMany({
-      where: { modelId: { in: [...new Set(wanted)] } },
-      select: { modelId: true, enabled: true, isStale: true },
-    });
-    const byId = new Map(rows.map((r) => [r.modelId, r]));
-
-    for (const id of new Set(wanted)) {
-      const row = byId.get(id);
-      if (!row) {
-        throw new BadRequestException(
-          `模型 ${id} 不在平台模型库中。请先在运营端「系统设置 → 模型管理」同步上游并启用。`,
-        );
-      }
-      if (row.isStale) {
-        throw new BadRequestException(`模型 ${id} 已从上游下架，不能再选用。`);
-      }
-      if (!row.enabled) {
-        throw new BadRequestException(`模型 ${id} 未被平台启用，请联系平台运营。`);
-      }
-    }
+    await this.catalog.assertChatModels(enterpriseId, wanted);
   }
 
   async getAvailableModels(userId: string): Promise<AvailableModel[]> {
-    await this.ctx.resolve(userId);
-
-    const models = await this.prisma.platformModel.findMany({
-      where: { enabled: true, isStale: false },
-      orderBy: [{ sortOrder: 'asc' }, { label: 'asc' }],
-      select: {
-        modelId: true,
-        label: true,
-        isFree: true,
-        vendor: true,
-        category: true,
-        contextLength: true,
-        maxOutputTokens: true,
-        pricingInputPer1M: true,
-        pricingOutputPer1M: true,
-        supportedFeatures: true,
-        description: true,
-      },
-    });
-
-    if (!this.billing) throw new ServiceUnavailableException('模型计费服务不可用');
-    const billing = await this.billing.describe(models);
-
-    // modelId 是调用模型时的标识，不能用主键 cuid 代替。
-    // 元数据列大多为空（等同步任务补齐），保持 null 让前端降级展示。
-    return models.map((m, index) => ({
-      modelId: m.modelId,
-      label: m.label,
-      displayName: m.label,
-      ...billing[index],
-      vendor: m.vendor,
-      category: m.category,
-      contextLength: m.contextLength,
-      maxOutputTokens: m.maxOutputTokens,
-      pricingInputPer1M: m.pricingInputPer1M?.toString() ?? null,
-      pricingOutputPer1M: m.pricingOutputPer1M?.toString() ?? null,
-      supportedFeatures:
-        m.supportedFeatures && typeof m.supportedFeatures === 'object'
-          ? (m.supportedFeatures as Record<string, unknown>)
-          : null,
-      description: m.description,
-    }));
+    const context = await this.ctx.resolve(userId);
+    return this.catalog.chatModels(context.enterpriseId);
   }
 
   async resolveEffectiveModel(opts: {
@@ -262,11 +190,7 @@ export class EnterpriseModelConfigService {
     let allowed = departmentAllowed.length > 0 ? departmentAllowed : enterpriseAllowed;
     const restrictModels = opts.restrictToAvailableModels || opts.requireAvailableModel;
     if (restrictModels) {
-      const models = await this.prisma.platformModel.findMany({
-        where: { enabled: true, isStale: false },
-        orderBy: [{ sortOrder: 'asc' }, { label: 'asc' }],
-        select: { modelId: true },
-      });
+      const models = await this.catalog.chatModels(config.enterpriseId);
       allowed = models.map((model) => model.modelId).filter((id) =>
         (enterpriseAllowed.length === 0 || enterpriseAllowed.includes(id)) &&
         (departmentAllowed.length === 0 || departmentAllowed.includes(id)),
@@ -274,7 +198,7 @@ export class EnterpriseModelConfigService {
     }
 
     if (opts.requireAvailableModel && allowed.length === 0) {
-      throw new ServiceUnavailableException('企业模型白名单与当前平台可用模型没有交集');
+      throw new ServiceUnavailableException('企业模型白名单与企业对话 Key 的可用模型没有交集');
     }
 
     const assertDefaultAvailable = (modelId: string, label: string) => {
@@ -442,6 +366,8 @@ export class EnterpriseModelConfigService {
     this.ctx.assertEnterpriseAdmin(context);
     await this.assertDepartmentInEnterprise(departmentId, context.enterpriseId);
 
+    await this.catalog.assertChatModels(context.enterpriseId, [dto.defaultChatModel ?? '', ...(dto.allowedChatModels ?? [])]);
+
     const policy = await this.prisma.departmentModelPolicy.upsert({
       where: { departmentId },
       create: {
@@ -466,25 +392,12 @@ export class EnterpriseModelConfigService {
     };
   }
 
-  /**
-   * 编排与分析模型：工作安排的任务规划、迭代建议、交付物生成共用这一个。
-   *
-   * 解析顺序 **企业 → 平台**，与会话那条链的形状一致：
-   *   企业 plannerModel → 平台系统设置 SUB2API_DEFAULT_MODEL → 代码常量
-   *
-   * 为什么单独一层而不是复用 defaultChatModel：这三件事都要把大段上下文
-   * （员工能力目录、执行记录）塞进 prompt 并输出严格 JSON，而用户感知不到延迟；
-   * 会话要的恰好相反。两者共用一个值等于强迫双方妥协。
-   *
-   * 落到平台那一档由调用方处理（它们已持有 SettingService），这里只回答
-   * 「这家企业有没有自己指定过」——返回 null 表示跟随平台。
-   */
+  /** The enterprise default is the fallback; both choices must be callable with its chat key. */
   async getPlannerModel(enterpriseId: string): Promise<string | null> {
-    const config = await this.prisma.enterpriseModelConfig.findUnique({
-      where: { enterpriseId },
-      select: { plannerModel: true },
-    });
-    return config?.plannerModel ?? null;
+    const config = await this.getForEnterprise(enterpriseId);
+    const modelId = config.plannerModel || config.defaultChatModel;
+    await this.catalog.assertChatModels(enterpriseId, [modelId]);
+    return modelId;
   }
 
   /** 防止跨企业越权操作别人的部门。 */

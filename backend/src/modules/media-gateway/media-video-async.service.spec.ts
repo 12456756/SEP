@@ -1,4 +1,5 @@
 import { HttpException } from '@nestjs/common';
+import { enterpriseMediaStub } from '../../../test/stubs/enterprise-media.stub';
 import { MediaVideoRealReceiptSchema } from 'shared';
 import { MediaUpstreamException } from '../../common/errors/media-upstream.exception';
 import { MediaVideoRealService } from './media-video-real.service';
@@ -18,7 +19,7 @@ function harness(recoveryLease?: MediaVideoRecoveryLeaseService) {
   const adapter = {
     connection: jest.fn().mockResolvedValue(connection),
     pricing: jest.fn().mockResolvedValue({ model: 'minimax-h3', operation: value.operation, resolution: '720p', duration_seconds: 4,
-      pricing_status: 'quoted', amount_usd: '0.2', pricing_version: 'price1', expires_at: new Date(Date.now() + 60000).toISOString() }),
+      pricing_status: 'quoted', amount_usd: null, amount_cny: '1.400000', quote_id: 'price1', pricing_version: 'price1', expires_at: new Date(Date.now() + 60000).toISOString() }),
     submitContract: jest.fn(async (_c, _v, _m, _r, id) => contractResult(id, {}, 202)),
     queryContract: jest.fn(async (_c, id) => contractResult(id, { status: 'completed', is_final: true,
       billing: { status: 'settled', actual_cost_usd: '0.1' } })),
@@ -42,17 +43,38 @@ function harness(recoveryLease?: MediaVideoRecoveryLeaseService) {
     kind: 'video', displayName: 'H3', executionMode: 'async-query', operations: ['text-to-video', 'image-to-video'], capabilities }] }),
     getRuntimeVideoV3: jest.fn().mockResolvedValue({ executionAvailable: true, executionMode: 'real', profiles: [{ ...input,
       authorized: true, operations: ['text-to-video', 'image-to-video'], adapter: { available: true, operations: ['text-to-video', 'image-to-video'] } }] }) };
+  const enterprise = enterpriseMediaStub(connection.base, connection.key, fingerprint, '0.700000');
+  const settleCompute = jest.fn(async id => {
+    const status = enterprise.feeStatus() === 'not_charged' ? 'RELEASED' : 'SETTLED'; db.state.reservations.get(id).status = status; return status;
+  });
+  Object.assign(billing, { settleCompute });
+  const asyncAdapter = { ...adapter,
+    submitContract: async (...args: Parameters<typeof adapter.submitContract>) => { const result = await adapter.submitContract(...args); enterprise.observe(result.contract); return result; },
+    queryContract: async (...args: Parameters<typeof adapter.queryContract>) => { const result = await adapter.queryContract(...args); enterprise.observe(result.contract); return result; },
+    cancelContract: async (...args: Parameters<typeof adapter.cancelContract>) => { const result = await adapter.cancelContract(...args); enterprise.observe(result.contract); return result; },
+  };
   const service = new MediaVideoRealService(config as never, db as never, { getEffectiveValue: async () => '7' } as never,
-    runtime as never, adapter as never, cache as never, billing as never, store, recoveryLease);
+    runtime as never, asyncAdapter as never, cache as never, billing as never, store, enterprise.connections as never, enterprise.media as never, recoveryLease);
   async function submit(clientRequestId = 'new-video') {
     const quote = await service.quote(videoClaims, value);
     const request = { ...value, clientRequestId, quoteId: quote.quoteId };
     return { request, receipt: await service.submit(videoClaims, request) };
   }
-  return { db, store, adapter, cache, billing, config, runtime, service, submit };
+  return { db, store, adapter, asyncAdapter, cache, billing: { ...billing, settleCompute }, config, runtime, service, submit, enterprise };
 }
 
 describe('MediaVideoRealService v2 client receipts', () => {
+  it('closes a credential rotation race before reservation without polling or generation', async () => {
+    const h = harness();
+    h.enterprise.media.begin.mockRejectedValueOnce(new HttpException({ code: 'CREDENTIAL_VERSION_CONFLICT', message: 'credential changed' }, 409));
+    const { receipt } = await h.submit();
+    expect(receipt).toMatchObject({ status: 'FAILED', billingStatus: 'NOT_RESERVED', errorCode: 'CONFIG_CHANGED',
+      clientActions: { shouldPoll: false, canStartNewRequest: true } });
+    expect(await h.service.receipt(videoClaims, receipt.receiptId)).toMatchObject({ billingStatus: 'NOT_RESERVED' });
+    expect(h.billing.reserve).not.toHaveBeenCalled();
+    expect(h.adapter.submitContract).not.toHaveBeenCalled();
+    expect(h.enterprise.media.fee).not.toHaveBeenCalled();
+  });
   it('ends a changed-payment quote without generation, billing uncertainty or polling', async () => {
     const h = harness();
     h.billing.reserve.mockRejectedValueOnce(new HttpException({ error: { code: 'PAYMENT_MODE_CHANGED', message: '付款方式已变化，请重新报价' } }, 409));
@@ -65,21 +87,21 @@ describe('MediaVideoRealService v2 client receipts', () => {
   it('saves and settles the original task in the background after restart without a client token', async () => {
     const h = harness(); const { receipt } = await h.submit();
     const restarted = new MediaVideoRealService(h.config as never, h.db as never, {} as never, h.runtime as never,
-      h.adapter as never, h.cache as never, h.billing as never, h.store);
+      h.asyncAdapter as never, h.cache as never, h.billing as never, h.store, h.enterprise.connections as never, h.enterprise.media as never);
     await restarted.recoverPending(scope, receipt.receiptId);
     expect(await h.store.findRequest(scope, receipt.receiptId)).toMatchObject({ receipt: {
       status: 'SUCCEEDED', fileStatus: 'available', billingStatus: 'SETTLED', clientActions: { shouldPoll: false },
     } });
     await restarted.recoverPending(scope, receipt.receiptId);
     expect(h.adapter.submitContract).toHaveBeenCalledTimes(1); expect(h.adapter.queryContract).toHaveBeenCalledTimes(1);
-    expect(h.cache.saveOutput).toHaveBeenCalledTimes(1); expect(h.billing.settleNegotiated).toHaveBeenCalledTimes(1);
+    expect(h.cache.saveOutput).toHaveBeenCalledTimes(1); expect(h.billing.settleCompute).toHaveBeenCalledTimes(1);
   });
 
   it('shares recovery between background work and a concurrent client query', async () => {
     const h = harness(); const { receipt } = await h.submit();
     await Promise.all([h.service.recoverPending(scope, receipt.receiptId), h.service.receipt(videoClaims, receipt.receiptId)]);
     expect(h.adapter.queryContract).toHaveBeenCalledTimes(1); expect(h.cache.saveOutput).toHaveBeenCalledTimes(1);
-    expect(h.billing.settleNegotiated).toHaveBeenCalledTimes(1);
+    expect(h.billing.settleCompute).toHaveBeenCalledTimes(1);
   });
 
   it('waits for a live submission and never resubmits when recovering a lost response', async () => {
@@ -103,13 +125,13 @@ describe('MediaVideoRealService v2 client receipts', () => {
     } });
     await h.service.recoverPending(scope, receipt.receiptId);
     expect(await h.store.findRequest(scope, receipt.receiptId)).toMatchObject({ receipt: { status: 'SUCCEEDED' } });
-    expect(h.adapter.submitContract).toHaveBeenCalledTimes(1); expect(h.billing.settleNegotiated).toHaveBeenCalledTimes(1);
+    expect(h.adapter.submitContract).toHaveBeenCalledTimes(1); expect(h.billing.settleCompute).toHaveBeenCalledTimes(1);
   });
 
   it('continues billing recovery but does not save a file after owner access is revoked', async () => {
     const h = harness(); const { receipt } = await h.submit(); h.db.enterpriseMember.findFirst.mockResolvedValue(null);
     await h.service.recoverPending(scope, receipt.receiptId);
-    expect(h.cache.saveOutput).not.toHaveBeenCalled(); expect(h.billing.settleNegotiated).toHaveBeenCalledTimes(1);
+    expect(h.cache.saveOutput).not.toHaveBeenCalled(); expect(h.billing.settleCompute).toHaveBeenCalledTimes(1);
     expect(await h.store.findRequest(scope, receipt.receiptId)).toMatchObject({ receipt: {
       execution: { generationStatus: 'completed', operationError: { status: 403 } }, fileStatus: 'download_failed',
     } });
@@ -137,7 +159,8 @@ describe('MediaVideoRealService v2 client receipts', () => {
     };
     const h = harness(new MediaVideoRecoveryLeaseService({ redis } as never));
     const other = new MediaVideoRealService(h.config as never, h.db as never, {} as never, h.runtime as never,
-      h.adapter as never, h.cache as never, h.billing as never, h.store,
+      h.asyncAdapter as never, h.cache as never, h.billing as never, h.store,
+      h.enterprise.connections as never, h.enterprise.media as never,
       new MediaVideoRecoveryLeaseService({ redis } as never));
     const { receipt } = await h.submit();
     let finish: () => void;
@@ -149,7 +172,7 @@ describe('MediaVideoRealService v2 client receipts', () => {
     expect(await other.receipt(videoClaims, receipt.receiptId)).toMatchObject({ status: 'QUEUED' });
     expect(h.adapter.queryContract).toHaveBeenCalledTimes(1); finish!(); await background;
     expect(await other.receipt(videoClaims, receipt.receiptId)).toMatchObject({ status: 'SUCCEEDED' });
-    expect(h.cache.saveOutput).toHaveBeenCalledTimes(1); expect(h.billing.settleNegotiated).toHaveBeenCalledTimes(1);
+    expect(h.cache.saveOutput).toHaveBeenCalledTimes(1); expect(h.billing.settleCompute).toHaveBeenCalledTimes(1);
     expect(owners.size).toBe(0);
   });
 
@@ -162,7 +185,7 @@ describe('MediaVideoRealService v2 client receipts', () => {
       return contractResult(id, { status: 'completed', billing: { status: 'settled', actual_cost_usd: '0.1' } });
     });
     await h.service.recoverPending(scope, receipt.receiptId);
-    expect(h.billing.settleNegotiated).not.toHaveBeenCalled(); expect(h.cache.saveOutput).not.toHaveBeenCalled();
+    expect(h.billing.settleCompute).not.toHaveBeenCalled(); expect(h.cache.saveOutput).not.toHaveBeenCalled();
     expect(release).toHaveBeenCalledTimes(1);
   });
 
@@ -184,7 +207,7 @@ describe('MediaVideoRealService v2 client receipts', () => {
         operationError: { status: 503, body: { error: { code: 'VIDEO_RECOVERY_LOCK_UNAVAILABLE', message: 'Synthetic Redis unavailable' } } } },
     });
     expect(h.adapter.queryContract).not.toHaveBeenCalled(); expect(h.cache.saveOutput).not.toHaveBeenCalled();
-    expect(h.billing.release).not.toHaveBeenCalled(); expect(h.billing.settleNegotiated).not.toHaveBeenCalled();
+    expect(h.billing.release).not.toHaveBeenCalled(); expect(h.billing.settleCompute).not.toHaveBeenCalled();
   });
 
   it('persists request identity, 257s deadline and dispatch marker before exactly one POST', async () => {
@@ -215,7 +238,7 @@ describe('MediaVideoRealService v2 client receipts', () => {
       clientActions: { generationFinished: true, canStartNewRequest: true, shouldPoll: false } });
     await h.service.submit(videoClaims, request);
     expect(h.adapter.submitContract).toHaveBeenCalledTimes(1);
-    expect(h.billing.release).toHaveBeenCalledTimes(1);
+    expect(h.billing.settleCompute).toHaveBeenCalledTimes(1);
     expect(h.adapter.queryContract).not.toHaveBeenCalled();
   });
 
@@ -227,7 +250,7 @@ describe('MediaVideoRealService v2 client receipts', () => {
     expect(h.adapter.queryContract).toHaveBeenCalledWith(expect.anything(), receipt.execution!.requestId, null);
     expect(recovered).toMatchObject({ status: 'SUCCEEDED', billingStatus: 'SETTLED', fileStatus: 'available',
       actualSpec: { frameRate: 24 }, clientActions: { canStartNewRequest: true, shouldPoll: false } });
-    expect(h.billing.settleNegotiated).toHaveBeenCalledWith(receipt.receiptId, '0.700000', '0.100000', 'minimax-h3', 'minimax-h3');
+    expect(h.billing.settleCompute).toHaveBeenCalledWith(receipt.receiptId, `execution_${receipt.receiptId}`, 'minimax-h3');
     expect(h.adapter.submitContract).toHaveBeenCalledTimes(1);
   });
 
@@ -241,7 +264,7 @@ describe('MediaVideoRealService v2 client receipts', () => {
     expect(failed).toMatchObject({ status: status === 'failed' ? 'FAILED' : 'CANCELLED', billingStatus: 'RECONCILING',
       execution: { taskError: { message: 'reference rejected' }, billing: { error: { message: 'settlement database unavailable' } } },
       clientActions: { generationFinished: true, canStartNewRequest: true, pollPurpose: 'billing' } });
-    expect(h.billing.release).not.toHaveBeenCalled(); expect(h.billing.settleNegotiated).not.toHaveBeenCalled();
+    expect(h.billing.release).not.toHaveBeenCalled(); expect(h.billing.settleCompute).not.toHaveBeenCalled();
   });
 
   it('clears submission-unknown once the original queued task has been restored', async () => {
@@ -276,7 +299,7 @@ describe('MediaVideoRealService v2 client receipts', () => {
     const recovered = await h.service.receipt(videoClaims, receipt.receiptId);
     expect(recovered).toMatchObject({ status: 'SUCCEEDED', fileStatus: 'available' });
     expect(recovered.execution).not.toHaveProperty('operationError'); expect(recovered.upstreamError).toBeUndefined();
-    expect(h.billing.settleNegotiated).toHaveBeenCalledTimes(1); expect(h.adapter.submitContract).toHaveBeenCalledTimes(1);
+    expect(h.billing.settleCompute).toHaveBeenCalledTimes(1); expect(h.adapter.submitContract).toHaveBeenCalledTimes(1);
   });
 
   it('clears a resolved download error while retaining historical submission diagnostics', async () => {
@@ -293,7 +316,7 @@ describe('MediaVideoRealService v2 client receipts', () => {
     } });
     expect(recovered.execution).not.toHaveProperty('operationError');
     expect(recovered.upstreamError).toMatchObject({ body: { error: { code: 'submission_retried' } } });
-    expect(h.adapter.submitContract).toHaveBeenCalledTimes(1); expect(h.billing.settleNegotiated).toHaveBeenCalledTimes(1);
+    expect(h.adapter.submitContract).toHaveBeenCalledTimes(1); expect(h.billing.settleCompute).toHaveBeenCalledTimes(1);
   });
 
   it('delivers video while billing is unknown and later drives upstream settlement', async () => {
@@ -311,7 +334,7 @@ describe('MediaVideoRealService v2 client receipts', () => {
     const h = harness(); const { receipt } = await h.submit();
     await Promise.all([h.service.receipt(videoClaims, receipt.receiptId), h.service.receipt(videoClaims, receipt.receiptId)]);
     expect(h.adapter.queryContract).toHaveBeenCalledTimes(1);
-    expect(h.cache.saveOutput).toHaveBeenCalledTimes(1); expect(h.billing.settleNegotiated).toHaveBeenCalledTimes(1);
+    expect(h.cache.saveOutput).toHaveBeenCalledTimes(1); expect(h.billing.settleCompute).toHaveBeenCalledTimes(1);
   });
 
   it('preserves a reliable task ID on invalid model receipts for subsequent recovery', async () => {
@@ -394,7 +417,7 @@ describe('MediaVideoRealService v2 client receipts', () => {
     expect(updated).toMatchObject({ status: 'QUEUED', billingStatus: receipt.billingStatus, execution: {
       requestId: receipt.execution!.requestId, taskId: 'task-original', submissionStatus: 'accepted', generationStatus: 'queued',
       operation, operationError: { status: 403 } }, clientActions: { canStartNewRequest: false } });
-    expect(h.billing.release).not.toHaveBeenCalled(); expect(h.billing.settleNegotiated).not.toHaveBeenCalled();
+    expect(h.billing.release).not.toHaveBeenCalled(); expect(h.billing.settleCompute).not.toHaveBeenCalled();
   });
 
   it('stops output recovery after its original expiry without extending retention', async () => {

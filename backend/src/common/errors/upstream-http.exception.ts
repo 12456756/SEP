@@ -81,8 +81,8 @@ export async function readUpstreamJson<T = unknown>(response: Response, secrets:
 }
 
 /** Preserve SDK transport failures and redact only error events in model streams. */
-export async function fetchModelUpstream(input: string | URL | Request, init?: RequestInit, secrets: readonly string[] = []): Promise<Response> {
-  const response = await fetchUpstream(input, init, secrets);
+export async function fetchModelUpstream(input: string | URL | Request, init?: RequestInit, secrets: readonly string[] = [], transport?: typeof fetch): Promise<Response> {
+  const response = transport ? await transport(input, init) : await fetchUpstream(input, init, secrets);
   const type = response.headers.get('content-type')?.split(';')[0].trim().toLowerCase();
   if (type === 'application/json') {
     const value = await readUpstreamJson(response, secrets);

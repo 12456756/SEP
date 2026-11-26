@@ -3,7 +3,7 @@ import * as bcrypt from 'bcrypt';
 import { RequestEmailChangeDtoSchema } from 'shared';
 
 describe('AuthService password and email recovery', () => {
-  function make() {
+  function make(passwordSync?: any) {
     const user = { id: 'u1', email: 'u@example.com', name: 'U', avatar: null, role: 'USER', status: 'ACTIVE' };
     const prisma: any = {
       $queryRaw: jest.fn().mockResolvedValue([{ id: 'u1', status: 'ACTIVE' }]),
@@ -18,7 +18,8 @@ describe('AuthService password and email recovery', () => {
     const mail = { sendPasswordReset: jest.fn().mockResolvedValue(undefined), sendPasswordChanged: jest.fn().mockResolvedValue(undefined), sendEmailVerification: jest.fn().mockResolvedValue(undefined) };
     const sessions = { revokeAllUserSessions: jest.fn(), revokeAllUserSessionsExcept: jest.fn() };
     const config = { get: jest.fn().mockReturnValue('http://localhost:3000'), getOrThrow: jest.fn().mockReturnValue('secret') };
-    const service = new AuthService(prisma, { sign: jest.fn() } as any, config as any, {} as any, {} as any, sessions as any, tokens as any, mail as any);
+    const service = new AuthService(prisma, { sign: jest.fn() } as any, config as any, {} as any, {} as any, sessions as any, tokens as any, mail as any,
+      undefined, undefined, undefined, undefined, undefined, passwordSync);
     return { service, prisma, tokens, mail, sessions, user };
   }
 
@@ -36,6 +37,57 @@ describe('AuthService password and email recovery', () => {
     await service.resetPassword({ token: 'secret-token', newPassword: 'NewPassword123' });
     expect(sessions.revokeAllUserSessions).toHaveBeenCalledWith('u1', 'password_reset');
     expect(mail.sendPasswordChanged).toHaveBeenCalledWith({ to: 'u@example.com' });
+  });
+
+  it.each(['SYNCED', 'PENDING'])('saves a durable password update in the reset transaction and reports %s', async status => {
+    const sync = { enqueue: jest.fn(), syncUser: jest.fn().mockResolvedValue(status) };
+    const { service, tokens, prisma, user } = make(sync);
+    tokens.consume.mockResolvedValue({ userId: user.id });
+    const result = await service.resetPassword({ token: 'reset-token', newPassword: 'NewPassword123' });
+    const passwordHash = prisma.authCredential.upsert.mock.calls[0][0].update.passwordHash;
+    expect(sync.enqueue).toHaveBeenCalledWith(prisma, user, passwordHash);
+    expect(await bcrypt.compare('NewPassword123', passwordHash)).toBe(true);
+    expect(sync.syncUser).toHaveBeenCalledWith(user.id);
+    expect(result.computePasswordSync).toBe(status);
+    expect(result.message).toContain(status === 'PENDING' ? '同步中' : '已同步修改');
+    expect(JSON.stringify(result)).not.toContain(passwordHash);
+  });
+
+  it('checks the current password under the user lock and synchronizes a normal password change', async () => {
+    const sync = { enqueue: jest.fn(), syncUser: jest.fn().mockResolvedValue('SYNCED') };
+    const { service, prisma, sessions, user } = make(sync);
+    prisma.authCredential.findUnique.mockResolvedValue({ passwordHash: await bcrypt.hash('CurrentPassword123', 4) });
+    const result = await service.changePassword(user.id, { currentPassword: 'CurrentPassword123', newPassword: 'NewPassword123' }, 'session1');
+    expect(result.computePasswordSync).toBe('SYNCED');
+    expect(sync.enqueue).toHaveBeenCalledWith(prisma, user, expect.stringMatching(/^\$2/));
+    expect(prisma.$queryRaw.mock.invocationCallOrder[0]).toBeLessThan(prisma.authCredential.findUnique.mock.invocationCallOrder[0]);
+    expect(sessions.revokeAllUserSessionsExcept).toHaveBeenCalledWith(user.id, 'session1', 'password_changed');
+  });
+
+  it('does not save or sync a password if the current password is wrong', async () => {
+    const sync = { enqueue: jest.fn(), syncUser: jest.fn() };
+    const { service, prisma, user } = make(sync);
+    prisma.authCredential.findUnique.mockResolvedValue({ passwordHash: await bcrypt.hash('CurrentPassword123', 4) });
+    await expect(service.changePassword(user.id, { currentPassword: 'wrong', newPassword: 'NewPassword123' })).rejects.toThrow('当前密码不正确');
+    expect(prisma.authCredential.upsert).not.toHaveBeenCalled();
+    expect(sync.enqueue).not.toHaveBeenCalled();
+    expect(sync.syncUser).not.toHaveBeenCalled();
+  });
+
+  it('does not report a completed password change as failed because the notification mail failed', async () => {
+    const sync = { enqueue: jest.fn(), syncUser: jest.fn().mockResolvedValue('SYNCED') };
+    const { service, tokens, mail, user } = make(sync); tokens.consume.mockResolvedValue({ userId: user.id });
+    mail.sendPasswordChanged.mockRejectedValue(new Error('SMTP down'));
+    await expect(service.resetPassword({ token: 'reset-token', newPassword: 'NewPassword123' })).resolves.toMatchObject({ computePasswordSync: 'SYNCED' });
+    expect(sync.syncUser).toHaveBeenCalledWith(user.id);
+  });
+
+  it('aborts the password transaction if the durable synchronization record cannot be saved', async () => {
+    const sync = { enqueue: jest.fn().mockRejectedValue(new Error('outbox unavailable')), syncUser: jest.fn() };
+    const { service, tokens, user, sessions } = make(sync); tokens.consume.mockResolvedValue({ userId: user.id });
+    await expect(service.resetPassword({ token: 'reset-token', newPassword: 'NewPassword123' })).rejects.toThrow('outbox unavailable');
+    expect(sync.syncUser).not.toHaveBeenCalled();
+    expect(sessions.revokeAllUserSessions).not.toHaveBeenCalled();
   });
 
   it('邮箱验证确认只写入当前用户', async () => {

@@ -112,7 +112,7 @@ export function MediaModelsPanelView({ kind, connection, save, discovery, profil
     <form onSubmit={submit} className="grid min-w-0 gap-4 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end">
       <label className="min-w-0 text-sm"><span className="mb-1 block font-medium">Base URL</span>
         <Input required type="url" disabled={busy} value={form.baseUrl} onChange={(event) => edit('baseUrl', event.target.value)}/></label>
-      <label className="min-w-0 text-sm"><span className="mb-1 block font-medium">API Key {connection.data?.apiKeyConfigured && <span className="text-fg-muted">(已保存，留空不修改)</span>}</span>
+      <label className="min-w-0 text-sm"><span className="mb-1 block font-medium">管理员校验 API Key {connection.data?.apiKeyConfigured && <span className="text-fg-muted">(已保存，留空不修改)</span>}</span>
         <Input type="password" autoComplete="new-password" disabled={busy} value={form.apiKey} onChange={(event) => edit('apiKey', event.target.value)}/></label>
       <Button type="submit" loading={save.isPending} disabled={busy}><Save className="h-4 w-4"/>保存连接</Button>
       {dirty && <p className="text-sm text-fg-muted sm:col-span-3">请先保存连接，再检测模型。</p>}

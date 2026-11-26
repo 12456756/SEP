@@ -7,20 +7,23 @@ import { MediaVideoParametersSchema, MediaConfigVersionV3Schema, MediaProfileIdV
 import type { MediaVideoRealQuote, MediaVideoRealReceipt, MediaVideoRealReference } from 'shared';
 import { PrismaService } from '../../prisma/prisma.service';
 import { videoGatewayError, videoStorageUnavailable } from './media-video-gateway.store';
+import { ComputeMediaSnapshotSchema } from '../compute-integration/compute-media.service';
 
 export const VIDEO_REAL_ADAPTER = 'sub2api-video-v1';
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const money = z.string().regex(/^\d{1,8}\.\d{6}$/);
 const LegacyFrozenSchema = z.object({
+  compute: ComputeMediaSnapshotSchema.optional(),
   adapter: z.literal(VIDEO_REAL_ADAPTER), profileId: id, configVersion: id,
   modelId: z.literal('minimax-h3'), operation: z.enum(['text-to-video', 'image-to-video']),
   parameters: MediaVideoParametersSchema.refine(p => p.durationSeconds === 4 && p.resolution === '720p' &&
     p.aspectRatio === '16:9' && p.frameRate === 24 && p.audio && p.outputFormat === 'video/mp4'),
   connectionFingerprint: hash, pricingVersion: z.string().min(1).max(128),
-  amountCny: money, amountUsd: z.string().regex(/^\d+(?:\.\d{1,12})?$/), usdToCnyRate: z.number().finite().positive(),
+  amountCny: money, amountUsd: z.string().regex(/^\d+(?:\.\d{1,12})?$/).nullable(), usdToCnyRate: z.number().finite().positive().nullable(),
 }).strict();
 const V3FrozenSchema = z.object({
+  compute: ComputeMediaSnapshotSchema.optional(),
   maxReferenceCount: MediaReferenceCountSchema.optional(),
   maxVideoReferenceCount: z.number().int().min(1).max(VIDEO_INPUT_MAX_COUNT).optional(),
   videoReferences: z.array(MediaVideoInputReferenceSchema.extend({
@@ -35,7 +38,7 @@ const V3FrozenSchema = z.object({
     z.object({ source: z.enum(['user', 'model', 'upstream']), decisionRef: z.string() }).strict(),
   ])).optional(),
   connectionFingerprint: hash, pricingVersion: z.string().min(1).max(128),
-  amountCny: money, amountUsd: z.string().regex(/^\d+(?:\.\d{1,12})?$/), usdToCnyRate: z.number().finite().positive(),
+  amountCny: money, amountUsd: z.string().regex(/^\d+(?:\.\d{1,12})?$/).nullable(), usdToCnyRate: z.number().finite().positive().nullable(),
 }).strict();
 const FrozenSchema = z.union([V3FrozenSchema, LegacyFrozenSchema]);
 const QuoteSchema = z.object({

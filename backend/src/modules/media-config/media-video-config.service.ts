@@ -27,6 +27,7 @@ import { MediaModelSyncService, mediaConnectionFingerprint } from './media-model
 import { MediaVideoRuntimeV3Schema } from 'shared';
 import type { MediaVideoRuntimeV3 } from 'shared';
 import { mediaRuntimeStatus, MEDIA_UNAVAILABLE_MESSAGES, videoRuntimeCapabilities, videoReferenceCapabilities, videoRuntimePolicy } from './media-runtime-capabilities';
+import { ComputeModelCatalogService } from '../compute-integration/compute-model-catalog.service';
 
 const MOCK_PROFILE = MediaVideoProfileSchema.parse(fixture.profile);
 
@@ -38,6 +39,7 @@ export class MediaVideoConfigService {
     private readonly prisma: PrismaService,
     private readonly enterpriseContext: EnterpriseContextService,
     private readonly config: ConfigService,
+    private readonly catalog: ComputeModelCatalogService,
     @Optional() private readonly videoAdapter?: Sub2apiVideoAdapter,
     @Optional() private readonly videoFiles?: VideoFileCacheService,
     @Optional() private readonly modelSync?: MediaModelSyncService,
@@ -270,32 +272,26 @@ export class MediaVideoConfigService {
     };
   }
 
-  private async availableProfiles(includeV3 = false): Promise<MediaVideoProfile[]> {
-    if (!this.mockEnabled() && !this.realEnabled()) return [];
-    if (this.realEnabled()) {
-      if (!this.settings) return [];
-      try { mediaConnectionFingerprint(await this.settings.getMediaConnection('video')); }
-      catch (error) {
-        if (error instanceof ServiceUnavailableException) return [];
-        throw error;
-      }
-    }
+  private async availableProfiles(enterpriseId: string, includeV3 = false): Promise<MediaVideoProfile[]> {
+    if (!this.realEnabled() && !this.mockEnabled()) return [];
+    if (!await this.catalog.configured(enterpriseId, 'video')) return [];
     const rows = await this.prisma.mediaModelProfile.findMany({
       where: { kind: 'video', enabled: true, verified: true }, orderBy: { createdAt: 'asc' },
     });
-    return rows.map(row => this.profileView(row)).filter(profile => this.realEnabled()
+    const profiles = rows.map(row => this.profileView(row)).filter(profile => this.realEnabled()
       ? includeV3 ? this.v3Compatible(profile) : this.realCompatible(profile) : this.compatible(profile));
+    return this.catalog.filterProfiles(enterpriseId, 'video', profiles);
   }
 
   async getAvailableProfiles(userId: string): Promise<MediaVideoAvailableProfile[]> {
-    await this.enterpriseContext.resolve(userId);
-    return (await this.availableProfiles(true)).map(({ modelId: _modelId, ...profile }) => profile);
+    const context = await this.enterpriseContext.resolve(userId);
+    return (await this.availableProfiles(context.enterpriseId, true)).map(({ modelId: _modelId, ...profile }) => profile);
   }
 
   async getEnterpriseConfig(userId: string): Promise<MediaVideoEnterpriseConfig> {
     const context = await this.enterpriseContext.resolve(userId);
     const config = await this.prisma.enterpriseModelConfig.findUnique({ where: { enterpriseId: context.enterpriseId } });
-    return { policy: this.parsePolicy(config?.mediaPolicy), configured: this.mockEnabled() || (this.settings ? (await this.getConnection()).configured : false),
+    return { policy: this.parsePolicy(config?.mediaPolicy), configured: await this.catalog.configured(context.enterpriseId, 'video'),
       canEdit: context.role === 'ENTERPRISE_ADMIN', mock: !this.realEnabled(), executionTested: false };
   }
 
@@ -303,6 +299,13 @@ export class MediaVideoConfigService {
     const dto = this.parse<UpdateMediaVideoPolicyDto>(UpdateMediaVideoPolicyDtoSchema, input);
     const context = await this.enterpriseContext.resolve(userId);
     this.enterpriseContext.assertEnterpriseAdmin(context);
+    const saved = await this.prisma.enterpriseModelConfig.findUnique({ where: { enterpriseId: context.enterpriseId } });
+    const prior = this.parsePolicy(saved?.mediaPolicy);
+    const available = (await this.listProfiles()).filter(profile => profile.enabled && profile.verified);
+    await this.catalog.assertProfiles(context.enterpriseId, 'video', available, dto.enabledProfileIds ?? prior.enabledProfileIds, prior.enabledProfileIds);
+    if (dto.defaultProfileId && dto.defaultProfileId !== prior.defaultProfileId) {
+      await this.catalog.assertProfiles(context.enterpriseId, 'video', available, [dto.defaultProfileId]);
+    }
     try {
       await this.prisma.$transaction(async tx => {
         const existing = await tx.enterpriseModelConfig.findUnique({ where: { enterpriseId: context.enterpriseId } });
@@ -336,9 +339,9 @@ export class MediaVideoConfigService {
     const context = await this.enterpriseContext.resolve(userId);
     const storedConfig = await this.prisma.enterpriseModelConfig.findUnique({ where: { enterpriseId: context.enterpriseId } });
     const policy = context.role === 'ENTERPRISE_ADMIN' ? request.policy : this.parsePolicy(storedConfig?.mediaPolicy);
-    const configured = this.mockEnabled() || (this.settings ? (await this.getConnection()).configured : false);
+    const configured = await this.catalog.configured(context.enterpriseId, 'video');
     const rows = await this.listProfiles();
-    const runtimeProfiles = await this.availableProfiles();
+    const runtimeProfiles = await this.availableProfiles(context.enterpriseId);
     const visibleRows = context.role === 'ENTERPRISE_ADMIN' ? rows : rows.filter(profile => policy.enabledProfileIds.includes(profile.profileId));
     const permissive: MediaVideoPolicy = { ...policy, enabledProfileIds: rows.map(profile => profile.profileId), defaultProfileId: null };
     const [available, effective] = await Promise.all([
@@ -365,10 +368,12 @@ export class MediaVideoConfigService {
         if (!profile.enabled) reasons.push('disabled');
         if (!profile.verified) reasons.push('unverified');
         if (!configured) reasons.push('connection-unconfigured');
+        if (current && 'unavailableReason' in current && current.unavailableReason === 'ENTERPRISE_MODEL_UNAVAILABLE') reasons.push('enterprise-model-unavailable');
+        if (current && 'unavailableReason' in current && current.unavailableReason === 'SETTLEMENT_NOT_CONNECTED') reasons.push('settlement-not-connected');
         if (executionMode === 'disabled') reasons.push('execution-disabled');
         if (!baseline && profile.enabled && profile.verified && configured) reasons.push('adapter-unsupported');
         if (request.protocolVersion === 3 && current && !executableProfile(current)
-          && !reasons.some(reason => ['disabled', 'unverified', 'connection-unconfigured', 'execution-disabled'].includes(reason))) {
+          && !reasons.some(reason => ['disabled', 'unverified', 'connection-unconfigured', 'execution-disabled', 'enterprise-model-unavailable', 'settlement-not-connected'].includes(reason))) {
           reasons.push('adapter-unsupported');
         }
         const status: MediaVideoPolicyPreview['profiles'][number]['status'] = current && executableProfile(current) && executionMode !== 'disabled' ? 'effective'
@@ -381,10 +386,10 @@ export class MediaVideoConfigService {
 
   async getRuntimeVideo(enterpriseId: string, policyOverride?: MediaVideoPolicy, profilesOverride?: MediaVideoProfile[]): Promise<MediaVideoRuntime> {
     const disabled: MediaVideoRuntime = { protocolVersion: 1, executionAvailable: false, defaultProfileId: null, tools: [], profiles: [] };
-    if (!this.mockEnabled() && !this.realEnabled()) return disabled;
+    if ((!this.mockEnabled() && !this.realEnabled()) || !this.catalog.executionReady()) return disabled;
     const config = policyOverride ? null : await this.prisma.enterpriseModelConfig.findUnique({ where: { enterpriseId } });
     const policy = policyOverride ?? this.parsePolicy(config?.mediaPolicy);
-    const profiles = (profilesOverride ?? await this.availableProfiles()).filter(profile => policy.enabledProfileIds.includes(profile.profileId))
+    const profiles = (profilesOverride ?? await this.availableProfiles(enterpriseId)).filter(profile => policy.enabledProfileIds.includes(profile.profileId))
       .map(profile => ({
         profileId: profile.profileId, kind: profile.kind, displayName: profile.displayName,
         configVersion: profile.configVersion, executionMode: profile.executionMode,
@@ -408,7 +413,7 @@ export class MediaVideoConfigService {
 
   async getRuntimeVideoV2(enterpriseId: string, policyOverride?: MediaVideoPolicy, profilesOverride?: MediaVideoProfile[]) {
     const legacy = await this.getRuntimeVideo(enterpriseId, policyOverride, profilesOverride);
-    const modelIds = new Map((profilesOverride ?? await this.availableProfiles()).map(profile => [profile.profileId, profile.modelId]));
+    const modelIds = new Map((profilesOverride ?? await this.availableProfiles(enterpriseId)).map(profile => [profile.profileId, profile.modelId]));
     const profiles = legacy.profiles.map(profile => {
       const c = profile.capabilities;
       const audioModes = modelIds.get(profile.profileId) === 'minimax-h3' && this.realEnabled() ? [true] : c.supportsAudio ? [false, true] : [false];
@@ -428,16 +433,9 @@ export class MediaVideoConfigService {
     const knownIds = new Set(configuredProfiles.map(profile => profile.profileId));
     const missingIds = policy.enabledProfileIds.filter(id => !knownIds.has(id));
     if (missingIds.length) this.logger.warn({ message: '视频授权引用了不存在的配置', enterpriseId, profileIds: missingIds });
-    let connectionUsable = false;
-    if (this.realEnabled() && this.settings) {
-      const connection = await this.settings.getMediaConnection('video');
-      try {
-        mediaConnectionFingerprint(connection);
-        connectionUsable = true;
-      } catch {
-        connectionUsable = false;
-      }
-    }
+    const authorizedProfiles = configuredProfiles.filter(profile => policy.enabledProfileIds.includes(profile.profileId));
+    const connectionUsable = await this.catalog.configured(enterpriseId, 'video');
+    const permitted = new Set((connectionUsable ? await this.catalog.filterProfiles(enterpriseId, 'video', authorizedProfiles) : []).map(profile => profile.profileId));
     const profiles = configuredProfiles.filter(profile => policy.enabledProfileIds.includes(profile.profileId)).map(profile => {
       const operations = profile.operations.filter(operation => operation === 'image-to-video' || operation === 'text-to-video'
         || operation === 'video-to-video' && profile.capabilities.supportsVideoToVideo);
@@ -445,6 +443,8 @@ export class MediaVideoConfigService {
         : !profile.verified ? 'PROFILE_UNVERIFIED'
           : !this.realEnabled() ? 'EXECUTION_DISABLED'
             : !connectionUsable ? 'CONNECTION_UNAVAILABLE'
+              : !permitted.has(profile.profileId) ? 'ENTERPRISE_MODEL_UNAVAILABLE'
+                : !this.catalog.executionReady() ? 'SETTLEMENT_NOT_CONNECTED'
               : profile.executionMode !== 'async-query' ? 'ADAPTER_PROTOCOL_UNSUPPORTED'
                 : operations.length === 0 ? 'ADAPTER_OPERATION_UNSUPPORTED' : undefined;
       const capabilities = videoRuntimeCapabilities(profile, operations);

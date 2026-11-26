@@ -1,5 +1,6 @@
 import { ExecutionContext, INestApplication, UnauthorizedException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
+import { mediaCatalogStub } from '../../../test/stubs/compute-catalog.stub';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
@@ -18,6 +19,7 @@ import { videoClaims, videoRealPrisma } from './media-video-real.test-support';
 import { Sub2apiVideoAdapter } from './sub2api-video.adapter';
 import { VideoFileCacheService } from './video-file-cache.service';
 import { VideoReferenceUploadService } from './video-reference-upload.service';
+import { enterpriseMediaStub, signedMediaProtocolStub } from '../../../test/stubs/enterprise-media.stub';
 
 const run = promisify(execFile);
 const prefix = '/api/gateway/v1/media/video-real';
@@ -60,15 +62,16 @@ describe('V3 HTTP with production video adapter, cache and fake upstream', () =>
     const settings = { getMediaConnection: async () => ({
       baseUrl: 'https://fake-upstream.invalid/v1', apiKey: 'synthetic-test-key', source: 'environment',
     }), getEffectiveValue: async () => '7' };
-    const adapter = new Sub2apiVideoAdapter(settings as never);
+    const adapter = new Sub2apiVideoAdapter(settings as never, signedMediaProtocolStub as never);
     upstream = jest.spyOn(globalThis, 'fetch').mockImplementation(async (target, options) => {
       const url = new URL(String(target));
       if (url.origin !== 'https://fake-upstream.invalid') throw new Error('Unexpected upstream destination');
       if (url.pathname === '/v1/sub2api/videos/pricing') {
         const spec = JSON.parse(String(options?.body));
-        return json({ object: 'sub2api.video_pricing', schema_version: 1, currency: 'USD',
+        return json({ object: 'sub2api.video_pricing', schema_version: 1, currency: 'CNY', contract_version: 1,
+          enterprise_id: videoClaims.enterpriseId, quote_id: 'synthetic-v3', amount_cny: '1.400000',
           ...spec, billing_mode: 'video', pricing_status: 'quoted', pricing_source: 'group',
-          pricing_authority: 'sub2api_customer_billing', amount_usd: '0.2', pricing_version: 'synthetic-v3',
+          pricing_authority: 'sub2api_customer_billing', amount_usd: null, pricing_version: 'synthetic-v3',
           effective_rate_multiplier: 1, observed_at: new Date().toISOString(), expires_at: new Date(Date.now() + 60_000).toISOString() });
       }
       if (url.pathname === '/v1/videos' && options?.method === 'POST') {
@@ -104,17 +107,19 @@ describe('V3 HTTP with production video adapter, cache and fake upstream', () =>
     });
     const cache = new VideoFileCacheService();
     await cache.assertAvailable();
-    const runtime = new MediaVideoConfigService(db as never, {} as never, config as never, adapter, cache, undefined, settings as never);
+    const runtime = new MediaVideoConfigService(db as never, {} as never, config as never, mediaCatalogStub() as never, adapter, cache, undefined, settings as never);
     const billing = { quoteFunding: async () => ({ creditCny: '0.000000', memberWalletCny: '0.000000', personalCny: '1.400000' }),
       reserve: async (_claims: unknown, id: string) => { db.state.reservations.set(id, { receiptId: id, status: 'RESERVED' }); },
       status: async (id: string) => db.state.reservations.get(id)?.status ?? 'RESERVED',
       release: jest.fn(async (id: string) => { db.state.reservations.get(id).status = 'RELEASED'; }),
-      settleNegotiated: async (id: string, actualCny: string, _usd: string, verifiedModel: string, frozenModel: string) => {
-        expect(verifiedModel).toBe(modelId); expect(frozenModel).toBe(modelId);
-        settlements.set(id, actualCny); db.state.reservations.get(id).status = 'SETTLED'; return 'SETTLED';
+      settleCompute: async (id: string, executionId: string, frozenModel: string) => {
+        expect(executionId).toBe(`execution_${id}`); expect(frozenModel).toBe(modelId);
+        settlements.set(id, '0.700000'); db.state.reservations.get(id).status = 'SETTLED'; return 'SETTLED';
       } };
+    const enterprise = enterpriseMediaStub('https://fake-upstream.invalid/v1', 'synthetic-test-key',
+      createHash('sha256').update('https://fake-upstream.invalid/v1\0synthetic-test-key').digest('hex'), '0.700000');
     const service = new MediaVideoRealService(config as never, db as never, settings as never, runtime, adapter, cache,
-      billing as never, new MediaVideoRealStore(db as never));
+      billing as never, new MediaVideoRealStore(db as never), enterprise.connections as never, enterprise.media as never);
     const module = await Test.createTestingModule({ controllers: [MediaVideoRealController],
       providers: [MediaVideoRealGuard, { provide: MediaVideoRealService, useValue: service }, { provide: VideoReferenceUploadService, useValue: {} }],
     }).overrideGuard(ClientEmploymentGuard).useValue({ canActivate(context: ExecutionContext) {

@@ -1,5 +1,6 @@
 import { BadRequestException, HttpException } from '@nestjs/common';
 import { AuthService } from './auth.service';
+import { compare } from 'bcrypt';
 
 function makeAuth() {
   const createdUser = {
@@ -38,6 +39,7 @@ function makeAuth() {
   const config = { get: jest.fn(), getOrThrow: jest.fn().mockReturnValue('test-jwt-secret') };
   const registrationCodes = { issue: jest.fn().mockResolvedValue(undefined), consume: jest.fn().mockResolvedValue(undefined) };
   const rateLimit = { consume: jest.fn().mockResolvedValue({ allowed: true }) };
+  const integration = { ensureBinding: jest.fn().mockResolvedValue(undefined) };
   const service = new AuthService(
     prisma,
     jwt as any,
@@ -51,9 +53,10 @@ function makeAuth() {
     undefined,
     rateLimit as any,
     registrationCodes as any,
+    integration as any,
   );
 
-  return { service, prisma, tx, invitations, registrationCodes, rateLimit, sessions };
+  return { service, prisma, tx, invitations, registrationCodes, rateLimit, sessions, integration };
 }
 
 describe('AuthService registration email verification', () => {
@@ -91,9 +94,9 @@ describe('AuthService registration email verification', () => {
   });
 
   it('requires a valid code before self-registration and marks the new email verified', async () => {
-    const { service, tx, registrationCodes } = makeAuth();
+    const { service, tx, registrationCodes, integration } = makeAuth();
 
-    await service.register({
+    const response = await service.register({
       email: 'new@example.com',
       emailCode: '123456',
       password: 'password123',
@@ -105,6 +108,22 @@ describe('AuthService registration email verification', () => {
     expect(tx.user.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ emailVerifiedAt: expect.any(Date) }),
     }));
+    expect(integration.ensureBinding).toHaveBeenCalledWith('enterprise-1', tx, {
+      companyName: 'New Enterprise', adminEmail: 'new@example.com', adminUserId: 'user-1',
+      passwordHash: tx.user.create.mock.calls[0][0].data.authCredentials.create.passwordHash,
+    });
+    const passwordHash = integration.ensureBinding.mock.calls[0][2].passwordHash;
+    expect(await compare('password123', passwordHash)).toBe(true);
+    expect(JSON.stringify(response)).not.toContain(passwordHash);
+    expect(JSON.stringify(response)).not.toContain('password123');
+  });
+
+  it('开户任务保存失败会使注册事务失败，不签发注册会话', async () => {
+    const { service, integration, sessions } = makeAuth();
+    integration.ensureBinding.mockRejectedValue(new BadRequestException('无法保存开户任务'));
+    await expect(service.register({ email: 'new@example.com', emailCode: '123456', password: 'password123',
+      enterpriseName: 'New Enterprise' }, { cookie: jest.fn() } as any)).rejects.toThrow('无法保存开户任务');
+    expect(sessions.createSession).not.toHaveBeenCalled();
   });
 
   it('does not create a user or enterprise when the self-registration code is invalid', async () => {

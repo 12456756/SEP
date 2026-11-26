@@ -75,7 +75,7 @@ describe('complete Longdao receipts and client recovery', () => {
     await h.service.submit(imageClaims, request);
     expect(h.adapter.submitAsync).toHaveBeenCalledTimes(1);
     expect(h.adapter.queryAsync).not.toHaveBeenCalled();
-    expect(h.billing.release).toHaveBeenCalledTimes(1);
+    expect(h.billing.settleCompute).toHaveBeenCalledTimes(1);
   });
 
   it('preserves known image state and reserved funds on an unobserved query', async () => {

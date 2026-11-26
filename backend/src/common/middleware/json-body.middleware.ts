@@ -11,6 +11,9 @@ export function createJsonBodyMiddleware(
 ): RequestHandler {
   const gateway = express.json({ limit: env.GATEWAY_HTTP_JSON_LIMIT || '64mb' });
   const ordinary = express.json({ limit: env.REQUEST_JSON_LIMIT || '2mb' });
+  const balanceEvent = express.json({ limit: '64kb', verify: (req, _res, buffer) => {
+    (req as Request & { rawBody: Buffer }).rawBody = Buffer.from(buffer);
+  } });
   // Escaped Markdown can occupy six JSON bytes per source byte, plus DTO metadata.
   const skill = express.json({ limit: env.SKILL_REQUEST_JSON_LIMIT || '16mb' });
   const eventBytes = new WeakMap<IncomingMessage, number>();
@@ -20,7 +23,8 @@ export function createJsonBodyMiddleware(
   });
   return (req, res, next) => {
     const isEvent = req.method === 'POST' && skillImportSessionRoute(req.path, 'events') !== null;
-    const parser = req.method === 'POST' && /^\/api\/gateway\/v1\/chat\/completions\/?$/i.test(req.path)
+    const parser = req.method === 'POST' && req.path === '/api/compute-integration/balance-events'
+      ? balanceEvent : req.method === 'POST' && /^\/api\/gateway\/v1\/chat\/completions\/?$/i.test(req.path)
       ? gateway : /^\/api\/(?:capabilities|contributions|admin\/skill-versions|enterprise\/(?:skill-versions|capabilities))(?:\/|$)/i.test(req.path)
         ? skill : isEvent ? event : ordinary;
     parser(req, res, (error?: unknown) => {

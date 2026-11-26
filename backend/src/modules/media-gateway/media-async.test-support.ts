@@ -4,6 +4,7 @@ import type { RealRequestRecord } from './media-real.store';
 import type { ClientEmploymentClaims } from '../client/client-employment.guard';
 import { MEDIA_MOCK_PNG } from './media-gateway-mock.adapter';
 import { contractResult } from './longdao-media.test-support';
+import { enterpriseMediaStub } from '../../../test/stubs/enterprise-media.stub';
 
 export const imageClaims = { enterpriseId: 'enterprise', sub: 'user', memberId: 'member', subscriptionId: 'subscription' } as ClientEmploymentClaims;
 export const imageInput = { protocolVersion: 3 as const, specRevision: 1, profileId: 'image', configVersion: 'cfg_1',
@@ -26,7 +27,7 @@ export function imageHarness() {
     getRuntimeMediaV3: jest.fn().mockResolvedValue({ executionAvailable: true, profiles: [{ ...profile, authorized: true,
       adapter: { available: true, operations: ['generate', 'edit'] } }] }) };
   const adapter = {
-    pricing: jest.fn().mockResolvedValue({ amount_usd: '0.10', pricing_version: 'price1', expires_at: new Date(Date.now() + 60000).toISOString() }),
+    pricing: jest.fn().mockResolvedValue({ amount_usd: null, amount_cny: '0.720000', quote_id: 'price1', pricing_version: 'price1', expires_at: new Date(Date.now() + 60000).toISOString() }),
     connectionSnapshot: jest.fn().mockResolvedValue({ connection: { base: 'https://media.example.test/v1', key: 'secret' }, fingerprint: 'a'.repeat(64) }),
     assertConnectionFingerprint: jest.fn().mockResolvedValue(undefined),
     submitAsync: jest.fn(async (_input, _references, _model, requestId) => contractResult(requestId, { status: 'processing' }, 202)),
@@ -51,9 +52,9 @@ export function imageHarness() {
     return { updated, record: structuredClone(records.get(value.id)!) };
   };
   const store = {
-    saveQuote: jest.fn(async (_scope, value, usdToCnyRate, connectionFingerprint) => {
+    saveQuote: jest.fn(async (_scope, value, usdToCnyRate, connectionFingerprint, compute) => {
       const quoteId = `quote-${++nextId}`; const result = { ...value, quoteId };
-      quotes.set(quoteId, { scope: _scope, value: result, usdToCnyRate, connectionFingerprint }); return result;
+      quotes.set(quoteId, { scope: _scope, value: result, usdToCnyRate, connectionFingerprint, compute }); return result;
     }),
     findQuote: jest.fn(async id => quotes.get(id)),
     findReference: jest.fn().mockResolvedValue({ scope, value: { sha256: 'b'.repeat(64), byteLength: MEDIA_MOCK_PNG.length, expiresAt: new Date(Date.now() + 60000).toISOString() } }),
@@ -70,12 +71,20 @@ export function imageHarness() {
     saveGuarded: jest.fn(guarded), save: jest.fn(async record => (await guarded(record)).record),
     pendingRequests: jest.fn(async () => ({ records: structuredClone([...records.values()]) })),
   };
+  const enterprise = enterpriseMediaStub('https://media.example.test/v1', 'secret', 'a'.repeat(64), '0.576000');
+  Object.assign(billing, { settleCompute: jest.fn(async id => {
+    const status = enterprise.feeStatus() === 'not_charged' ? 'RELEASED' : 'SETTLED'; journals.set(id, status); return status;
+  }) });
+  const asyncAdapter = { ...adapter,
+    submitAsync: async (...args: Parameters<typeof adapter.submitAsync>) => { const result = await adapter.submitAsync(...args); enterprise.observe(result.contract); return result; },
+    queryAsync: async (...args: Parameters<typeof adapter.queryAsync>) => { const result = await adapter.queryAsync(...args); enterprise.observe(result.contract); return result; },
+  };
   const service = new MediaRealService(config as never, prisma as never, { getEffectiveValue: async () => '7.2' } as never,
-    mediaConfig as never, adapter as never, cache as never, billing as never, store as never);
+    mediaConfig as never, asyncAdapter as never, cache as never, billing as never, store as never, enterprise.connections as never, enterprise.media as never);
   const submit = async (clientRequestId = 'client-1', input = imageInput) => {
     const quote = await service.quote(imageClaims, input);
     const request = { ...input, clientRequestId, quoteId: quote.quoteId };
     return { receipt: await service.submit(imageClaims, request), request };
   };
-  return { service, prisma, config, mediaConfig, adapter, cache, billing, store, records, journals, submit, profile };
+  return { service, prisma, config, mediaConfig, adapter, cache, billing: billing as typeof billing & { settleCompute: jest.Mock }, store, records, journals, submit, profile, enterprise };
 }

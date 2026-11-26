@@ -117,7 +117,7 @@ describe('video policy panel', () => {
     vi.mocked(api.get).mockImplementation(async (path) => path === '/enterprise/media-config/video' ? { policy: MediaVideoPolicySchema.parse({}), canEdit: true, configured: false, mock: true, executionTested: false } : []);
     renderPanel();
     await screen.findByText('暂无已启用且已校验的视频 Profile');
-    expect(screen.getByText(/平台 Mock 视频尚未开放/)).toBeInTheDocument();
+    expect(screen.getByText('本企业视频 Key 尚未就绪。')).toBeInTheDocument();
   });
   it('keeps old video policy fields hidden and omits them from updates', async () => {
     vi.mocked(api.get).mockImplementation(async (path) => path === '/enterprise/media-config/video'

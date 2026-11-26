@@ -1,4 +1,4 @@
-import { HttpException, Injectable } from '@nestjs/common';
+import { HttpException, Injectable, Optional } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { openAsBlob } from 'node:fs';
 import { z } from 'zod';
@@ -12,8 +12,10 @@ import { inspectReferenceImage } from './media-reference-image';
 import { errorMessage, sanitizeError, hasBusinessError } from '../../common/errors/error-diagnostics';
 import { upstreamHeaders } from '../../common/errors/upstream-http.exception';
 import { LongdaoReceiptMetadataFields, readLongdaoMedia, VIDEO_CREATE_TIMEOUT_MS } from './longdao-media-contract';
+import { ComputeProtocolClient } from '../compute-integration/compute-protocol.client';
+import type { ComputeMediaIdentity } from '../compute-integration/compute-media.service';
 
-export interface Sub2apiVideoConnection { base: string; key: string; fingerprint: string }
+export interface Sub2apiVideoConnection { base: string; key: string; fingerprint: string; compute?: ComputeMediaIdentity }
 const ModelIdSchema = z.string().min(1).max(160).regex(/^[^\s\p{Cc}\p{Cf}]+$/u);
 const TaskIdSchema = z.string().min(1).max(256).regex(/^[a-zA-Z0-9_.-]+$/).refine(id => id !== '.' && id !== '..');
 const RequestIdSchema = z.string().min(1).max(256).regex(/^[a-zA-Z0-9_.:-]+$/);
@@ -25,12 +27,14 @@ const TaskSchema = z.object({
 });
 const PricingSchema = z.object({
   ...LongdaoReceiptMetadataFields,
-  object: z.literal('sub2api.video_pricing'), schema_version: z.union([z.literal(1), z.literal(2)]), currency: z.literal('USD'),
+  object: z.literal('sub2api.video_pricing'), schema_version: z.union([z.literal(1), z.literal(2)]), currency: z.enum(['USD', 'CNY']),
   model: ModelIdSchema, operation: MediaVideoOperationSchema,
   resolution: z.string().min(1).max(128), duration_seconds: z.number().int().positive().safe(),
   billing_mode: z.enum(['video', 'per_request']), pricing_status: z.enum(['quoted', 'unavailable']),
   pricing_source: z.string().trim().min(1).max(128), pricing_authority: z.literal('sub2api_customer_billing'),
-  amount_usd: MediaVideoUsdSchema.nullable(), pricing_version: z.string().min(1).max(128),
+  amount_usd: MediaVideoUsdSchema.nullable().optional().transform(value => value ?? null), pricing_version: z.string().min(1).max(128),
+  contract_version: z.literal(1).optional(), enterprise_id: z.string().optional(), exchange_rate: z.string().optional(),
+  amount_cny: z.string().regex(/^\d+\.[0-9]{6}$/).nullable().optional(), quote_id: z.string().min(1).max(128).optional(),
   effective_rate_multiplier: z.number().finite().nonnegative(),
   observed_at: z.string().datetime({ offset: true }), expires_at: z.string().datetime({ offset: true }),
   diagnostic: z.string().optional(),
@@ -76,14 +80,14 @@ const MAX_CONTENT_BYTES = 256 * 1024 * 1024;
 
 @Injectable()
 export class Sub2apiVideoAdapter {
-  constructor(private readonly settings: SettingService) {}
+  constructor(private readonly settings: SettingService, @Optional() private readonly computeProtocol?: ComputeProtocolClient) {}
 
   async connection(): Promise<Sub2apiVideoConnection> {
     try {
       const { baseUrl, apiKey: key } = await this.settings.getMediaConnection('video');
       let base = baseUrl;
-      const url = new URL(base ?? '');
-      if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash ||
+      const url = this.computeProtocol ? this.computeProtocol.validateAddress(base ?? '') : new URL(base ?? '');
+      if ((!this.computeProtocol && url.protocol !== 'https:') || url.username || url.password || url.search || url.hash ||
         !key?.trim() || /[^\x21-\x7e]/.test(key)) unavailable();
       base = url.href.replace(/\/+$/, '').replace(/\/v1$/, '') + '/v1';
       return { base, key, fingerprint: fingerprint(base, key) };
@@ -116,7 +120,8 @@ export class Sub2apiVideoAdapter {
     const price = parsed.data;
     const now = Date.now();
     if (price.model !== modelId || price.operation !== input.operation || price.resolution !== dimensions.resolution ||
-      price.duration_seconds !== dimensions.durationSeconds || price.pricing_status !== 'quoted' || price.amount_usd === null ||
+      price.duration_seconds !== dimensions.durationSeconds || price.pricing_status !== 'quoted' ||
+      (connection.compute ? price.currency !== 'CNY' || price.contract_version !== 1 || price.enterprise_id !== connection.compute.enterpriseId || price.amount_cny == null || !price.quote_id || price.quote_id !== price.pricing_version : price.currency !== 'USD' || price.amount_usd === null) ||
       /public|fallback|default|unknown/i.test(price.pricing_source) ||
       Date.parse(price.observed_at) > now + 5000 || Date.parse(price.expires_at) <= now ||
       Date.parse(price.expires_at) > now + 120_000 || Date.parse(price.expires_at) <= Date.parse(price.observed_at) ||
@@ -364,15 +369,16 @@ export class Sub2apiVideoAdapter {
   }
 
   private async fetch(connection: Sub2apiVideoConnection, path: string, options: RequestInit, timeout = 15_000): Promise<Response> {
-    const url = new URL(connection.base);
-    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash ||
+    const url = this.computeProtocol ? this.computeProtocol.validateAddress(connection.base) : new URL(connection.base);
+    if ((!this.computeProtocol && url.protocol !== 'https:') || url.username || url.password || url.search || url.hash ||
       !url.pathname.endsWith('/v1') || !connection.key || /[^\x21-\x7e]/.test(connection.key) ||
       connection.fingerprint !== fingerprint(connection.base, connection.key)) throw new Error('Invalid frozen media connection');
     const headers = new Headers(options.headers);
     headers.set('Authorization', `Bearer ${connection.key}`);
     if (!headers.has('Accept')) headers.set('Accept', 'application/json');
-    return fetch(connection.base + path, { ...options, headers, redirect: 'error',
-      signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout) });
+    const requestOptions = { ...options, headers, redirect: 'error' as const, signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(timeout)]) : AbortSignal.timeout(timeout) };
+    return connection.compute ? this.computeProtocol.fetchSigned(connection.base + path, requestOptions,
+      { ...connection.compute, apiKey: connection.key }) : fetch(connection.base + path, requestOptions);
   }
 
   private async json(connection: Sub2apiVideoConnection, path: string, options: RequestInit,

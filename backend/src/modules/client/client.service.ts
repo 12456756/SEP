@@ -775,15 +775,12 @@ export class ClientService {
     });
     if (!subscription) throw new NotFoundException('Runtime unavailable');
 
-    const enabledModels = await this.prisma.platformModel.findMany({
-      where: { enabled: true }, select: { modelId: true }, orderBy: [{ sortOrder: 'asc' }, { label: 'asc' }],
+    const { allowedModels, defaultModel } = await this.modelPolicy.resolvePolicy({
+      sub: userId, enterpriseId: ctx.enterpriseId, memberId: ctx.memberId, subscriptionId,
     });
     const modelConfig = await this.prisma.enterpriseModelConfig.findUnique({
       where: { enterpriseId: ctx.enterpriseId }, select: { allowedChatModels: true, mediaPolicy: true },
     });
-    const models = enabledModels.map((m) => m.modelId);
-    const allowedModels = modelConfig?.allowedChatModels?.length
-      ? models.filter((id) => modelConfig.allowedChatModels.includes(id)) : models;
     const resolvedSkills = await Promise.all(subscription.employee.bindings.map(async (binding) => {
       const version = await this.skillVersions.resolveEffectiveVersion(subscription.id, binding.capability.id);
       if (!version) return null;
@@ -805,7 +802,7 @@ export class ClientService {
       subscriptionId: subscription.id,
       templateVersion: subscription.templateVersion,
       employee: withEmployeeAvatar({ id: subscription.employee.id, name: subscription.employee.name, description: subscription.employee.description, avatar: subscription.employee.avatar, avatarStyle: subscription.employee.avatarStyle, avatarBindings: subscription.employee.avatarBindings, version: subscription.employee.version, maxSteps: subscription.employee.maxSteps }),
-      runtime: { systemPrompt: subscription.employee.systemPrompt, modelId: subscription.employee.modelId, allowedModels, config: subscription.config ?? null, skills,
+      runtime: { systemPrompt: subscription.employee.systemPrompt, modelId: defaultModel, allowedModels, config: subscription.config ?? null, skills,
         ...(skillArtifactProtocolVersion === 1 && this.skillArtifacts ? { skillArtifactProtocolVersion: 1 } : {}),
         media, video },
     };

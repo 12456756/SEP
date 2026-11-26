@@ -53,7 +53,7 @@ export function ModelWhitelistPicker({
   if (models.length === 0) {
     return (
       <p className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
-        平台暂无已启用的模型，请联系平台运营开启。
+        本企业对话 Key 暂无可用模型。
       </p>
     );
   }

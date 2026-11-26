@@ -28,6 +28,7 @@ export interface ChargeUsageParams {
   outputTokens: number;
   /** 服务端在模型调用开始时冻结的中转倍率与模型免费状态。 */
   billingSnapshot?: ModelBillingSnapshot;
+  computeExecutionId?: string;
 }
 
 export interface ChargeUsageResult {

@@ -270,13 +270,15 @@ describe('GatewayController raw SSE streaming', () => {
     await expectSingleLedgerEntry();
   });
 
-  it.each([' ', '\t', '\n'])('rejects whitespace-only finish_reason %j without rewriting SSE', async (reason) => {
+  it.each([' ', '\t', '\n'])('rejects whitespace-only finish_reason %j without forwarding DONE', async (reason) => {
     const raw = Buffer.from(`${content}data:${JSON.stringify({ choices: [{ finish_reason: reason }] })}\n\n` +
       `${usageEvent}\n\ndata:[DONE]\n\n`);
     respondWithBytes(raw, true);
     const res = new StreamResponse();
     await invoke(res);
-    expect(res.bytes.subarray(0, raw.length)).toEqual(raw);
+    const forwarded = raw.subarray(0, raw.indexOf('data:[DONE]'));
+    expect(res.bytes.subarray(0, forwarded.length)).toEqual(forwarded);
+    expect(res.bytes.toString()).not.toContain('[DONE]');
     expect(res.bytes.toString()).toContain('event: error');
     expect(res.writableFinished).toBe(true);
     expect(res.destroyed).toBe(true);
@@ -301,6 +303,72 @@ describe('GatewayController raw SSE streaming', () => {
       await expectSingleLedgerEntry();
     },
   );
+
+  it.each([false, true])('withholds premature DONE without a finish reason (single-byte chunks=%s)', async split => {
+    const raw = Buffer.from(`${content}${usageEvent}\n\ndata: [DONE]\n\n`);
+    respondWithBytes(raw, split);
+    const res = new StreamResponse(); await invoke(res);
+    expect(res.bytes.toString()).toContain('event: error');
+    expect(res.bytes.toString()).toContain('UPSTREAM_INCOMPLETE_STREAM');
+    expect(res.bytes.toString()).not.toContain('[DONE]');
+    expect(executions.finish).toHaveBeenCalledWith('server-execution', { finishReason: null, done: true, errorCode: 'UPSTREAM_INCOMPLETE_STREAM' });
+    await expectSingleLedgerEntry();
+  });
+
+  it.each([false, true])('forwards a late upstream failure after DONE without a success marker (split=%s)', async split => {
+    const failure = 'event: error\ndata: {"error":{"code":"PROVIDER_FAILED","message":"provider stopped","details":{"field":"messages"}}}\n\n';
+    respondWithBytes(Buffer.from(`${content}${finish}${usageEvent}\n\ndata:[DONE]\n\n${failure}`), split);
+    const res = new StreamResponse(); await invoke(res);
+    expect(res.bytes.toString()).toContain('PROVIDER_FAILED');
+    expect(res.bytes.toString()).toContain('provider stopped');
+    expect(res.bytes.toString()).not.toContain('[DONE]');
+    expect(res.bytes.toString().match(/event: error/g)).toHaveLength(1);
+    expect(executions.finish).toHaveBeenCalledWith('server-execution', expect.objectContaining({ errorCode: 'PROVIDER_FAILED' }));
+    await expectSingleLedgerEntry();
+  });
+
+  it('streams content immediately but waits for upstream EOF and finalization before DONE', async () => {
+    let source!: ReadableStreamDefaultController<Uint8Array>;
+    forward.mockResolvedValue(new Response(new ReadableStream({ start(value) { source = value; } }), { headers: { 'Content-Type': 'text/event-stream' } }));
+    const res = new StreamResponse(), first = deferred<void>(), finalizing = deferred<void>(), stored = deferred<void>();
+    res.onChunk = () => first.resolve();
+    executions.finish.mockImplementation(() => { finalizing.resolve(); return stored.promise; });
+    const outcome = invoke(res); await turn();
+    source.enqueue(Buffer.from(content)); await first.promise;
+    expect(res.bytes.toString()).toContain('中文分片');
+    source.enqueue(Buffer.from(`${finish}${usageEvent}\n\ndata:[DONE]\n\n`)); await turn(); await turn();
+    expect(res.bytes.toString()).not.toContain('[DONE]'); expect(executions.finish).not.toHaveBeenCalled();
+    source.close(); await finalizing.promise;
+    expect(res.bytes.toString()).not.toContain('[DONE]');
+    stored.resolve(); await outcome;
+    expect(res.bytes.toString().endsWith('data:[DONE]\n\n')).toBe(true);
+    await expectSingleLedgerEntry();
+  });
+
+  it('does not publish DONE when finalization fails after an otherwise valid stream', async () => {
+    executions.finish.mockRejectedValueOnce(new Error('finalization storage unavailable'));
+    respondWithBytes(Buffer.from(`${content}${finish}${usageEvent}\n\ndata:[DONE]\n\n`));
+    const res = new StreamResponse(); await invoke(res);
+    expect(res.bytes.toString()).not.toContain('[DONE]');
+    expect(res.bytes.toString()).toContain('event: error');
+    expect(res.bytes.toString()).toContain('finalization storage unavailable');
+    expect(executions.finish).toHaveBeenCalledTimes(1); expect(executions.fail).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(1); expect(releaseRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps an already received DONE withheld when the upstream transport later fails', async () => {
+    let source!: ReadableStreamDefaultController<Uint8Array>;
+    forward.mockResolvedValue(new Response(new ReadableStream({ start(value) { source = value; } }), { headers: { 'Content-Type': 'text/event-stream' } }));
+    const res = new StreamResponse(), wrote = deferred<void>(); res.onChunk = () => wrote.resolve();
+    const outcome = invoke(res); await turn();
+    source.enqueue(Buffer.from(`${content}${finish}${usageEvent}\n\ndata:[DONE]\n\n`)); await wrote.promise;
+    expect(res.bytes.toString()).not.toContain('[DONE]');
+    source.error(new Error('upstream socket reset after DONE')); await outcome;
+    expect(res.bytes.toString()).toContain('event: error');
+    expect(res.bytes.toString()).not.toContain('data:[DONE]');
+    expect(res.bytes.toString()).toContain('upstream socket reset after DONE');
+    await expectSingleLedgerEntry();
+  });
 
   it('waits for a backpressured Writable to finish all raw bytes', async () => {
     const raw = Buffer.from(`${content}${finish}${usageEvent}\n\ndata:[DONE]\n\n`);

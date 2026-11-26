@@ -6,9 +6,9 @@ export class MediaRealGuard implements CanActivate {
   constructor(private readonly media: MediaRealService) {}
 
   async canActivate(context: ExecutionContext) {
-    const { method, route } = context.switchToHttp().getRequest();
+    const { method, route, clientEmployment } = context.switchToHttp().getRequest();
     if ((method === 'GET' || method === 'POST') && typeof route?.path === 'string' && /\/requests(?:\/|$)/.test(route.path)) return true;
-    await this.media.assertRealEnabled();
+    await this.media.assertRealEnabled(clientEmployment?.enterpriseId);
     return true;
   }
 }

@@ -36,6 +36,7 @@ function LoginForm() {
   // 访客在市场页点「登录后订阅」时带上，登录成功后跳回该员工详情。
   // 合法性校验（必须是站内路径）在 useLogin 里做。
   const redirect = useSearchParams().get('redirect');
+  const reset = useSearchParams().get('reset');
   const login = useLogin(redirect);
   const {
     register,
@@ -59,6 +60,10 @@ function LoginForm() {
     <div>
       <h2 className="text-2xl font-semibold text-gtext-primary">欢迎回来</h2>
       <p className="mt-1 text-sm text-gtext-secondary">登录后进入你的硅基员工工作台</p>
+      {['success', 'synced', 'sync-pending'].includes(reset ?? '') && <p role="status" className="mt-3 text-sm text-gtext-secondary">
+        {reset === 'sync-pending' ? 'SEP 密码已重置，算力平台密码同步中，后台将自动重试。请使用新密码登录 SEP。'
+          : reset === 'synced' ? 'SEP 和算力平台密码已同步重置，请使用新密码登录。' : '密码已重置，请使用新密码登录。'}
+      </p>}
 
       <form onSubmit={handleSubmit(onSubmit)} className="mt-6 space-y-4">
         <div>

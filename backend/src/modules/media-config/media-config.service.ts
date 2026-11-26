@@ -22,6 +22,7 @@ import { MediaModelSyncService, mediaConnectionFingerprint } from './media-model
 import { MediaRuntimeV3Schema } from 'shared';
 import type { MediaRuntimeV3 } from 'shared';
 import { imageRuntimeCapabilities, imageRuntimePolicy, mediaRuntimeStatus, MEDIA_UNAVAILABLE_MESSAGES } from './media-runtime-capabilities';
+import { ComputeModelCatalogService } from '../compute-integration/compute-model-catalog.service';
 import {
   CreateMediaProfileDto,
   effectiveImageLimits,
@@ -55,6 +56,7 @@ export class MediaConfigService {
     private readonly prisma: PrismaService,
     private readonly settingService: SettingService,
     private readonly enterpriseContext: EnterpriseContextService,
+    private readonly catalog: ComputeModelCatalogService,
     @Optional() private readonly config?: ConfigService,
     @Optional() private readonly imageAdapter?: Sub2apiImageAdapter,
     @Optional() private readonly modelSync?: MediaModelSyncService,
@@ -228,7 +230,10 @@ export class MediaConfigService {
       throw new BadRequestException('当前模型或参数超出图片适配器支持范围');
     }
     try {
-      const discovered = await this.imageAdapter.discoverModels();
+      const adminConnection = await this.settingService.getMediaConnection('image');
+      const expectedFingerprint = mediaConnectionFingerprint(adminConnection);
+      const snapshot = { base: adminConnection.baseUrl, key: adminConnection.apiKey };
+      const discovered = await this.imageAdapter.discoverModels(snapshot);
       if (!discovered.some(model => model.modelId === profile.modelId)) throw new BadRequestException('媒体连接的模型目录中不存在此模型');
       const checks: Array<MediaRealQuoteRequest | MediaRealQuoteRequestV3> = [];
       if ((!isSupportedImageModel(profile.modelId) || profile.capabilities.qualities?.length) && !dto.verificationSpec) {
@@ -260,9 +265,12 @@ export class MediaConfigService {
       // Pricing is read-only. Bound concurrency and never call the execution endpoint here.
       for (let offset = 0; offset < checks.length; offset += 3) {
         await Promise.all(checks.slice(offset, offset + 3).map(async input => {
-          const price = await this.imageAdapter!.pricing(input, profile.modelId);
+          const price = await this.imageAdapter!.pricing(input, profile.modelId, snapshot);
           if (!price.amount_usd || new Decimal(price.amount_usd).lte(0)) throw new ServiceUnavailableException('模型没有可用的正金额报价');
         }));
+      }
+      if (mediaConnectionFingerprint(await this.settingService.getMediaConnection('image')) !== expectedFingerprint) {
+        throw new ConflictException('管理员图片校验连接已变更，请重新校验');
       }
     } catch (error) {
       await this.prisma.mediaModelProfile.updateMany({
@@ -281,56 +289,27 @@ export class MediaConfigService {
     return { profile: this.profileView(saved), checkedAt: new Date().toISOString(), executionTested: false };
   }
 
-  private async availableProfiles() {
-    try {
-      if (!(await this.getConnection()).configured) return [];
-    } catch (error) {
-      // A broken media credential must disable media, not the employee's chat runtime.
-      if (error instanceof ServiceUnavailableException) return [];
-      throw error;
-    }
+  private async availableProfiles(enterpriseId: string) {
+    if (!await this.catalog.configured(enterpriseId, 'image')) return [];
     const rows = await this.prisma.mediaModelProfile.findMany({
       where: { kind: 'image', enabled: true, verified: true }, orderBy: { createdAt: 'asc' },
     });
-    return rows.map((row) => this.profileView(row));
-  }
-
-  private async realConnectionUsable(propagateReadError = false): Promise<boolean> {
-    let connection: Awaited<ReturnType<SettingService['getMediaConnection']>>;
-    try {
-      connection = await this.settingService.getMediaConnection('image');
-    } catch (error) {
-      if (propagateReadError) throw error;
-      return false;
-    }
-    const { baseUrl, apiKey } = connection;
-    try {
-      if (!baseUrl?.trim() || !apiKey?.trim() || /[\r\n]/.test(apiKey)) return false;
-      const url = new URL(baseUrl.trim());
-      return url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash;
-    } catch {
-      return false;
-    }
-  }
-
-  private async realRuntimeEnabled(): Promise<boolean> {
-    if (this.config?.get<string>('MEDIA_GATEWAY_REAL_ENABLED') !== 'true') return false;
-    return this.realConnectionUsable();
+    return this.catalog.filterProfiles(enterpriseId, 'image', rows.map((row) => this.profileView(row)));
   }
 
   async getAvailableProfiles(userId: string) {
-    await this.enterpriseContext.resolve(userId);
-    return (await this.availableProfiles()).map(({ modelId: _modelId, ...profile }) => profile);
+    const context = await this.enterpriseContext.resolve(userId);
+    return (await this.availableProfiles(context.enterpriseId)).map(({ modelId: _modelId, ...profile }) => profile);
   }
 
   async getEnterpriseConfig(userId: string) {
     const context = await this.enterpriseContext.resolve(userId);
-    const [config, connection] = await Promise.all([
+    const [config, configured] = await Promise.all([
       this.prisma.enterpriseModelConfig.findUnique({ where: { enterpriseId: context.enterpriseId } }),
-      this.getConnection(),
+      this.catalog.configured(context.enterpriseId, 'image'),
     ]);
     return {
-      policy: this.parsePolicy(config?.mediaPolicy), configured: connection.configured,
+      policy: this.parsePolicy(config?.mediaPolicy), configured,
       canEdit: context.role === 'ENTERPRISE_ADMIN',
     };
   }
@@ -338,6 +317,13 @@ export class MediaConfigService {
   async updateEnterpriseConfig(userId: string, dto: UpdateMediaPolicyDto) {
     const context = await this.enterpriseContext.resolve(userId);
     this.enterpriseContext.assertEnterpriseAdmin(context);
+    const saved = await this.prisma.enterpriseModelConfig.findUnique({ where: { enterpriseId: context.enterpriseId } });
+    const prior = this.parsePolicy(saved?.mediaPolicy);
+    const available = (await this.listProfiles()).filter(profile => profile.enabled && profile.verified);
+    await this.catalog.assertProfiles(context.enterpriseId, 'image', available, dto.enabledProfileIds ?? prior.enabledProfileIds, prior.enabledProfileIds);
+    if (dto.defaultProfileId && dto.defaultProfileId !== prior.defaultProfileId) {
+      await this.catalog.assertProfiles(context.enterpriseId, 'image', available, [dto.defaultProfileId]);
+    }
     try {
       await this.prisma.$transaction(async (tx) => {
         const existing = await tx.enterpriseModelConfig.findUnique({ where: { enterpriseId: context.enterpriseId } });
@@ -373,9 +359,9 @@ export class MediaConfigService {
     const context = await this.enterpriseContext.resolve(userId);
     const storedConfig = await this.prisma.enterpriseModelConfig.findUnique({ where: { enterpriseId: context.enterpriseId } });
     const policy = context.role === 'ENTERPRISE_ADMIN' ? request.policy as MediaPolicy : this.parsePolicy(storedConfig?.mediaPolicy);
-    const configured = (await this.getConnection()).configured;
+    const configured = await this.catalog.configured(context.enterpriseId, 'image');
     const profiles = await this.listProfiles();
-    const runtimeProfiles = await this.availableProfiles();
+    const runtimeProfiles = await this.availableProfiles(context.enterpriseId);
     const visibleProfiles = context.role === 'ENTERPRISE_ADMIN' ? profiles : profiles.filter(profile => policy.enabledProfileIds.includes(profile.profileId));
     const permissive: MediaPolicy = { ...policy, enabledProfileIds: profiles.map(profile => profile.profileId), defaultProfileId: null };
     const [available, effective] = await Promise.all([
@@ -388,7 +374,7 @@ export class MediaConfigService {
     ]);
     const availableById = new Map(available.profiles.map(profile => [profile.profileId, profile] as const));
     const effectiveById = new Map(effective.profiles.map(profile => [profile.profileId, profile] as const));
-    const executionMode = (await this.realRuntimeEnabled()) ? 'real' as const : 'disabled' as const;
+    const executionMode = this.config?.get<string>('MEDIA_GATEWAY_REAL_ENABLED') === 'true' && this.catalog.executionReady() && configured ? 'real' as const : 'disabled' as const;
     const executableProfile = (profile: (typeof effective.profiles)[number]) => request.protocolVersion !== 3
       || ('adapter' in profile && profile.adapter.available && !profile.unavailableReason);
     const result = { protocolVersion: request.protocolVersion, executionMode, configured, executionAvailable: effective.executionAvailable,
@@ -402,10 +388,12 @@ export class MediaConfigService {
         if (!profile.enabled) reasons.push('disabled');
         if (!profile.verified) reasons.push('unverified');
         if (!configured) reasons.push('connection-unconfigured');
+        if (current && 'unavailableReason' in current && current.unavailableReason === 'ENTERPRISE_MODEL_UNAVAILABLE') reasons.push('enterprise-model-unavailable');
+        if (current && 'unavailableReason' in current && current.unavailableReason === 'SETTLEMENT_NOT_CONNECTED') reasons.push('settlement-not-connected');
         if (executionMode === 'disabled') reasons.push('execution-disabled');
         if (!baseline && profile.enabled && profile.verified && configured) reasons.push('adapter-unsupported');
         if (request.protocolVersion === 3 && current && !executableProfile(current)
-          && !reasons.some(reason => ['disabled', 'unverified', 'connection-unconfigured', 'execution-disabled'].includes(reason))) {
+          && !reasons.some(reason => ['disabled', 'unverified', 'connection-unconfigured', 'execution-disabled', 'enterprise-model-unavailable', 'settlement-not-connected'].includes(reason))) {
           reasons.push('adapter-unsupported');
         }
         const status: MediaPolicyPreview['profiles'][number]['status'] = current && executableProfile(current) && executionMode !== 'disabled' ? 'effective'
@@ -419,8 +407,9 @@ export class MediaConfigService {
   async getRuntimeMedia(enterpriseId: string, policyOverride?: MediaPolicy, profilesOverride?: MediaProfile[]): Promise<MediaRuntime> {
     const config = policyOverride ? null : await this.prisma.enterpriseModelConfig.findUnique({ where: { enterpriseId } });
     const policy = policyOverride ?? this.parsePolicy(config?.mediaPolicy);
-    const realEnabled = await this.realRuntimeEnabled();
-    const profiles = (profilesOverride ?? await this.availableProfiles())
+    const realEnabled = this.config?.get<string>('MEDIA_GATEWAY_REAL_ENABLED') === 'true'
+      && this.catalog.executionReady() && await this.catalog.configured(enterpriseId, 'image');
+    const profiles = (profilesOverride ?? await this.availableProfiles(enterpriseId))
       .filter((profile) => policy.enabledProfileIds.includes(profile.profileId))
       .filter((profile) => !realEnabled || (isSupportedImageModel(profile.modelId) && ['sync-response', 'async-query'].includes(profile.executionMode)))
       .map((profile) => {
@@ -457,7 +446,7 @@ export class MediaConfigService {
 
   async getRuntimeMediaV2(enterpriseId: string, policyOverride?: MediaPolicy, profilesOverride?: MediaProfile[]) {
     const legacy = await this.getRuntimeMedia(enterpriseId, policyOverride, profilesOverride);
-    const modelIds = new Map((profilesOverride ?? await this.availableProfiles()).map(profile => [profile.profileId, profile.modelId]));
+    const modelIds = new Map((profilesOverride ?? await this.availableProfiles(enterpriseId)).map(profile => [profile.profileId, profile.modelId]));
     const profiles = legacy.profiles.filter(profile => isSupportedImageModel(modelIds.get(profile.profileId) ?? '')).map(profile => {
       const capabilities = imageModelCapabilities(modelIds.get(profile.profileId) ?? '');
       const sizes = profile.capabilities.sizes.filter(size => capabilities?.sizes.includes(size as typeof IMAGE_MODEL_SIZES[number]));
@@ -480,13 +469,17 @@ export class MediaConfigService {
     const missingIds = policy.enabledProfileIds.filter(id => !knownIds.has(id));
     if (missingIds.length) this.logger.warn({ message: '图片授权引用了不存在的配置', enterpriseId, profileIds: missingIds });
     const executionEnabled = this.config?.get<string>('MEDIA_GATEWAY_REAL_ENABLED') === 'true';
-    const connectionUsable = await this.realConnectionUsable(true);
+    const authorizedProfiles = configuredProfiles.filter(profile => policy.enabledProfileIds.includes(profile.profileId));
+    const connectionUsable = await this.catalog.configured(enterpriseId, 'image');
+    const permitted = new Set((connectionUsable ? await this.catalog.filterProfiles(enterpriseId, 'image', authorizedProfiles) : []).map(profile => profile.profileId));
     const profiles = configuredProfiles.filter(profile => policy.enabledProfileIds.includes(profile.profileId)).map(profile => {
       const operations = profile.operations.filter(operation => operation === 'generate' || operation === 'edit' && profile.capabilities.supportsReferenceImage);
       const reason = !profile.enabled ? 'PROFILE_DISABLED'
         : !profile.verified ? 'PROFILE_UNVERIFIED'
           : !executionEnabled ? 'EXECUTION_DISABLED'
             : !connectionUsable ? 'CONNECTION_UNAVAILABLE'
+              : !permitted.has(profile.profileId) ? 'ENTERPRISE_MODEL_UNAVAILABLE'
+                : !this.catalog.executionReady() ? 'SETTLEMENT_NOT_CONNECTED'
               : !['sync-response', 'async-query'].includes(profile.executionMode) ? 'ADAPTER_PROTOCOL_UNSUPPORTED'
                 : operations.length === 0 ? 'ADAPTER_OPERATION_UNSUPPORTED' : undefined;
       const capabilities = imageRuntimeCapabilities({ ...profile, executionMode: 'async-query', capabilities: {

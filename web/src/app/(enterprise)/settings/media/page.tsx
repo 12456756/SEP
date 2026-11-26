@@ -71,7 +71,7 @@ function ImageSettingsPanel() {
 
   return <div className="space-y-6 p-4 pb-28 sm:p-6 sm:pb-28 md:pb-6"><header><h1 className="text-2xl font-bold">图片配置</h1></header>
     {!canEdit && <div className="border border-border bg-muted/30 px-4 py-3 text-sm text-fg-muted">当前为只读视图，图片策略由企业管理员维护。</div>}
-    {!config.data?.configured && <div className="border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">平台图片连接尚未配置，暂时没有可用的图片 Profile。</div>}
+    {!config.data?.configured && <div className="border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">本企业图片 Key 尚未就绪。</div>}
     {available.error && <div className="flex flex-wrap items-center gap-2 text-sm"><p role="alert">能力目录加载失败：{errorText(available.error)}。仍可保存授权。</p><Button type="button" variant="outline" size="sm" onClick={() => { void available.refetch(); }}><RefreshCw className="h-4 w-4" />刷新目录</Button></div>}
     <form className="max-w-3xl space-y-6" onSubmit={submit}>
       <fieldset disabled={!canEdit || save.isPending} className="min-w-0 space-y-6">

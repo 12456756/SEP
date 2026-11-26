@@ -3,12 +3,13 @@ import { types } from 'node:util';
 
 export type ErrorJson = string | number | boolean | null | ErrorJson[] | { [key: string]: ErrorJson };
 export const REDACTED = '[REDACTED]';
-const secretField = /^(?:password|passwd|pwd|secret|clientsecret|apikey|accesskey|privatekey|credential|credentials|authorization|proxyauthorization|cookie|setcookie|token|accesstoken|refreshtoken|idtoken|signature|signedurl|connectionstring|databaseurl)$/i;
+const secretField = /^(?:password|passwordhash|encryptedpasswordhash|passwd|pwd|secret|clientsecret|apikey|accesskey|privatekey|credential|credentials|authorization|proxyauthorization|cookie|setcookie|token|accesstoken|refreshtoken|idtoken|signature|signedurl|connectionstring|databaseurl)$/i;
 
 export function redactErrorText(value: string, secrets: readonly string[] = []): string {
   let text = value;
   for (const secret of secrets) if (secret) text = text.split(secret).join(REDACTED);
   return text
+    .replace(/\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}/g, REDACTED)
     .replace(/-----BEGIN [^-]*PRIVATE KEY-----[\s\S]*?(?:-----END [^-]*PRIVATE KEY-----|$)/g, REDACTED)
     .replace(/\bBearer\s+[^\s"',;<>]+/gi, `Bearer ${REDACTED}`)
     .replace(/\bBasic\s+[A-Za-z0-9+/=]+/gi, `Basic ${REDACTED}`)

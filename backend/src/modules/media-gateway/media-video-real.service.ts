@@ -1,4 +1,6 @@
 import { HttpException, Injectable, Optional } from '@nestjs/common';
+import { ComputeConnectionService } from '../compute-integration/compute-connection.service';
+import { ComputeMediaService, type ComputeMediaSnapshot } from '../compute-integration/compute-media.service';
 import { ConfigService } from '@nestjs/config';
 import { Decimal } from '@prisma/client/runtime/library';
 import { createHash, randomUUID } from 'node:crypto';
@@ -6,7 +8,7 @@ import { MAX_MEDIA_REFERENCE_TOTAL_BYTES, MediaVideoCapabilitiesSchema, MediaVid
 import { MediaUpstreamException, mediaFailure, retainMediaFailure } from '../../common/errors/media-upstream.exception';
 import { exceptionDetails } from '../../common/errors/error-diagnostics';
 import { z } from 'zod';
-import { isVideoDurationInRange, parseUsdToCnyRate, SETTING_KEYS, VIDEO_REFERENCE_MAX_BYTES } from 'shared';
+import { isVideoDurationInRange, MediaVideoDurationRangeSchema, VIDEO_REFERENCE_MAX_BYTES } from 'shared';
 import type { MediaVideoGatewayQuoteRequest, MediaVideoGatewayQuoteRequestV3,
   MediaVideoGatewayRequest } from 'shared';
 import { MediaVideoAuthorizationSchema, MediaVideoRealProfilesSchema, MediaVideoRealQuoteRequestSchema, MediaVideoRealReceiptSchema, MediaVideoRealRequestSchema } from 'shared';
@@ -50,6 +52,8 @@ export class MediaVideoRealService {
     private readonly cache: VideoFileCacheService,
     private readonly billing: MediaRealBillingService,
     private readonly store: MediaVideoRealStore,
+    @Optional() private readonly connections?: ComputeConnectionService,
+    @Optional() private readonly computeMedia?: ComputeMediaService,
     @Optional() private readonly recoveryLease?: MediaVideoRecoveryLeaseService,
   ) {}
 
@@ -99,7 +103,7 @@ export class MediaVideoRealService {
     const input = this.parse(MediaVideoReferenceUploadQuerySchema, raw);
     await this.authorize(claims, true);
     const profile = await this.requireProfile(claims, { ...input, protocolVersion: 3, operation: 'video-to-video', requestedSpec: {} }, true, 'video-upload');
-    return { input, capabilities: profile.capabilities, connection: await this.adapter.connection() };
+    return { input, capabilities: profile.capabilities, connection: await this.computeMedia.connection(claims.enterpriseId, 'video') };
   }
 
   async videoReference(claims: ClientEmploymentClaims, upload: {
@@ -125,18 +129,19 @@ export class MediaVideoRealService {
     const input = this.parse(MediaVideoRealQuoteRequestSchema, raw);
     const profile = await this.requireProfile(claims, input, true, 'video-quote');
     const references = await this.references(claims, input.referenceIds, profile.capabilities.maxInputBytes);
-    const connection = await this.adapter.connection();
+    const enterpriseConnection = await this.computeMedia.connection(claims.enterpriseId, 'video');
+    const connection = enterpriseConnection;
     const videos = await this.videoReferences(claims, input, profile.capabilities, connection.fingerprint);
     const allIds = this.referenceIds(input);
     const allHashes = [...references.map(r => r.sha256), ...videos.map(r => r.value.sha256)];
     const price = await this.adapter.pricing(connection, input, profile.modelId);
     const dimensions = this.billingDimensions(input);
     if (price.model !== profile.modelId || price.operation !== input.operation || price.duration_seconds !== dimensions.durationSeconds ||
-      price.resolution !== dimensions.resolution || price.pricing_status !== 'quoted' || price.amount_usd === null) fail(503, 'PRICE_UNAVAILABLE', '视频报价规格不匹配');
-    const rate = parseUsdToCnyRate((await this.setting.getEffectiveValue(SETTING_KEYS.USD_TO_CNY_RATE)) ?? undefined);
-    const amountUsd = new Decimal(price.amount_usd);
-    const amountCny = amountUsd.mul(rate).toDecimalPlaces(6, Decimal.ROUND_HALF_UP).toFixed(6);
-    if (!amountUsd.isFinite() || amountUsd.lte(0) || new Decimal(amountCny).lte(0) || new Decimal(amountCny).gt('99999999.999999')) fail(503, 'PRICE_UNAVAILABLE', '视频报价金额无效');
+      price.resolution !== dimensions.resolution || price.pricing_status !== 'quoted') fail(503, 'PRICE_UNAVAILABLE', '视频报价规格不匹配');
+    const rate = null;
+    const amountCny = price.amount_cny!;
+    if (!new Decimal(amountCny).isFinite() || new Decimal(amountCny).lt(0) || new Decimal(amountCny).gt('99999999.999999')) fail(503, 'PRICE_UNAVAILABLE', '视频报价金额无效');
+    const compute = { ...enterpriseConnection.snapshot, quoteId: price.quote_id };
     const expiresAt = new Date(Math.min(Date.now() + 60_000, Date.parse(price.expires_at), ...videos.map(r => Date.parse(r.value.expiresAt)))).toISOString();
     if (Date.parse(expiresAt) <= Date.now()) fail(409, 'QUOTE_EXPIRED', '视频报价已过期');
     const funding = await this.billing.quoteFunding(claims, amountCny);
@@ -151,7 +156,7 @@ export class MediaVideoRealService {
           specRevision: input.specRevision, effectiveSpec: input.requestedSpec,
           billingDimensions: { model: profile.modelId, operation: input.operation, ...dimensions } } : {}) },
       configuration: 'protocolVersion' in input
-        ? { adapter: VIDEO_REAL_ADAPTER, protocolVersion: 3 as const, semanticHashVersion: 3 as const,
+        ? { ...(compute ? { compute } : {}), adapter: VIDEO_REAL_ADAPTER, protocolVersion: 3 as const, semanticHashVersion: 3 as const,
           specRevision: input.specRevision, profileId: input.profileId, configVersion: input.configVersion,
           modelId: profile.modelId, operation: input.operation, maxReferenceCount: profile.capabilities.maxReferenceCount,
           ...(videos.length ? { maxVideoReferenceCount: profile.capabilities.maxVideoReferenceCount,
@@ -160,7 +165,7 @@ export class MediaVideoRealService {
           parameterSources: input.parameterSources,
           connectionFingerprint: connection.fingerprint, amountCny, amountUsd: price.amount_usd,
           pricingVersion: price.pricing_version, usdToCnyRate: rate }
-        : { adapter: VIDEO_REAL_ADAPTER, profileId: input.profileId, configVersion: input.configVersion,
+        : { ...(compute ? { compute } : {}), adapter: VIDEO_REAL_ADAPTER, profileId: input.profileId, configVersion: input.configVersion,
           modelId: 'minimax-h3', operation: input.operation, parameters: (input as MediaVideoGatewayQuoteRequest).parameters, connectionFingerprint: connection.fingerprint,
           amountCny, amountUsd: price.amount_usd, pricingVersion: price.pricing_version, usdToCnyRate: rate },
       referenceIds: allIds, referenceHashes: allHashes,
@@ -184,19 +189,20 @@ export class MediaVideoRealService {
     await this.authorize(claims, true);
     const profile = await this.requireProfile(claims, input, true, 'video-submit');
     const references = await this.references(claims, input.referenceIds, profile.capabilities.maxInputBytes);
-    const currentConnection = input.operation === 'video-to-video' ? await this.adapter.connection() : undefined;
+    const currentConnection = input.operation === 'video-to-video' ? await this.computeMedia.connection(claims.enterpriseId, 'video') : undefined;
     const videos = await this.videoReferences(claims, input, profile.capabilities, currentConnection?.fingerprint ?? '');
     const allIds = this.referenceIds(input);
     const allHashes = [...references.map(r => r.sha256), ...videos.map(r => r.value.sha256)];
     const quote = await this.store.findQuote(scope, input.quoteId);
     if (!quote) fail(404, 'MEDIA_NOT_FOUND', '视频报价不可用');
+    if ((await this.connections?.isEnterpriseMode(claims.enterpriseId) ?? false) !== !!quote.configuration.compute) fail(409, 'CONFIG_CHANGED', '企业计费模式已变化，请重新报价');
     if (Date.parse(quote.value.expiresAt) <= Date.now()) fail(409, 'QUOTE_EXPIRED', '视频报价已过期');
     const semanticSha256 = this.semanticHash(input, allHashes, scope);
     if (semanticSha256 !== quote.value.semanticSha256 || JSON.stringify(allIds) !== JSON.stringify(quote.referenceIds) ||
       !this.sameSpec(input, quote.configuration) || profile.modelId !== quote.configuration.modelId) fail(409, 'IDEMPOTENCY_CONFLICT', '视频请求与冻结报价不一致');
     if (videos.length && (!('protocolVersion' in quote.configuration) || JSON.stringify(quote.configuration.videoReferences) !==
       JSON.stringify(videos.map(r => ({ ...r.value, upstreamReferenceId: r.upstreamReferenceId }))))) fail(409, 'IDEMPOTENCY_CONFLICT', '参考视频与冻结报价不一致');
-    const connection = await this.frozenConnection(quote.configuration.connectionFingerprint);
+    const connection = await this.frozenConnection(quote.configuration.connectionFingerprint, quote.configuration.compute);
     const bytes = await Promise.all(references.map(r => this.cache.readReference(scope, r.referenceId,
       { sha256: r.sha256, byteLength: r.byteLength, expiresAt: r.expiresAt })));
     const requestId = `sep-video-${randomUUID()}`;
@@ -220,21 +226,28 @@ export class MediaVideoRealService {
     this.assertReplay(input, claim.record);
     if (!claim.created) return this.snapshot(claim.record);
     let record = claim.record;
+    let reservationAttempted = false;
     try {
+      if (record.configuration.compute) {
+        const execution = await this.computeMedia.begin(claims.enterpriseId, 'video', record.receipt.receiptId, record.configuration.compute, profile.modelId);
+        connection.compute.executionId = execution.id;
+      }
+      reservationAttempted = true;
       await this.billing.reserve(claims, record.receipt.receiptId, quote.value.amountCny, quote.value.usdToCnyRate, quote.value.funding.paymentMode ?? 'AUTO');
     } catch (error) {
       const insufficient = error instanceof HttpException && error.getStatus() === 402;
       const changed = error instanceof HttpException && (error.getResponse() as { error?: { code?: string } }).error?.code === 'PAYMENT_MODE_CHANGED';
-      const notReserved = insufficient || changed;
+      const notReserved = !reservationAttempted || insufficient || changed;
       record.receipt.status = notReserved || record.receipt.execution ? 'FAILED' : 'SUBMISSION_UNKNOWN';
       record.receipt.billingStatus = notReserved ? 'NOT_RESERVED' : 'RECONCILING';
-      record.receipt.errorCode = changed ? 'CONFIG_CHANGED' : insufficient ? 'INSUFFICIENT_FUNDS' : 'BILLING_PENDING';
+      record.receipt.errorCode = !reservationAttempted || changed ? 'CONFIG_CHANGED' : insufficient ? 'INSUFFICIENT_FUNDS' : 'BILLING_PENDING';
       record.receipt.billingError = mediaFailure(error);
       if (record.receipt.execution) {
         record.receipt.execution.submissionStatus = 'not_submitted'; record.receipt.execution.operation = 'create';
         record.receipt.fileStatus = 'unavailable';
       }
       if (notReserved && record.receipt.execution) {
+        await this.computeMedia.closeUnsent(claims.enterpriseId, 'video', record.receipt.receiptId);
         record.receipt.execution.submissionStatus = 'not_submitted'; record.receipt.fileStatus = 'unavailable';
         record.receipt.execution.billing = { status: 'not_charged', actualCostUsd: '0' };
       }
@@ -255,7 +268,7 @@ export class MediaVideoRealService {
     try {
       await this.authorize(claims, true);
       await this.requireProfile(claims, input, true, 'video-submit');
-      await this.frozenConnection(record.configuration.connectionFingerprint);
+      await this.frozenConnection(record.configuration.connectionFingerprint, record.configuration.compute, record.receipt.receiptId);
       await this.videoReferences(claims, input, profile.capabilities, connection.fingerprint);
     } catch (error) {
       record.receipt.status = 'FAILED'; record.receipt.errorCode = 'CONFIG_CHANGED';
@@ -276,6 +289,7 @@ export class MediaVideoRealService {
     if (!saved.updated) return this.snapshot(saved.record);
     record = saved.record;
     try {
+      if (record.configuration.compute) await this.computeMedia.markDispatch(claims.enterpriseId, 'video', record.receipt.receiptId);
       if (record.configuration.contractVersion === 2) {
         const result = await this.adapter.submitContract(connection, generationInput, profile.modelId, bytes, requestId,
           record.configuration.pricingVersion, ...(videos.length ? [videos.map(r => r.upstreamReferenceId)] : []));
@@ -361,7 +375,7 @@ export class MediaVideoRealService {
     const record = await this.owned(claims, receiptId);
     if (record.configuration.contractVersion !== 2 || !record.configuration.cancelSupported || !record.configuration.upstreamTaskId) fail(409, 'CANCEL_UNSUPPORTED', '原视频不支持取消或尚无可取消的任务编号');
     if (record.receipt.execution?.isFinal || closedSubmission(record.receipt.execution!)) return this.snapshot(record);
-    const connection = await this.frozenConnection(record.configuration.connectionFingerprint);
+    const connection = await this.frozenConnection(record.configuration.connectionFingerprint, record.configuration.compute, record.receipt.receiptId);
     try {
       const result = await this.adapter.cancelContract(connection, record.receipt.execution!.requestId, record.configuration.upstreamTaskId);
       return this.snapshot(await this.applyContract(record, result));
@@ -446,8 +460,20 @@ export class MediaVideoRealService {
       record.receipt.billingStatus = 'RECONCILING';
       record = (await this.store.save(this.normalize(record))).record;
     }
-    if (!record.configuration.upstreamTaskId && !record.configuration.upstreamRequestId) return record;
-    const connection = await this.frozenConnection(record.configuration.connectionFingerprint);
+    if (record.configuration.compute && await this.computeMedia.closeUnsent(record.enterpriseId, 'video', record.receipt.receiptId)) {
+      record.configuration.dispatchState = 'REJECTED'; record.receipt.status = 'FAILED'; record.receipt.errorCode = 'BILLING_PENDING';
+      const closed = await this.store.save(this.normalize(record));
+      if (closed.updated) await this.releaseUnsubmitted(closed.record);
+      return (await this.store.findRequest(record.scope, record.receipt.receiptId)) ?? closed.record;
+    }
+    if (record.configuration.compute && !record.configuration.upstreamTaskId) {
+      const fee = await this.computeMedia.fee(record.enterpriseId, 'video', record.receipt.receiptId);
+      if (fee?.taskId) record.configuration.upstreamTaskId = fee.taskId;
+      if (fee?.computeRequestId) record.configuration.upstreamRequestId = fee.computeRequestId;
+      if (record.configuration.upstreamTaskId) record = (await this.store.save(this.normalize(record))).record;
+    }
+    if (!record.configuration.compute && !record.configuration.upstreamTaskId && !record.configuration.upstreamRequestId) return record;
+    const connection = await this.frozenConnection(record.configuration.connectionFingerprint, record.configuration.compute, record.receipt.receiptId);
     if (record.configuration.upstreamTaskId && ['QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN'].includes(record.receipt.status)) {
       let downloading = false;
       try {
@@ -510,6 +536,11 @@ export class MediaVideoRealService {
       const status = await this.billing.status(record.receipt.receiptId);
       if (status === 'RELEASED') {
         record.receipt.billingStatus = 'RELEASED';
+      } else if (record.configuration.compute) {
+        const fee = await this.computeMedia.fee(record.enterpriseId, 'video', record.receipt.receiptId);
+        record.receipt.billingStatus = fee?.feeStatus === 'FINAL'
+          ? await this.billing.settleCompute(record.receipt.receiptId, fee.id, record.configuration.modelId) : 'RECONCILING';
+        if (fee?.feeStatus === 'FINAL') record.receipt.actualCostCny = fee.grossCny.toFixed(6);
       } else if (record.configuration.upstreamRequestId) {
         if (!(await this.store.hasUniqueUpstreamRequest(record))) fail(409, 'BILLING_PENDING', '原视频账单关联不唯一');
         const usage = await this.adapter.usage(connection, record.configuration.upstreamRequestId);
@@ -543,6 +574,15 @@ export class MediaVideoRealService {
 
   private async releaseUnsubmitted(record: VideoRealRecord) {
     if (!['NOT_DISPATCHED', 'REJECTED'].includes(record.configuration.dispatchState) || record.receipt.status !== 'FAILED') return;
+    if (record.configuration.compute && record.configuration.dispatchState === 'REJECTED') {
+      try {
+        const fee = await this.computeMedia.fee(record.enterpriseId, 'video', record.receipt.receiptId);
+        record.receipt.billingStatus = fee?.feeStatus === 'FINAL'
+          ? await this.billing.settleCompute(record.receipt.receiptId, fee.id, record.configuration.modelId) : 'RECONCILING';
+      } catch (failure) { record.receipt.billingStatus = 'RECONCILING'; record.receipt.billingError = mediaFailure(failure); }
+      await this.store.save(this.normalize(record)); return;
+    }
+    if (record.configuration.compute && !await this.computeMedia.closeUnsent(record.enterpriseId, 'video', record.receipt.receiptId)) return;
     try {
       const status = await this.billing.status(record.receipt.receiptId).catch(error => {
         // status() uses BILLING_PENDING for an absent journal row; release() then
@@ -603,6 +643,8 @@ export class MediaVideoRealService {
   }
 
   private async authorize(claims: VideoRecoveryOwner, execution: boolean) {
+    if (execution && (!this.connections || !this.computeMedia)) fail(503, 'MEDIA_REAL_DISABLED', '视频调用缺少企业算力连接，无法使用企业凭证');
+    if (execution) await this.connections?.assertEnterpriseModeSupported(claims.enterpriseId);
     if (execution) this.assertRealEnabled();
     const member = await this.prisma.enterpriseMember.findFirst({
       where: { id: claims.memberId, enterpriseId: claims.enterpriseId, userId: claims.sub, user: { status: 'ACTIVE' }, enterprise: { status: 'ACTIVE' } }, select: { departmentId: true },
@@ -685,8 +727,9 @@ export class MediaVideoRealService {
     return references;
   }
 
-  private async frozenConnection(expected: string) {
-    const connection = await this.adapter.connection();
+  private async frozenConnection(expected: string, compute?: ComputeMediaSnapshot, receiptId?: string): Promise<Sub2apiVideoConnection> {
+    if (!compute || !this.computeMedia) fail(409, 'CONFIG_CHANGED', '原视频任务未绑定企业凭证，请核对原任务，不得切换到管理员凭证');
+    const connection = await this.computeMedia.connection(compute.enterpriseId, 'video', compute, receiptId);
     if (connection.fingerprint !== expected) fail(409, 'CONFIG_CHANGED', '视频连接已变更，原任务不得切换路由');
     return connection;
   }
@@ -765,28 +808,30 @@ export class MediaVideoRealService {
     const saved = await this.store.save(this.normalize(record));
     record = saved.record;
     if (!saved.updated || record.revision !== revision + 1) return record;
+    return this.settleContractBilling(record, assertHeld);
+  }
+
+  private async settleContractBilling(record: VideoRealRecord, assertHeld = () => {}): Promise<VideoRealRecord> {
+    const execution = record.receipt.execution!;
     try {
       const billingStatus = await this.billing.status(record.receipt.receiptId);
       if (billingStatus === 'SETTLED' || billingStatus === 'RELEASED') {
         record.receipt.billingStatus = billingStatus; delete record.receipt.billingError;
         return (await this.store.save(this.normalize(record))).record;
       }
-      if (execution.billing.status === 'not_charged') {
+      if (record.configuration.compute && execution.billing.status !== 'pending') {
+        assertHeld();
+        const fee = await this.computeMedia.fee(record.enterpriseId, 'video', record.receipt.receiptId);
+        record.receipt.billingStatus = fee?.feeStatus === 'FINAL'
+          ? await this.billing.settleCompute(record.receipt.receiptId, fee.id, record.configuration.modelId) : 'RECONCILING';
+        if (record.receipt.billingStatus === 'SETTLED') record.receipt.actualCostCny = fee.grossCny!.toFixed(6);
+      } else if (record.configuration.compute) {
+        record.receipt.billingStatus = 'RECONCILING';
+      } else if (execution.billing.status === 'not_charged') {
         assertHeld();
         await this.billing.release(record.receipt.receiptId); record.receipt.billingStatus = 'RELEASED';
       } else if (execution.billing.status === 'settled') {
-        if (execution.generationStatus !== 'completed' || !await this.store.hasUniqueUpstreamRequest(record)) fail(409, 'BILLING_PENDING', '视频收费证据与原任务不一致');
-        const usage = await this.adapter.usage(await this.frozenConnection(record.configuration.connectionFingerprint), execution.requestId);
-        const dimensions = this.configurationBillingDimensions(record.configuration);
-        if (usage.status !== 'settled' || usage.request_id !== execution.requestId || usage.model !== record.configuration.modelId ||
-            usage.video_count !== 1 || usage.actual_cost_usd === null || usage.duration_seconds !== dimensions.durationSeconds ||
-            usage.resolution !== dimensions.resolution || !new Decimal(usage.actual_cost_usd).eq(execution.billing.actualCostUsd!)) fail(409, 'BILLING_PENDING', '视频金额证据与冻结规格不一致');
-        const usd = new Decimal(usage.actual_cost_usd);
-        const cny = usd.mul(record.configuration.usdToCnyRate).toDecimalPlaces(6, Decimal.ROUND_HALF_UP).toFixed(6);
-        assertHeld();
-        record.receipt.billingStatus = await this.billing.settleNegotiated(record.receipt.receiptId, cny,
-          usd.toDecimalPlaces(6, Decimal.ROUND_HALF_UP).toFixed(6), usage.model, record.configuration.modelId);
-        if (record.receipt.billingStatus === 'SETTLED') record.receipt.actualCostCny = cny;
+        fail(409, 'BILLING_PENDING', '原视频任务缺少企业执行记录，需核对原任务费用单');
       } else record.receipt.billingStatus = 'RECONCILING';
       delete record.receipt.billingError;
     } catch (error) { record.receipt.billingStatus = 'RECONCILING'; record.receipt.billingError = mediaFailure(error); }
@@ -796,6 +841,10 @@ export class MediaVideoRealService {
   private async recoverContract(claims: VideoRecoveryOwner, initial: VideoRealRecord, assertHeld = () => {}): Promise<VideoRealRecord> {
     assertHeld();
     let record = structuredClone(initial);
+    if (record.configuration.compute && record.configuration.dispatchState !== 'NOT_DISPATCHED' && record.receipt.execution!.billing.status === 'not_charged'
+      && (closedSubmission(record.receipt.execution!) || record.receipt.execution!.isFinal)) {
+      return this.settleContractBilling(record, assertHeld);
+    }
     if ((closedSubmission(record.receipt.execution!) || ['failed', 'cancelled'].includes(record.receipt.execution!.generationStatus!)) && record.receipt.billingStatus === 'RELEASED' ||
         ['available', 'expired'].includes(record.receipt.fileStatus!) && ['SETTLED', 'RELEASED'].includes(record.receipt.billingStatus)) return record;
     if (record.configuration.dispatchState === 'NOT_DISPATCHED') {
@@ -808,7 +857,7 @@ export class MediaVideoRealService {
       return (await this.store.findRequest(record.scope, record.receipt.receiptId)) ?? closed.record;
     }
     try {
-      if (record.receipt.execution!.billing.status === 'not_charged' && record.receipt.execution!.generationStatus !== 'completed') {
+      if (!record.configuration.compute && record.receipt.execution!.billing.status === 'not_charged' && record.receipt.execution!.generationStatus !== 'completed') {
         try {
           assertHeld();
           await this.billing.release(record.receipt.receiptId);
@@ -816,7 +865,7 @@ export class MediaVideoRealService {
         } catch (error) { record.receipt.billingStatus = 'RECONCILING'; record.receipt.billingError = mediaFailure(error); }
         return (await this.store.save(this.normalize(record))).record;
       }
-      const connection = await this.frozenConnection(record.configuration.connectionFingerprint);
+      const connection = await this.frozenConnection(record.configuration.connectionFingerprint, record.configuration.compute, record.receipt.receiptId);
       if (record.receipt.execution!.generationStatus !== 'completed' || !['SETTLED', 'RELEASED'].includes(record.receipt.billingStatus)) {
         assertHeld();
         const result = await this.adapter.queryContract(connection, record.receipt.execution!.requestId,

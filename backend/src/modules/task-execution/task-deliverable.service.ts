@@ -3,9 +3,11 @@ import {
   ForbiddenException,
   HttpException,
   Injectable,
+  Optional,
   Logger,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ComputeConnectionService } from '../compute-integration/compute-connection.service';
 import {
   TASK_EVENT_TYPE,
   TASK_STEP_STATUS,
@@ -17,6 +19,7 @@ import { TaskEventBus } from './task-event-bus';
 import { SettingService } from '../setting/setting.service';
 import { EnterpriseModelConfigService } from '../enterprise-model-config/enterprise-model-config.service';
 import { resolveSub2ApiProviderConfig } from '../conversation/sub2api-provider-config';
+import { ComputeCreditService } from '../compute-credit/compute-credit.service';
 import { ModelRequestLifecycle } from '../conversation/model-request-lifecycle';
 import { TaskEventRecorder } from './task-event-recorder';
 import { ModelRuntimePolicyService } from '../setting/model-runtime-policy.service';
@@ -49,6 +52,8 @@ export class TaskDeliverableService {
     private readonly runtimePolicy: ModelRuntimePolicyService,
     private readonly admission: GatewayAdmissionService,
     private readonly modelPolicy: GatewayModelPolicyService,
+    @Optional() private readonly connections?: ComputeConnectionService,
+    @Optional() private readonly computeCredit?: ComputeCreditService,
   ) {}
 
   async generate(run: TaskRun, steps: TaskRunStep[]): Promise<void> {
@@ -152,8 +157,10 @@ export class TaskDeliverableService {
       );
     const identity = { enterpriseId: run.enterpriseId, memberId: member.id };
     // 中转参数统一从系统设置取，不读 env（见 resolveSub2ApiProviderConfig）
-    const { baseURL, apiKey, defaultModel } =
-      await resolveSub2ApiProviderConfig(this.settings);
+    const { baseURL, apiKey, defaultModel, fetch: modelFetch, enterpriseBilling } =
+      await resolveSub2ApiProviderConfig(this.settings,
+        this.connections ? { enterpriseId: run.enterpriseId, connections: this.connections,
+          funding: { userId: run.userId, memberId: member.id, sessionId: run.id } } : undefined);
 
     // 与任务规划同一档「编排与分析模型」：
     // env 强制覆盖（排障）→ 企业选择 → 平台系统设置 → 代码常量。
@@ -164,17 +171,17 @@ export class TaskDeliverableService {
         ? await this.modelConfig.getPlannerModel(run.enterpriseId)
         : null;
     const modelId = override || enterpriseChoice || defaultModel;
+    if (enterpriseBilling) {
+      const balance = await this.computeCredit.checkBalanceBeforeConversation(run.enterpriseId, undefined, run.userId);
+      if (!balance.allowed) throw new ForbiddenException({ code: 'INSUFFICIENT_BALANCE', message: balance.reason });
+    }
 
     const snapshot = await this.runtimePolicy.getSnapshot();
     this.logger.log(
       `[ModelPolicy] runId=${run.id} chain=task-deliverable policyVersion=${snapshot.version}`,
     );
-    const model = await this.prisma.platformModel.findUnique({
-      where: { modelId },
-      select: { maxOutputTokens: true },
-    });
     const maxOutputTokens = this.modelPolicy.internalOutputTokens(
-      model,
+      null,
       snapshot,
       snapshot.values.PLANNER_MAX_OUTPUT_TOKENS,
     );
@@ -217,7 +224,7 @@ export class TaskDeliverableService {
       );
       lifecycle.assertActive();
       response = await lifecycle.wait(
-        fetchUpstream(`${baseURL.replace(/\/$/, '')}/chat/completions`, {
+        (modelFetch ?? fetchUpstream)(`${baseURL.replace(/\/$/, '')}/chat/completions`, {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${apiKey}`,

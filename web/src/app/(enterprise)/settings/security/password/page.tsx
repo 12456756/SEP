@@ -63,7 +63,7 @@ export default function SecurityPasswordPage() {
               </div>
             ))}
             {changePassword.error && <p role="alert" className="text-sm text-danger">{error}</p>}
-            {success && <p role="status" className="flex items-center gap-1 text-sm text-success"><Check className="h-4 w-4" />密码已修改，其他设备已退出</p>}
+            {success && <p role="status" className={`flex items-center gap-1 text-sm ${changePassword.data?.computePasswordSync === 'PENDING' ? 'text-amber-700 dark:text-amber-400' : 'text-success'}`}><Check className="h-4 w-4 shrink-0" />{changePassword.data?.message ?? '密码已修改，其他设备已退出'}</p>}
             <Button type="submit" disabled={changePassword.isPending}>
               {changePassword.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               保存新密码

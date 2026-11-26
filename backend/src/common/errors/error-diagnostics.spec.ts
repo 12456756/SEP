@@ -12,6 +12,14 @@ describe('error diagnostic preservation', () => {
       cause: { name: 'Error', message: 'provider returned malformed JSON' } });
   });
 
+  it('redacts bcrypt material in text and fields while retaining registration failure diagnostics', () => {
+    const passwordHash = '$2b$10$' + 'a'.repeat(53);
+    const result = sanitizeError({ code: 'INVALID_PASSWORD_HASH', password_hash: passwordHash, encryptedPasswordHash: 'enc:v1:test',
+      message: `Password rejected ${passwordHash}`, request_id: 'registration-request' });
+    expect(result).toEqual({ code: 'INVALID_PASSWORD_HASH', password_hash: '[REDACTED]', encryptedPasswordHash: '[REDACTED]',
+      message: 'Password rejected [REDACTED]', request_id: 'registration-request' });
+  });
+
   it('redacts repeated credentials and private endpoints while retaining their cause', () => {
     expect(sanitizeError({ message: 'Configuration failed opaque-key at http://10.0.0.4:11434', apiKey: 'opaque-key',
       code: 'CONFIG_READ_FAILED' })).toEqual({ message: 'Configuration failed [REDACTED] at [REDACTED]',

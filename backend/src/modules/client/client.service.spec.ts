@@ -53,7 +53,7 @@ describe('ClientService', () => {
     allowanceQuery = { getOne: jest.fn() };
     personalWallet = { getView: jest.fn() };
     skillVersions = { resolveEffectiveVersion: jest.fn().mockResolvedValue(null) };
-    modelPolicy = { resolvePolicy: jest.fn().mockResolvedValue({ allowedModels: ['gpt-4o-mini'] }) };
+    modelPolicy = { resolvePolicy: jest.fn().mockResolvedValue({ allowedModels: ['gpt-4o-mini'], defaultModel: 'gpt-4o-mini' }) };
     mediaConfig = { getRuntimeMedia: jest.fn().mockResolvedValue({ protocolVersion: 1, executionAvailable: false, tools: [], profiles: [], defaultProfileId: null }), getRuntimeMediaV2: jest.fn().mockResolvedValue({ protocolVersion: 2, executionAvailable: false, tools: [], profiles: [], defaultProfileId: null }), getRuntimeMediaV3: jest.fn().mockResolvedValue({ protocolVersion: 3, executionMode: 'disabled', executionAvailable: false, tools: [], profiles: [], defaultProfileId: null }) };
     videoConfig = { getRuntimeVideo: jest.fn().mockResolvedValue({ protocolVersion: 1, executionAvailable: false, tools: [], profiles: [], defaultProfileId: null }), getRuntimeVideoV2: jest.fn().mockResolvedValue({ protocolVersion: 2, executionAvailable: false, tools: [], profiles: [], defaultProfileId: null }), getRuntimeVideoV3: jest.fn().mockResolvedValue({ protocolVersion: 3, executionMode: 'disabled', executionAvailable: false, tools: [], profiles: [], defaultProfileId: null }) };
     skillArtifacts = { describe: jest.fn().mockResolvedValue(artifactFixtures[0].artifact) };
@@ -376,7 +376,7 @@ describe('ClientService', () => {
         code: 'P2002', clientVersion: '6', meta: { target: ['enterpriseId'] },
       }));
     const realPolicy = new GatewayModelPolicyService(
-      new EnterpriseModelConfigService(prisma, {} as EnterpriseContextService),
+      new EnterpriseModelConfigService(prisma, {} as EnterpriseContextService, { chatModels: () => prisma.platformModel.findMany() } as any),
       prisma,
       new ConfigService(),
     );
@@ -420,6 +420,22 @@ describe('ClientService', () => {
     expect(mediaConfig.getRuntimeMediaV3).toHaveBeenCalledWith('ent-1', expect.objectContaining({ enabledProfileIds: [] }));
     expect(prisma.enterpriseModelConfig.findUnique).toHaveBeenCalledWith({ where: { enterpriseId: 'ent-1' }, select: { allowedChatModels: true, mediaPolicy: true } });
     expect(mediaConfig.getRuntimeMediaV2).not.toHaveBeenCalled();
+  });
+
+  it('advertises the enterprise policy models and default without reading the retired model table', async () => {
+    prisma.subscription.findFirst.mockResolvedValue({
+      id: 'sub-1', templateVersion: '1', config: null,
+      employee: { id: 'emp-1', name: 'Employee', version: '1', modelId: 'old-template', bindings: [] },
+    });
+    prisma.enterpriseModelConfig.findUnique.mockResolvedValue(null);
+    prisma.platformModel.findMany.mockRejectedValue(new Error('retired catalog must not be queried'));
+    modelPolicy.resolvePolicy.mockResolvedValue({ allowedModels: ['enterprise-only'], defaultModel: 'enterprise-only' });
+    const runtime = await service.getRuntime('user-1', 'sub-1');
+    expect(runtime.runtime).toMatchObject({ modelId: 'enterprise-only', allowedModels: ['enterprise-only'] });
+    expect(modelPolicy.resolvePolicy).toHaveBeenCalledWith({
+      sub: 'user-1', enterpriseId: 'ent-1', memberId: 'member-1', subscriptionId: 'sub-1',
+    });
+    expect(prisma.platformModel.findMany).not.toHaveBeenCalled();
   });
 
   it('uses the shared enterprise resolver for runtime and omits skills without an approved version', async () => {
@@ -499,6 +515,7 @@ describe('ClientService', () => {
         },
       });
       prisma.platformModel.findMany.mockResolvedValue([{ modelId: 'mock-chat-model' }]);
+      modelPolicy.resolvePolicy.mockResolvedValue({ allowedModels: ['mock-chat-model'], defaultModel: 'mock-chat-model' });
       prisma.enterpriseModelConfig.findUnique.mockResolvedValue({ allowedChatModels: ['mock-chat-model'] });
       skillVersions.resolveEffectiveVersion.mockImplementation(async (_subscriptionId, capabilityId) =>
         capabilityId === approvedVersion.capabilityId ? approvedVersion : null);

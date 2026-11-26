@@ -1,3 +1,4 @@
+import { enterpriseConnectionStub } from '../../../test/stubs/enterprise-connection.stub';
 import {
   BadGatewayException,
   ConflictException,
@@ -74,6 +75,8 @@ describe('CapabilityInsightService SKILL write closure', () => {
     runtimePolicy as never,
     admission as never,
     new GatewayModelPolicyService({} as never, {} as never, {} as never),
+    enterpriseConnectionStub('https://relay.example/v1', 'settings-key') as never,
+    { checkBalanceBeforeConversation: async () => ({ allowed: true }) } as never,
   );
 
   beforeEach(() => {
@@ -333,7 +336,7 @@ describe('CapabilityInsightService SKILL write closure', () => {
       const request = JSON.parse(upstream.mock.calls[0][1].body);
       expect(request).toMatchObject({
         model: 'planner-test',
-        max_tokens: 1400,
+        max_tokens: 3000,
       });
       expect(runtimePolicy.getSnapshot).toHaveBeenCalledTimes(1);
       expect(admission.acquire).toHaveBeenCalledTimes(1);
@@ -345,12 +348,13 @@ describe('CapabilityInsightService SKILL write closure', () => {
         { enterpriseId: ctx.enterpriseId, memberId: ctx.memberId },
         bounded,
         request,
-        1400,
+        3000,
       );
       expect(admission.reserve.mock.invocationCallOrder[0]).toBeLessThan(
         upstream.mock.invocationCallOrder[0],
       );
       expect(release).toHaveBeenCalledTimes(1);
+      expect(prisma.platformModel.findUnique).not.toHaveBeenCalled();
       expect(Logger.prototype.log).toHaveBeenCalledWith(
         expect.stringMatching(
           /^\[ModelPolicy\] requestId=[\da-f-]+ chain=capability-insight policyVersion=19$/i,

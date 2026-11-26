@@ -28,6 +28,7 @@ describe("ComputeCreditService —— 赠送额度", () => {
     personalBalance = new Decimal(0);
 
     prisma = {
+      enterpriseMember: { findUnique: jest.fn().mockResolvedValue({ paymentMode: 'AUTO' }) },
       subscriptionCredit: {
         findUnique: jest.fn().mockResolvedValue(null),
         create: jest.fn((a: any) =>

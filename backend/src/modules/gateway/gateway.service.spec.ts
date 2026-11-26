@@ -1,6 +1,5 @@
 import { HttpException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { SETTING_KEYS } from 'shared';
 import { GatewayService } from './gateway.service';
 import { GatewayModelPolicyService } from './gateway-model-policy.service';
 import { policySnapshot } from './gateway-policy.test-fixtures';
@@ -15,34 +14,29 @@ const enterpriseClaims = {
 };
 
 describe('GatewayService.getSub2ApiConfig', () => {
-  it.each(['', null, undefined])('structures a missing API key %p without exposing configuration values', async (apiKey) => {
-    const getEffectiveValue = jest.fn().mockImplementation(async (key: string) => (
-      key === SETTING_KEYS.SUB2API_API_KEY ? apiKey : 'private-config-value'
-    ));
+  it('requires enterprise context even when an administrator key is configured', async () => {
+    const getEffectiveValue = jest.fn().mockResolvedValue('private-config-value');
     const service = new GatewayService(
       {} as never, new ConfigService(), { getEffectiveValue } as never, {} as never, {} as never,
     );
     const error = await service.getSub2ApiConfig().catch((failure) => failure);
     expect(error).toBeInstanceOf(HttpException);
-    expect(error.getStatus()).toBe(400);
-    expect(error.message).toBe('sub2api API Key 未配置');
-    expect(error.getResponse()).toEqual({
-      message: 'sub2api API Key 未配置',
-      error: {
-        message: 'sub2api API Key 未配置', code: 'GATEWAY_CONFIG_INVALID',
-        source: 'platform', param: null, type: 'server_error',
-      },
-    });
+    expect(error.getStatus()).toBe(503);
+    expect(error.getResponse()).toMatchObject({ code: 'COMPUTE_ENTERPRISE_CONTEXT_REQUIRED' });
+    expect(getEffectiveValue).not.toHaveBeenCalled();
     expect(JSON.stringify(error.getResponse())).not.toContain('private-config-value');
   });
 
-  it('propagates unknown configuration lookup errors unchanged', async () => {
-    const failure = new Error('unexpected configuration lookup failure');
+  it('propagates enterprise failures without reading an administrator credential', async () => {
+    const failure = new Error('enterprise connection unavailable');
+    const getEffectiveValue = jest.fn().mockResolvedValue('administrator-key');
+    const connections = { chatProvider: jest.fn().mockRejectedValue(failure) };
     const service = new GatewayService(
       {} as never, new ConfigService(),
-      { getEffectiveValue: jest.fn().mockRejectedValue(failure) } as never, {} as never, {} as never,
+      { getEffectiveValue } as never, {} as never, {} as never, connections as never,
     );
-    await expect(service.getSub2ApiConfig()).rejects.toBe(failure);
+    await expect(service.getSub2ApiConfig({ enterpriseId: 'enterprise-1' })).rejects.toBe(failure);
+    expect(getEffectiveValue).not.toHaveBeenCalled();
   });
 });
 
@@ -188,7 +182,7 @@ describe('GatewayService.forwardChatCompletion', () => {
 
 describe('GatewayService.prepareRequest snapshot normalization', () => {
   const request = { model: 'test-model', messages: [{ role: 'user' as const, content: 'hello' }] };
-  const snapshot = policySnapshot({ GATEWAY_DEFAULT_MAX_TOKENS: 4096 });
+  const snapshot = policySnapshot({ GATEWAY_DEFAULT_MAX_TOKENS: 4096, MODEL_MAX_OUTPUT_TOKENS: 32768 });
   let findFirst: jest.Mock;
   let service: GatewayService;
 
@@ -203,27 +197,24 @@ describe('GatewayService.prepareRequest snapshot normalization', () => {
 
   afterEach(() => jest.restoreAllMocks());
 
-  it('normalizes to the model cap before returning the exact serialized request', async () => {
+  it('normalizes to the snapshot default without reading retired model metadata', async () => {
     const result = await service.prepareRequest(enterpriseClaims, request, snapshot);
-    expect(result.request).toEqual({ ...request, max_tokens: 1000 });
+    expect(result.request).toEqual({ ...request, max_tokens: 4096 });
     expect(result.inputBytes).toBe(Buffer.byteLength(JSON.stringify(result.request)));
-    expect(findFirst).toHaveBeenCalledWith({
-      where: { modelId: request.model, enabled: true, isStale: false },
-      select: { maxOutputTokens: true, supportedFeatures: true },
-    });
+    expect(findFirst).not.toHaveBeenCalled();
   });
 
-  it('rejects model overflow and invalid metadata before admission can run', async () => {
-    await expect(service.prepareRequest(enterpriseClaims, { ...request, max_tokens: 1001 }, snapshot)).rejects.toMatchObject({
-      status: 400, response: { error: { code: 'MODEL_OUTPUT_LIMIT_EXCEEDED', limit: 1000, policyVersion: 7 } },
+  it('enforces the platform ceiling and ignores invalid retired metadata', async () => {
+    await expect(service.prepareRequest(enterpriseClaims, { ...request, max_tokens: 32769 }, snapshot)).rejects.toMatchObject({
+      status: 400, response: { error: { code: 'MODEL_OUTPUT_LIMIT_EXCEEDED', limit: 32768, policyVersion: 7 } },
     });
     findFirst.mockResolvedValue({ maxOutputTokens: -1, supportedFeatures: null });
-    await expect(service.prepareRequest(enterpriseClaims, request, snapshot)).rejects.toMatchObject({ status: 400 });
+    await expect(service.prepareRequest(enterpriseClaims, request, snapshot)).resolves.toMatchObject({ request: { max_tokens: 4096 } });
   });
 
-  it('preserves streaming capability checks with snapshot normalization enabled', async () => {
+  it('leaves streaming capability checks to upstream', async () => {
     findFirst.mockResolvedValue({ maxOutputTokens: 1000, supportedFeatures: { streaming: false } });
-    await expect(service.prepareRequest(enterpriseClaims, { ...request, stream: true }, snapshot)).rejects.toThrow('streaming');
+    await expect(service.prepareRequest(enterpriseClaims, { ...request, stream: true }, snapshot)).resolves.toMatchObject({ request: { stream: true } });
   });
 });
 
@@ -278,6 +269,7 @@ describe('GatewayService.compute credit integration', () => {
       subscriptionId: 'subscription-1',
       memberId: 'member-1',
       employeeId: 'employee-1',
+      paymentMode: 'AUTO',
     });
     expect(creditService.checkBalanceBeforeConversation).toHaveBeenCalledWith(
       'enterprise-1',

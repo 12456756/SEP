@@ -322,9 +322,34 @@ describe("ComputeCreditService.chargeUsage", () => {
   it('未知中转倍率不扣费，也不落入倍率 1', async () => {
     (global.fetch as jest.Mock).mockRejectedValue(new Error('unavailable'));
 
-    await expect(charge()).rejects.toMatchObject({ status: 502, response: { stage: 'transport', message: 'unavailable' } });
+    await expect(charge()).rejects.toMatchObject({
+      status: 502,
+      response: { origin: 'sep', stage: 'transport', message: 'unavailable' },
+    });
     expect(prisma.computeUsageRecord.create).not.toHaveBeenCalled();
     expect(wallet.consumeComputeUpTo).not.toHaveBeenCalled();
+    expect(personalWallet.consumeUpTo).not.toHaveBeenCalled();
+    expect(prisma.subscriptionCredit.updateMany).not.toHaveBeenCalled();
+    expect(allowance.commitCharge).not.toHaveBeenCalled();
+  });
+
+  it.each([429, 503])('中转倍率接口返回 %i 时保留状态及原因，不扣费', async (status) => {
+    const body = { error: { code: 'BILLING_UNAVAILABLE', message: 'Billing lookup unavailable' } };
+    (global.fetch as jest.Mock).mockResolvedValue(new Response(JSON.stringify(body), {
+      status,
+      headers: { 'x-request-id': 'billing-request-1' },
+    }));
+
+    await expect(charge()).rejects.toMatchObject({
+      status,
+      upstreamError: { status, body },
+      diagnosticHeaders: { 'x-request-id': 'billing-request-1' },
+    });
+    expect(prisma.computeUsageRecord.create).not.toHaveBeenCalled();
+    expect(wallet.consumeComputeUpTo).not.toHaveBeenCalled();
+    expect(personalWallet.consumeUpTo).not.toHaveBeenCalled();
+    expect(prisma.subscriptionCredit.updateMany).not.toHaveBeenCalled();
+    expect(allowance.commitCharge).not.toHaveBeenCalled();
   });
 
   it('关闭企业拒绝新扣费，并按账号、企业的顺序锁定', async () => {

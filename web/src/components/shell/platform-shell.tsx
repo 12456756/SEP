@@ -53,6 +53,7 @@ const NAV_GROUPS: NavGroup[] = [
       // 与「企业」并列而不是合并：企业页是租户名册（一行一家），
       // 这页是全平台资金账本（跨企业筛选 + 导出 + 平台合计），两个altitude
       { href: '/admin/compute', label: '资金流水', icon: Wallet },
+      { href: '/admin/compute-integrations', label: '算力连接', icon: Settings },
     ],
   },
   {

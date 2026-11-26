@@ -158,6 +158,7 @@ const CRUMBS: CrumbMap = {
   'api-keys': 'API 密钥',
   integrations: '集成与 Webhook',
   models: '模型偏好',
+  'compute-connection': '算力连接',
   // 其他非导航路由
   chat: '对话',
   contributions: nav.contributions,
