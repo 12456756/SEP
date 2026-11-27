@@ -21,6 +21,12 @@ maintenance=false
 replaced=false
 finished=false
 public_open=false
+release_phase=preflight
+
+set_release_phase() {
+  release_phase=$1
+  info "Release phase: $release_phase"
+}
 
 release_value() {
   local key=$1 fallback=$2 value
@@ -78,6 +84,10 @@ queue_idle() {
 }
 
 preflight() {
+  [[ ! -e "$STATE_DIR/isolated-release" && ! -e "$STATE_DIR/active-blue-green" ]] || {
+    error 'An isolated-data release owns this site; use blue-green.py instead of replacing green containers'
+    return 1
+  }
   [[ "$(id -u)" == 0 && "$(findmnt -n -o SOURCE /www)" == /dev/sdb1 ]]
   docker network inspect "$SHARED_NETWORK" >/dev/null
   ensure_builder_image "$(release_value SEP_MIGRATOR_IMAGE sep-migrator:42fc2644a38b)"
@@ -99,9 +109,9 @@ baseline = read(baseline_root, 'package.json')
 current['scripts'].pop('dev', None)
 baseline['scripts'].pop('dev', None)
 if current != baseline:
-    sys.exit(1)
+    sys.exit('Root package.json differs from the supported build baseline. Review the release toolchain before deployment; the running application is unchanged.')
 if (release_root / 'web/package.json').read_bytes() != (baseline_root / 'web/package.json').read_bytes():
-    sys.exit(1)
+    sys.exit('web/package.json differs from the supported build baseline. The Web build reuses installed dependencies; update that build process before deployment. The running application is unchanged.')
 PY
   grep -Fq 'sep.longdaoec.com' "$CADDYFILE"
   grep -Fq 'reverse_proxy sep-green-web:3000' "$CADDYFILE"
@@ -144,8 +154,11 @@ rollback() {
   local name
   trap - ERR INT TERM
   set +e
+  if [[ "$maintenance" != true ]]; then
+    error "Release failed before maintenance; running application retained"
+    return 1
+  fi
   error "Release failed; restoring the previous application without reverting data"
-  if [[ "$maintenance" != true ]]; then return 1; fi
   enable_maintenance || { error 'Cannot confirm maintenance; application retained'; return 1; }
   if [[ "$replaced" == true ]]; then
     if [[ "$public_open" == true && "$(container_state sep-green-backend)" == running ]]; then
@@ -176,6 +189,7 @@ deploy() {
   mkdir -p "$STATE_DIR"
   exec 9>"$LOCK_FILE"
   flock -n 9 || { error 'Another release is running'; return 1; }
+  set_release_phase preflight
   preflight
   OLD_BACKEND=$(docker inspect sep-green-backend --format '{{.Config.Image}}')
   OLD_WEB=$(docker inspect sep-green-web --format '{{.Config.Image}}')
@@ -186,7 +200,9 @@ deploy() {
   fi
   OLD_BACKEND_ID=$(docker inspect sep-green-backend --format '{{.Image}}')
   OLD_WEB_ID=$(docker inspect sep-green-web --format '{{.Image}}')
+  set_release_phase build-images
   build_images
+  set_release_phase prepare-backup
   mkdir -p "$BACKUP_DIR"
   cp "$DEPLOY_DIR/compose.yaml" "$DEPLOY_DIR/Caddyfile" "$DEPLOY_DIR/backend.env" "$DEPLOY_DIR/.env" "$BACKUP_DIR/"
   [[ ! -f "$DEPLOY_DIR/release.env" ]] || cp "$DEPLOY_DIR/release.env" "$BACKUP_DIR/"
@@ -197,6 +213,7 @@ deploy() {
   cp "$RELEASE_SOURCE/deploy/standalone/Caddyfile" "$BACKUP_DIR/Caddyfile.next"
   cat "$BACKUP_DIR/other-sites.caddy" >> "$BACKUP_DIR/Caddyfile.next"
   # Preserve the inode because Caddy uses a single-file bind mount.
+  set_release_phase maintenance-and-drain
   maintenance=true
   enable_maintenance
   drain_gateway sep-green-backend
@@ -204,6 +221,7 @@ deploy() {
   signal_and_wait_stopped sep-green-backend
   signal_and_wait_stopped sep-green-web
   queue_idle
+  set_release_phase backup-data
   docker exec sep-postgres pg_dump -U sep_admin -d sep_prod -Fc > "$BACKUP_DIR/sep_prod.dump"
   docker exec -i sep-postgres pg_restore -l < "$BACKUP_DIR/sep_prod.dump" > "$BACKUP_DIR/pg-restore-list.txt"
   tar -C /www/sep -czf "$BACKUP_DIR/business-files.tar.gz" uploads packages knowledge
@@ -211,14 +229,17 @@ deploy() {
   docker cp sep-redis:/tmp/sep-release.rdb "$BACKUP_DIR/redis.rdb"
   docker exec sep-redis rm /tmp/sep-release.rdb
   sha256sum "$BACKUP_DIR/sep_prod.dump" "$BACKUP_DIR/business-files.tar.gz" "$BACKUP_DIR/redis.rdb" > "$BACKUP_DIR/SHA256SUMS"
+  set_release_phase migrate-database
   cp "$RELEASE_SOURCE/deploy/standalone/compose.yaml" "$DEPLOY_DIR/compose.yaml"
   compose --profile tools run --rm --no-deps -T migrator
   compose --profile tools run --rm --no-deps -T migrator pnpm --filter backend exec prisma migrate status
   docker exec -i sep-postgres psql -X -U sep_admin -d sep_prod -v ON_ERROR_STOP=1 --single-transaction -c 'SET TRANSACTION READ ONLY' -f - < "$RELEASE_SOURCE/deploy/production/postgres/verify-knowledge-schema.sql"
+  set_release_phase replace-application
   replaced=true
   compose up -d --no-deps --force-recreate backend web
   # Recreated containers already have the Compose restart policy.
   rm -f "$STATE_DIR/sep-green-backend.restart-policy" "$STATE_DIR/sep-green-web.restart-policy"
+  set_release_phase verify-application
   wait_service_healthy sep-green-backend
   wait_service_healthy sep-green-web
   check_service_readiness green
@@ -227,10 +248,12 @@ deploy() {
     check_service_readiness green
     sleep 5
   done
+  set_release_phase reopen-traffic
   cp "$BACKUP_DIR/Caddyfile.next" "$CADDYFILE"
   public_open=true
   reload_caddy
   curl --noproxy '*' --resolve sep.longdaoec.com:443:127.0.0.1 --fail --max-time 20 -sS https://sep.longdaoec.com/api/health/ready > "$BACKUP_DIR/readiness.json"
+  set_release_phase record-release
   import_enabled=$(release_value SKILL_IMPORT_ENABLED false)
   import_instance=$(release_value SKILL_IMPORT_INSTANCE_ID '')
   import_min_version=$(release_value SKILL_IMPORT_MIN_CLIENT_VERSION 1.0.0)
@@ -245,7 +268,7 @@ deploy() {
 }
 
 if [[ "${SEP_STANDALONE_LIBRARY:-false}" != true ]]; then
-  trap 'if (( BASH_SUBSHELL == 0 )) && [[ "$finished" != true ]]; then rollback; fi; exit 1' ERR INT TERM
+  trap 'if (( BASH_SUBSHELL == 0 )) && [[ "$finished" != true ]]; then error "Release failed during phase: $release_phase"; rollback; fi; exit 1' ERR INT TERM
   case "${1:-check}" in
     check) preflight ;;
     deploy) deploy ;;

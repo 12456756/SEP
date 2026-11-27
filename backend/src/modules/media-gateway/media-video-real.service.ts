@@ -5,14 +5,15 @@ import { ConfigService } from '@nestjs/config';
 import { Decimal } from '@prisma/client/runtime/library';
 import { createHash, randomUUID } from 'node:crypto';
 import { MAX_MEDIA_REFERENCE_TOTAL_BYTES, MediaVideoCapabilitiesSchema, MediaVideoReferenceUploadQuerySchema, MediaJsonValueSchema } from 'shared';
-import { MediaUpstreamException, mediaFailure, retainMediaFailure } from '../../common/errors/media-upstream.exception';
+import { MediaUpstreamException, mediaFailure, mediaOperationException, retainMediaFailure } from '../../common/errors/media-upstream.exception';
+import { UpstreamHttpException } from '../../common/errors/upstream-http.exception';
 import { exceptionDetails } from '../../common/errors/error-diagnostics';
 import { z } from 'zod';
 import { isVideoDurationInRange, MediaVideoDurationRangeSchema, VIDEO_REFERENCE_MAX_BYTES } from 'shared';
 import type { MediaVideoGatewayQuoteRequest, MediaVideoGatewayQuoteRequestV3,
   MediaVideoGatewayRequest } from 'shared';
 import { MediaVideoAuthorizationSchema, MediaVideoRealProfilesSchema, MediaVideoRealQuoteRequestSchema, MediaVideoRealReceiptSchema, MediaVideoRealRequestSchema } from 'shared';
-import type { MediaVideoRealQuoteRequest, MediaVideoRealReceipt, MediaVideoRealRequest } from 'shared';
+import type { MediaVideoRealQuoteRequest, MediaVideoRealReceipt, MediaVideoRealRequest, MediaUpstreamError } from 'shared';
 import type { MediaVideoReferenceUploadQuery } from 'shared';
 import { PrismaService } from '../../prisma/prisma.service';
 import { SettingService } from '../setting/setting.service';
@@ -28,9 +29,10 @@ import type { Sub2apiVideoConnection } from './sub2api-video.adapter';
 import { VideoFileCacheService } from './video-file-cache.service';
 import { videoGatewayError as fail, videoStorageUnavailable } from './media-video-gateway.store';
 import type { InspectedVideoReference } from './video-reference-upload.service';
-import { closedSubmission, executionEvidence, executionFailure, mediaClientActions, mergeExecutionEvidence, recoverableTaskId, VIDEO_SUBMISSION_BUDGET_MS, MEDIA_SAVE_GRACE_MS,
+import { closedSubmission, executionEvidence, executionFailure, mediaClientActions, mediaOperationFailure, mergeExecutionEvidence, recoverableTaskId, VIDEO_SUBMISSION_BUDGET_MS, MEDIA_SAVE_GRACE_MS,
   type LongdaoMediaResult } from './longdao-media-contract';
 import { MediaVideoRecoveryLeaseService, type VideoRecoveryLease } from './media-video-recovery-lease.service';
+import { hasFailedMediaQuery, mediaPollAfter, updateMediaWait, withMediaWait } from './media-upstream-retry';
 
 type VideoRecoveryOwner = Pick<ClientEmploymentClaims, 'enterpriseId' | 'subscriptionId' | 'memberId' | 'sub'>;
 
@@ -150,7 +152,7 @@ export class MediaVideoRealService {
     await this.requireProfile(claims, input, true, 'video-quote');
     return this.store.saveQuote(this.scope(claims), {
       adapter: VIDEO_REAL_ADAPTER, consumedByClientRequestId: null,
-      value: { mock: false, expiresAt, semanticSha256, pricingStatus: 'quoted', amountCny, amountUsd: price.amount_usd,
+      value: { mock: false, expiresAt, semanticSha256, pricingStatus: 'quoted', amountCny, amountUsd: null,
         pricingVersion: price.pricing_version, usdToCnyRate: rate, billingStatus: 'NOT_RESERVED', funding,
         ...('protocolVersion' in input ? { protocolVersion: 3 as const, semanticHashVersion: 3 as const,
           specRevision: input.specRevision, effectiveSpec: input.requestedSpec,
@@ -163,11 +165,11 @@ export class MediaVideoRealService {
             videoReferences: videos.map(r => ({ ...r.value, upstreamReferenceId: r.upstreamReferenceId })) } : {}),
           requestedSpec: input.requestedSpec, effectiveSpec: input.requestedSpec,
           parameterSources: input.parameterSources,
-          connectionFingerprint: connection.fingerprint, amountCny, amountUsd: price.amount_usd,
+          connectionFingerprint: connection.fingerprint, amountCny, amountUsd: null,
           pricingVersion: price.pricing_version, usdToCnyRate: rate }
         : { ...(compute ? { compute } : {}), adapter: VIDEO_REAL_ADAPTER, profileId: input.profileId, configVersion: input.configVersion,
           modelId: 'minimax-h3', operation: input.operation, parameters: (input as MediaVideoGatewayQuoteRequest).parameters, connectionFingerprint: connection.fingerprint,
-          amountCny, amountUsd: price.amount_usd, pricingVersion: price.pricing_version, usdToCnyRate: rate },
+          amountCny, amountUsd: null, pricingVersion: price.pricing_version, usdToCnyRate: rate },
       referenceIds: allIds, referenceHashes: allHashes,
     });
   }
@@ -220,7 +222,7 @@ export class MediaVideoRealService {
           semanticHashVersion: 3 as const, effectiveSpec: input.requestedSpec, deliveryStatus: 'unknown' as const,
           billingDimensions: { model: profile.modelId, operation: input.operation, ...this.billingDimensions(input) } } : {}),
         receiptVersion: 2, fileStatus: 'pending', execution: { requestId, taskId: null, submissionStatus: 'submitting',
-          generationStatus: null, isFinal: null, observedAt: null, statusSource: null, billing: { status: 'pending', actualCostUsd: null } },
+          generationStatus: null, isFinal: null, observedAt: null, statusSource: null, billing: { status: 'pending', actualCostCny: null } },
         recovery: { canQuery: true, canCancel: false, canDownload: false } },
     });
     this.assertReplay(input, claim.record);
@@ -249,7 +251,7 @@ export class MediaVideoRealService {
       if (notReserved && record.receipt.execution) {
         await this.computeMedia.closeUnsent(claims.enterpriseId, 'video', record.receipt.receiptId);
         record.receipt.execution.submissionStatus = 'not_submitted'; record.receipt.fileStatus = 'unavailable';
-        record.receipt.execution.billing = { status: 'not_charged', actualCostUsd: '0' };
+        record.receipt.execution.billing = { status: 'not_charged', actualCostCny: '0.000000' };
       }
       const failedSave = await this.store.save(this.normalize(record));
       record = failedSave.record;
@@ -274,7 +276,7 @@ export class MediaVideoRealService {
       record.receipt.status = 'FAILED'; record.receipt.errorCode = 'CONFIG_CHANGED';
       if (record.receipt.execution) {
         record.receipt.execution.submissionStatus = 'not_submitted'; record.receipt.execution.operationError = mediaFailure(error);
-        record.receipt.execution.billing = { status: 'not_charged', actualCostUsd: '0' };
+        record.receipt.execution.billing = { status: 'not_charged', actualCostCny: '0.000000' };
         record.receipt.fileStatus = 'unavailable';
       }
       saved = await this.store.save(this.normalize(record));
@@ -288,22 +290,25 @@ export class MediaVideoRealService {
     saved = await this.store.save(this.normalize(record));
     if (!saved.updated) return this.snapshot(saved.record);
     record = saved.record;
+    let operationFailure: MediaUpstreamError | undefined;
     try {
       if (record.configuration.compute) await this.computeMedia.markDispatch(claims.enterpriseId, 'video', record.receipt.receiptId);
       if (record.configuration.contractVersion === 2) {
         const result = await this.adapter.submitContract(connection, generationInput, profile.modelId, bytes, requestId,
           record.configuration.pricingVersion, ...(videos.length ? [videos.map(r => r.upstreamReferenceId)] : []));
-        return this.snapshot(await this.applyContract(record, result));
+        operationFailure = mediaOperationFailure(result);
+        record = await this.applyContract(record, result);
+      } else {
+        const result = await this.adapter.submit(connection, generationInput, profile.modelId, bytes, clientRequestId,
+          record.configuration.pricingVersion, ...(videos.length ? [videos.map(r => r.upstreamReferenceId)] : []));
+        record.configuration.upstreamTaskId = result.taskId;
+        record.configuration.upstreamRequestId = result.requestId;
+        record.configuration.dispatchState = 'ACCEPTED';
+        record.receipt.status = result.status === 'queued' ? 'QUEUED' : result.status === 'cancelled' ? 'CANCELLED' : result.status === 'failed' ? 'FAILED' : 'RUNNING';
+        record.receipt.errorCode = ['FAILED', 'CANCELLED'].includes(record.receipt.status) ? 'UPSTREAM_FAILED' : null;
+        if (record.receipt.errorCode && result.error !== undefined) record.receipt.upstreamError = { status: 200, body: { error: result.error } };
+        record = await this.saveDispatch(record);
       }
-      const result = await this.adapter.submit(connection, generationInput, profile.modelId, bytes, clientRequestId,
-        record.configuration.pricingVersion, ...(videos.length ? [videos.map(r => r.upstreamReferenceId)] : []));
-      record.configuration.upstreamTaskId = result.taskId;
-      record.configuration.upstreamRequestId = result.requestId;
-      record.configuration.dispatchState = 'ACCEPTED';
-      record.receipt.status = result.status === 'queued' ? 'QUEUED' : result.status === 'cancelled' ? 'CANCELLED' : result.status === 'failed' ? 'FAILED' : 'RUNNING';
-      record.receipt.errorCode = ['FAILED', 'CANCELLED'].includes(record.receipt.status) ? 'UPSTREAM_FAILED' : null;
-      if (record.receipt.errorCode && result.error !== undefined) record.receipt.upstreamError = { status: 200, body: { error: result.error } };
-      record = await this.saveDispatch(record);
     } catch (error) {
       record.receipt.upstreamError = error instanceof VideoDispatchError && error.upstreamError
         ? error.upstreamError : mediaFailure(error);
@@ -313,7 +318,7 @@ export class MediaVideoRealService {
         record.receipt.status = 'FAILED'; record.receipt.errorCode = 'UPSTREAM_FAILED';
         record = await this.saveDispatch(record);
         await this.releaseUnsubmitted(record);
-        if (error.upstreamError) throw new MediaUpstreamException(error.upstreamError);
+        if (error.upstreamError) throw mediaOperationException(error.upstreamError, record.receipt);
         return this.snapshot((await this.store.findRequest(scope, record.receipt.receiptId)) ?? record);
       }
       if (record.configuration.contractVersion !== 2) record.configuration.upstreamRequestId = error instanceof VideoDispatchError ? error.requestId : record.configuration.upstreamRequestId;
@@ -329,9 +334,12 @@ export class MediaVideoRealService {
         record.configuration.upstreamTaskId ??= record.receipt.execution.taskId;
         record = (await this.store.save(record)).record;
       }
-      if (record.configuration.contractVersion !== 2 && error instanceof VideoDispatchError && error.upstreamError) throw new MediaUpstreamException(error.upstreamError);
+      if (error instanceof UpstreamHttpException || error instanceof VideoDispatchError && error.upstreamError) {
+        throw mediaOperationException(record.receipt.upstreamError!, record.receipt);
+      }
       return this.snapshot(record);
     }
+    if (operationFailure) throw mediaOperationException(operationFailure, record.receipt);
     return this.snapshot(record);
   }
 
@@ -372,18 +380,23 @@ export class MediaVideoRealService {
   }
 
   async cancel(claims: ClientEmploymentClaims, receiptId: string): Promise<MediaVideoRealReceipt> {
-    const record = await this.owned(claims, receiptId);
+    let record = await this.owned(claims, receiptId);
     if (record.configuration.contractVersion !== 2 || !record.configuration.cancelSupported || !record.configuration.upstreamTaskId) fail(409, 'CANCEL_UNSUPPORTED', '原视频不支持取消或尚无可取消的任务编号');
     if (record.receipt.execution?.isFinal || closedSubmission(record.receipt.execution!)) return this.snapshot(record);
     const connection = await this.frozenConnection(record.configuration.connectionFingerprint, record.configuration.compute, record.receipt.receiptId);
+    let operationFailure: MediaUpstreamError | undefined;
     try {
       const result = await this.adapter.cancelContract(connection, record.receipt.execution!.requestId, record.configuration.upstreamTaskId);
-      return this.snapshot(await this.applyContract(record, result));
+      operationFailure = mediaOperationFailure(result);
+      record = await this.applyContract(record, result);
     } catch (error) {
       record.receipt.execution!.operation = 'cancel';
       record.receipt.execution!.operationError = mediaFailure(error); record.receipt.upstreamError = mediaFailure(error);
-      return this.snapshot((await this.store.save(record)).record);
+      record = (await this.store.save(record)).record;
+      if (error instanceof UpstreamHttpException) operationFailure = mediaFailure(error);
     }
+    if (operationFailure) throw mediaOperationException(operationFailure, record.receipt);
+    return this.snapshot(record);
   }
 
   async recoverPending(scope: string, receiptId: string): Promise<void> {
@@ -403,9 +416,9 @@ export class MediaVideoRealService {
   private async recover(claims: VideoRecoveryOwner, initial: VideoRealRecord): Promise<VideoRealRecord> {
     const execution = initial.receipt.execution;
     const billingFinal = ['SETTLED', 'RELEASED', 'NOT_RESERVED'].includes(initial.receipt.billingStatus);
-    if (execution ? billingFinal && (initial.receipt.fileStatus === 'available' || initial.receipt.fileStatus === 'expired'
+    if (!hasFailedMediaQuery(initial.receipt) && (execution ? billingFinal && (initial.receipt.fileStatus === 'available' || initial.receipt.fileStatus === 'expired'
       || closedSubmission(execution) || ['failed', 'cancelled'].includes(execution.generationStatus!))
-      : ['SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(initial.receipt.status) && billingFinal) return initial;
+      : ['SUCCEEDED', 'PARTIAL_SUCCEEDED', 'FAILED', 'CANCELLED', 'RESULT_EXPIRED'].includes(initial.receipt.status) && billingFinal)) return initial;
     const id = initial.receipt.receiptId;
     const pending = this.recovering.get(id);
     if (pending) return pending;
@@ -516,20 +529,20 @@ export class MediaVideoRealService {
         record = (await this.store.save(this.normalize(record))).record;
       } catch (error) {
         // Query/download failure keeps the original task and frozen funds. Never POST again.
-        if (error instanceof HttpException && !(error instanceof MediaUpstreamException) && [401, 403].includes(error.getStatus())) throw error;
+        if (error instanceof HttpException && !(error instanceof UpstreamHttpException) && [401, 403].includes(error.getStatus())) throw error;
         const current = await this.store.findRequest(record.scope, record.receipt.receiptId);
         if (current && ['QUEUED', 'RUNNING', 'SUBMISSION_UNKNOWN'].includes(current.receipt.status)) {
           current.receipt.errorCode = downloading ? 'OUTPUT_FAILED' : 'UPSTREAM_FAILED';
           current.receipt.upstreamError = error instanceof MediaUpstreamException ? error.upstreamError : mediaFailure(error);
           record = (await this.store.save(this.normalize(current))).record;
         } else if (current) record = current;
-        if (error instanceof MediaUpstreamException) throw error;
+        if (error instanceof UpstreamHttpException) throw mediaOperationException(mediaFailure(error), record.receipt);
       }
     }
     return this.reconcile(record, connection);
   }
 
-  private async reconcile(initial: VideoRealRecord, connection: Sub2apiVideoConnection): Promise<VideoRealRecord> {
+  private async reconcile(initial: VideoRealRecord, _connection: Sub2apiVideoConnection): Promise<VideoRealRecord> {
     let record = structuredClone(initial);
     if (!['RESERVED', 'RECONCILING'].includes(record.receipt.billingStatus)) return record;
     try {
@@ -542,22 +555,7 @@ export class MediaVideoRealService {
           ? await this.billing.settleCompute(record.receipt.receiptId, fee.id, record.configuration.modelId) : 'RECONCILING';
         if (fee?.feeStatus === 'FINAL') record.receipt.actualCostCny = fee.grossCny.toFixed(6);
       } else if (record.configuration.upstreamRequestId) {
-        if (!(await this.store.hasUniqueUpstreamRequest(record))) fail(409, 'BILLING_PENDING', '原视频账单关联不唯一');
-        const usage = await this.adapter.usage(connection, record.configuration.upstreamRequestId);
-        const dimensions = this.configurationBillingDimensions(record.configuration);
-        if (usage.request_id !== record.configuration.upstreamRequestId || usage.status !== 'settled' ||
-          usage.model !== record.configuration.modelId || usage.actual_cost_usd === null || usage.video_count !== 1 ||
-          usage.duration_seconds !== dimensions.durationSeconds || usage.resolution !== dimensions.resolution) {
-          record.receipt.billingStatus = 'RECONCILING';
-        } else {
-          const actualUsd = new Decimal(usage.actual_cost_usd);
-          const actualCny = actualUsd.mul(record.configuration.usdToCnyRate).toDecimalPlaces(6, Decimal.ROUND_HALF_UP).toFixed(6);
-          const actualUsdText = actualUsd.toDecimalPlaces(6, Decimal.ROUND_HALF_UP).toFixed(6);
-          record.receipt.billingStatus = 'protocolVersion' in record.configuration
-            ? await this.billing.settleNegotiated(record.receipt.receiptId, actualCny, actualUsdText, usage.model, record.configuration.modelId)
-            : await this.billing.settleVideo(record.receipt.receiptId, actualCny, actualUsdText, usage.model);
-          record.receipt.actualCostCny = actualCny;
-        }
+        fail(409, 'BILLING_PENDING', '原视频任务缺少算力平台人民币费用单，需核对原任务；SEP 不再按美元换算结算');
       } else {
         record.receipt.billingStatus = 'RECONCILING';
       }
@@ -764,14 +762,16 @@ export class MediaVideoRealService {
       record.receipt.recovery.canQuery = record.receipt.clientActions.shouldPoll;
       record.receipt.recovery.canCancel = !!record.configuration.cancelSupported && active && !!record.configuration.upstreamTaskId && record.receipt.execution.isFinal !== true;
       record.receipt.pollAfterMs = record.receipt.clientActions.shouldPoll
-        ? record.receipt.clientActions.pollPurpose === 'billing' ? 15000 : 3000 : null;
+        ? mediaPollAfter(record.configuration, record.receipt.clientActions.pollPurpose === 'billing' ? 15000 : 3000) : null;
     }
     return record;
   }
 
-  private async applyContract(initial: VideoRealRecord, result: LongdaoMediaResult, assertHeld = () => {}): Promise<VideoRealRecord> {
+  private async applyContract(initial: VideoRealRecord, result: LongdaoMediaResult, assertHeld = () => {},
+    billing: 'settle' | 'defer' = 'settle'): Promise<VideoRealRecord> {
     assertHeld();
     let record = structuredClone(initial);
+    updateMediaWait(record.configuration, result.headers);
     const incoming = executionEvidence(result);
     if (incoming.submissionStatus === 'unobserved') {
       record.receipt.execution = mergeExecutionEvidence(record.receipt.execution!, incoming);
@@ -808,7 +808,7 @@ export class MediaVideoRealService {
     const saved = await this.store.save(this.normalize(record));
     record = saved.record;
     if (!saved.updated || record.revision !== revision + 1) return record;
-    return this.settleContractBilling(record, assertHeld);
+    return billing === 'defer' ? record : this.settleContractBilling(record, assertHeld);
   }
 
   private async settleContractBilling(record: VideoRealRecord, assertHeld = () => {}): Promise<VideoRealRecord> {
@@ -819,14 +819,12 @@ export class MediaVideoRealService {
         record.receipt.billingStatus = billingStatus; delete record.receipt.billingError;
         return (await this.store.save(this.normalize(record))).record;
       }
-      if (record.configuration.compute && execution.billing.status !== 'pending') {
+      if (record.configuration.compute) {
         assertHeld();
         const fee = await this.computeMedia.fee(record.enterpriseId, 'video', record.receipt.receiptId);
         record.receipt.billingStatus = fee?.feeStatus === 'FINAL'
           ? await this.billing.settleCompute(record.receipt.receiptId, fee.id, record.configuration.modelId) : 'RECONCILING';
-        if (record.receipt.billingStatus === 'SETTLED') record.receipt.actualCostCny = fee.grossCny!.toFixed(6);
-      } else if (record.configuration.compute) {
-        record.receipt.billingStatus = 'RECONCILING';
+        if (['SETTLED', 'RELEASED'].includes(record.receipt.billingStatus)) record.receipt.actualCostCny = fee.grossCny!.toFixed(6);
       } else if (execution.billing.status === 'not_charged') {
         assertHeld();
         await this.billing.release(record.receipt.receiptId); record.receipt.billingStatus = 'RELEASED';
@@ -841,23 +839,25 @@ export class MediaVideoRealService {
   private async recoverContract(claims: VideoRecoveryOwner, initial: VideoRealRecord, assertHeld = () => {}): Promise<VideoRealRecord> {
     assertHeld();
     let record = structuredClone(initial);
-    if (record.configuration.compute && record.configuration.dispatchState !== 'NOT_DISPATCHED' && record.receipt.execution!.billing.status === 'not_charged'
+    const retryQuery = hasFailedMediaQuery(record.receipt);
+    if (!retryQuery && record.configuration.compute && record.configuration.dispatchState !== 'NOT_DISPATCHED' && record.receipt.execution!.billing.status === 'not_charged'
       && (closedSubmission(record.receipt.execution!) || record.receipt.execution!.isFinal)) {
       return this.settleContractBilling(record, assertHeld);
     }
-    if ((closedSubmission(record.receipt.execution!) || ['failed', 'cancelled'].includes(record.receipt.execution!.generationStatus!)) && record.receipt.billingStatus === 'RELEASED' ||
-        ['available', 'expired'].includes(record.receipt.fileStatus!) && ['SETTLED', 'RELEASED'].includes(record.receipt.billingStatus)) return record;
+    if (!retryQuery && ((closedSubmission(record.receipt.execution!) || ['failed', 'cancelled'].includes(record.receipt.execution!.generationStatus!)) && record.receipt.billingStatus === 'RELEASED' ||
+        ['available', 'expired'].includes(record.receipt.fileStatus!) && ['SETTLED', 'RELEASED'].includes(record.receipt.billingStatus))) return record;
     if (record.configuration.dispatchState === 'NOT_DISPATCHED') {
       if (record.submissionDeadline.getTime() > Date.now()) return record;
       record.receipt.status = 'FAILED'; record.receipt.errorCode = 'BILLING_PENDING';
       record.receipt.execution!.submissionStatus = 'not_submitted';
-      record.receipt.fileStatus = 'unavailable'; record.receipt.execution!.billing = { status: 'not_charged', actualCostUsd: '0' };
+      record.receipt.fileStatus = 'unavailable'; record.receipt.execution!.billing = { status: 'not_charged', actualCostCny: '0.000000' };
       const closed = await this.store.save(this.normalize(record));
       if (closed.updated) await this.releaseUnsubmitted(closed.record);
       return (await this.store.findRequest(record.scope, record.receipt.receiptId)) ?? closed.record;
     }
+    let operationFailure: MediaUpstreamError | undefined;
     try {
-      if (!record.configuration.compute && record.receipt.execution!.billing.status === 'not_charged' && record.receipt.execution!.generationStatus !== 'completed') {
+      if (!retryQuery && !record.configuration.compute && record.receipt.execution!.billing.status === 'not_charged' && record.receipt.execution!.generationStatus !== 'completed') {
         try {
           assertHeld();
           await this.billing.release(record.receipt.receiptId);
@@ -866,13 +866,14 @@ export class MediaVideoRealService {
         return (await this.store.save(this.normalize(record))).record;
       }
       const connection = await this.frozenConnection(record.configuration.connectionFingerprint, record.configuration.compute, record.receipt.receiptId);
-      if (record.receipt.execution!.generationStatus !== 'completed' || !['SETTLED', 'RELEASED'].includes(record.receipt.billingStatus)) {
+      if (retryQuery || record.receipt.execution!.generationStatus !== 'completed' || !['SETTLED', 'RELEASED'].includes(record.receipt.billingStatus)) {
         assertHeld();
         const result = await this.adapter.queryContract(connection, record.receipt.execution!.requestId,
           closedSubmission(record.receipt.execution!) ? null : record.configuration.upstreamTaskId);
-        record = await this.applyContract(record, result, assertHeld);
+        operationFailure = mediaOperationFailure(result);
+        record = await this.applyContract(record, result, assertHeld, record.configuration.compute ? 'defer' : 'settle');
       }
-      if (record.receipt.execution?.generationStatus === 'completed' && record.configuration.upstreamTaskId && !record.receipt.outputs.length) {
+      if (!operationFailure && record.receipt.execution?.generationStatus === 'completed' && record.configuration.upstreamTaskId && !record.receipt.outputs.length) {
         try {
           await this.authorize(claims, false);
           await this.requireProfile(claims, record.configuration, false, 'video-content', record.configuration.modelId);
@@ -893,6 +894,7 @@ export class MediaVideoRealService {
             if (record.receipt.execution!.operation === 'download') {
               delete record.receipt.execution!.operationError;
               record.receipt.upstreamError = executionFailure(record.receipt.execution!, 200);
+              updateMediaWait(record.configuration, {});
             }
             if ('protocolVersion' in record.receipt) {
               record.receipt.actualSpec = { durationSeconds: metadata.durationSeconds, width: metadata.width, height: metadata.height,
@@ -902,6 +904,7 @@ export class MediaVideoRealService {
             }
           }
         } catch (error) {
+          if (error instanceof UpstreamHttpException) operationFailure ??= mediaFailure(error);
           record.receipt.fileStatus = 'download_failed'; record.receipt.errorCode = 'OUTPUT_FAILED';
           record.receipt.execution!.operation = 'download';
           record.receipt.execution!.operationError = mediaFailure(error); record.receipt.upstreamError = mediaFailure(error);
@@ -909,10 +912,16 @@ export class MediaVideoRealService {
         record = (await this.store.save(this.normalize(record))).record;
       }
     } catch (error) {
+      if (error instanceof UpstreamHttpException) operationFailure ??= mediaFailure(error);
       record.receipt.execution!.operation = 'query';
       record.receipt.execution!.operationError = mediaFailure(error); record.receipt.upstreamError = mediaFailure(error);
       record = (await this.store.save(this.normalize(record))).record;
     }
+    // A stale or failed generation query must not block the independent final fee.
+    if (record.configuration.compute && ['RESERVED', 'RECONCILING'].includes(record.receipt.billingStatus)) {
+      record = await this.settleContractBilling(record, assertHeld);
+    }
+    if (operationFailure) throw mediaOperationException(operationFailure, record.receipt);
     return record;
   }
 
@@ -923,7 +932,7 @@ export class MediaVideoRealService {
       if (record.receipt.execution) record.receipt.fileStatus = 'expired';
       this.normalize(record);
     }
-    return MediaVideoRealReceiptSchema.parse(record.receipt);
+    return withMediaWait(MediaVideoRealReceiptSchema.parse(record.receipt), record.configuration);
   }
 
   private assertReplay(input: MediaVideoRealRequest, record: VideoRealRecord) {

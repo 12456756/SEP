@@ -31,7 +31,7 @@ describe('Gateway execution journal and recovery', () => {
       getLegacyBillingSnapshot: jest.fn().mockResolvedValue(billingSnapshot),
       chargeUsage: jest.fn().mockResolvedValue({ usageRecordId: 'bill', alreadyCharged: false }),
     };
-    service = new GatewayExecutionService(prisma, credit, new ConfigService());
+    service = new GatewayExecutionService(prisma, credit, new ConfigService(), { isEnterpriseMode: jest.fn().mockResolvedValue(true) } as never);
   });
 
   it('accepts a late usage checkpoint after the remote final fee has already been settled', async () => {
@@ -70,48 +70,39 @@ describe('Gateway execution journal and recovery', () => {
       inputPriceUsdPerMillion: 0, outputPriceUsdPerMillion: 0 };
     await service.start(claims, 'employee', 'model', 'request', undefined, free);
     expect(prisma.gatewayExecution.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({ billingSnapshot: free }),
+      data: expect.objectContaining({ billingSnapshot: { source: 'compute', currency: 'CNY' } }),
     });
     expect(credit.getBillingSnapshot).not.toHaveBeenCalled();
   });
 
-  it('settles a durable free snapshot after restart even when current pricing is paid', async () => {
-    execution.billingSnapshot = { ...billingSnapshot, isFree: true, billingMultiplier: 0,
-      inputPriceUsdPerMillion: 0, outputPriceUsdPerMillion: 0 };
-    const restarted = new GatewayExecutionService(prisma, credit, new ConfigService());
-    await restarted.reconcile();
-    expect(credit.chargeUsage).toHaveBeenCalledWith(expect.objectContaining({
-      billingSnapshot: execution.billingSnapshot, inputTokens: 12, outputTokens: 8,
-    }));
-    expect(credit.getBillingSnapshot).not.toHaveBeenCalled();
-    expect(credit.getLegacyBillingSnapshot).not.toHaveBeenCalled();
-  });
+  it.each([null, billingSnapshot, { ...billingSnapshot, isFree: true, billingMultiplier: 0 },
+    { ...billingSnapshot, paymentMode: 'PERSONAL_ONLY' }])(
+    'keeps legacy execution for reconciliation without re-pricing: %p', async historical => {
+      execution.billingSnapshot = historical;
+      await service.settle(execution.id);
+      expect(prisma.gatewayExecution.updateMany).toHaveBeenLastCalledWith(expect.objectContaining({
+        data: { status: 'NEEDS_RECONCILIATION', errorCode: 'COMPUTE_FINAL_FEE_REQUIRED', settlementLeaseUntil: null },
+      }));
+      expect(credit.chargeUsage).not.toHaveBeenCalled();
+      expect(credit.getBillingSnapshot).not.toHaveBeenCalled();
+      expect(credit.getLegacyBillingSnapshot).not.toHaveBeenCalled();
+    },
+  );
 
-  it('keeps the paid snapshot when current pricing becomes free', async () => {
-    credit.getBillingSnapshot.mockResolvedValue({ ...billingSnapshot, isFree: true, billingMultiplier: 0,
-      inputPriceUsdPerMillion: 0, outputPriceUsdPerMillion: 0 });
+  it('leaves compute executions to the final-fee worker without a local charge', async () => {
+    execution.billingSnapshot = { source: 'compute', currency: 'CNY' };
     await service.settle(execution.id);
-    expect(credit.chargeUsage).toHaveBeenCalledWith(expect.objectContaining({ billingSnapshot }));
-    expect(credit.getBillingSnapshot).not.toHaveBeenCalled();
-  });
-
-  it('uses legacy pricing for executions created before billing snapshots existed', async () => {
-    execution.billingSnapshot = null;
-    await service.settle(execution.id);
-    expect(credit.getLegacyBillingSnapshot).toHaveBeenCalledWith('model');
-    expect(credit.chargeUsage).toHaveBeenCalledWith(expect.objectContaining({ billingSnapshot }));
-    expect(credit.getBillingSnapshot).not.toHaveBeenCalled();
-  });
-
-  it('recovers with the original personal-only mode rather than a newly selected mode', async () => {
-    execution.billingSnapshot = { ...billingSnapshot, paymentMode: 'PERSONAL_ONLY' };
-    credit.getBillingSnapshot.mockResolvedValue({ ...billingSnapshot, paymentMode: 'ENTERPRISE_ONLY' });
-    const restarted = new GatewayExecutionService(prisma, credit, new ConfigService());
-    await restarted.reconcile();
-    expect(credit.chargeUsage).toHaveBeenCalledWith(expect.objectContaining({
-      billingSnapshot: expect.objectContaining({ paymentMode: 'PERSONAL_ONLY' }),
+    expect(prisma.gatewayExecution.updateMany).toHaveBeenLastCalledWith(expect.objectContaining({
+      data: { settlementLeaseUntil: null },
     }));
-    expect(credit.getBillingSnapshot).not.toHaveBeenCalled();
+    expect(credit.chargeUsage).not.toHaveBeenCalled();
+  });
+
+  it('rejects starting without compute integration even with a free snapshot', async () => {
+    const disconnected = new GatewayExecutionService(prisma, credit, new ConfigService());
+    await expect(disconnected.start(claims, 'employee', 'model', 'request', undefined,
+      { ...billingSnapshot, isFree: true })).rejects.toMatchObject({ response: { code: 'COMPUTE_FINAL_FEE_REQUIRED' } });
+    expect(prisma.gatewayExecution.create).not.toHaveBeenCalled();
   });
 
   it('persists observed usage without making an active stream ready to settle', async () => {
@@ -126,7 +117,7 @@ describe('Gateway execution journal and recovery', () => {
     const now = Date.now();
     jest.spyOn(Date, 'now').mockReturnValue(now);
     try {
-      service = new GatewayExecutionService(prisma, credit, new ConfigService({ GATEWAY_STREAM_TOTAL_TIMEOUT_MS: '1000' }));
+      service = new GatewayExecutionService(prisma, credit, new ConfigService({ GATEWAY_STREAM_TOTAL_TIMEOUT_MS: '1000' }), { isEnterpriseMode: jest.fn().mockResolvedValue(true) } as never);
       await service.start(claims, 'employee', 'model', 'request', policySnapshot({
         GATEWAY_STREAM_TOTAL_TIMEOUT_MS: 600000, GATEWAY_NON_STREAM_TIMEOUT_MS: 120000,
       }));
@@ -156,39 +147,20 @@ describe('Gateway execution journal and recovery', () => {
     expect(credit.chargeUsage).not.toHaveBeenCalled();
   });
 
-  it('charges by journal identity and execution ID, never by client correlation IDs', async () => {
-    await service.finish(execution.id, { finishReason: 'stop', done: true });
-    expect(credit.chargeUsage).not.toHaveBeenCalled();
-    await service.settle(execution.id);
-    expect(credit.chargeUsage).toHaveBeenCalledWith({
-      enterpriseId: 'enterprise', userId: 'user', subscriptionId: 'subscription', employeeId: 'employee',
-      sessionId: 'gateway-execution', messageId: 'server-execution', modelId: 'model', inputTokens: 12, outputTokens: 8,
-      billingSnapshot,
-    });
-    expect(prisma.gatewayExecution.updateMany).toHaveBeenLastCalledWith({ where: {
-      id: execution.id, status: 'USAGE_PENDING', settlementLeaseUntil: expect.any(Date),
-    }, data: {
-      status: 'SETTLED', usageRecordId: 'bill', settlementLeaseUntil: null,
-    } });
-  });
-
   it('does not charge if another worker holds the lease or execution is already settled', async () => {
     prisma.gatewayExecution.updateMany.mockResolvedValue({ count: 0 });
     await service.settle(execution.id);
     expect(credit.chargeUsage).not.toHaveBeenCalled();
   });
 
-  it('retains a failed charge for idempotent recovery with the same server key', async () => {
-    credit.chargeUsage.mockRejectedValueOnce(new Error('database temporarily unavailable'));
+  it('releases a failed journal update for recovery without attempting a local charge', async () => {
+    const original = prisma.gatewayExecution.updateMany.getMockImplementation();
+    prisma.gatewayExecution.updateMany.mockImplementationOnce(original).mockRejectedValueOnce(new Error('database unavailable'));
     await service.settle(execution.id);
-    expect(prisma.gatewayExecution.updateMany).toHaveBeenLastCalledWith({ where: {
-      id: execution.id, status: 'USAGE_PENDING', settlementLeaseUntil: expect.any(Date),
-    }, data: {
-      settlementLeaseUntil: null, errorCode: 'SETTLEMENT_FAILED',
-    } });
-    credit.chargeUsage.mockResolvedValue({ usageRecordId: 'bill', alreadyCharged: true });
-    await service.reconcile();
-    expect(credit.chargeUsage.mock.calls.map(([params]) => params.messageId)).toEqual(['server-execution', 'server-execution']);
+    expect(prisma.gatewayExecution.updateMany).toHaveBeenLastCalledWith(expect.objectContaining({
+      data: { settlementLeaseUntil: null, errorCode: 'SETTLEMENT_FAILED' },
+    }));
+    expect(credit.chargeUsage).not.toHaveBeenCalled();
   });
 
   it('marks missing usage as reconciliation, not zero-cost settlement', async () => {
@@ -211,11 +183,11 @@ describe('Gateway execution journal and recovery', () => {
     expect(prisma.gatewayExecution.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 100 }));
   });
 
-  it('retains the owned lease when a charge times out instead of freeing it early', async () => {
+  it('retains the owned lease when a journal read times out instead of freeing it early', async () => {
     jest.useFakeTimers();
     let complete!: () => void;
-    credit.chargeUsage.mockImplementation(() => new Promise(resolve => {
-      complete = () => resolve({ usageRecordId: 'bill', alreadyCharged: false });
+    prisma.gatewayExecution.findUniqueOrThrow.mockImplementation(() => new Promise(resolve => {
+      complete = () => resolve(execution);
     }));
     const outcome = service.settle(execution.id);
     try {

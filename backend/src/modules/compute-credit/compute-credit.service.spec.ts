@@ -18,13 +18,13 @@ import { ModelBillingService } from '../model/model-billing.service';
 const ENTERPRISE = "ent-acme";
 const SUBSCRIPTION = "sub-1";
 
-/** 固定 1 元/1K 输入、0 输出的保底价，让每个用例的成本都是好算的整数。 */
-const FLAT_PRICE_SETTINGS: Record<string, string> = {
+/** Retired local settings are deliberately different from the confirmed compute fee. */
+const RETIRED_PRICE_SETTINGS: Record<string, string> = {
   [SETTING_KEYS.SUB2API_BASE_URL]: 'https://relay.example/v1',
   [SETTING_KEYS.SUB2API_API_KEY]: 'test-key',
-  [SETTING_KEYS.USD_TO_CNY_RATE]: "7.2",
-  [SETTING_KEYS.FALLBACK_PRICE_INPUT]: "1",
-  [SETTING_KEYS.FALLBACK_PRICE_OUTPUT]: "0",
+  [SETTING_KEYS.USD_TO_CNY_RATE]: "999",
+  [SETTING_KEYS.FALLBACK_PRICE_INPUT]: "99",
+  [SETTING_KEYS.FALLBACK_PRICE_OUTPUT]: "99",
 };
 
 interface CreditRow {
@@ -56,6 +56,7 @@ describe("ComputeCreditService.chargeUsage", () => {
   let settings: any;
   let svc: ComputeCreditService;
   let createdRecord: any;
+  let execution: any;
 
   /** 企业钱包余额（元）。用例改这个值来构造「够 / 不够 / 完全没钱」。 */
   let walletBalance: Decimal;
@@ -75,7 +76,11 @@ describe("ComputeCreditService.chargeUsage", () => {
     creditRow = null;
     createdRecord = null;
 
+    execution = { id: 'execution-1', enterpriseId: ENTERPRISE, kind: 'chat', feeStatus: 'FINAL',
+      grossCny: new Decimal(10), billId: 'bill-1', billVersion: '1',
+      fundingContext: { modelId: 'unknown-model', userId: 'user-1', paymentMode: 'AUTO' } };
     prisma = {
+      computeIntegrationExecution: { findUnique: jest.fn(async () => execution), update: jest.fn() },
       enterpriseMember: { findUnique: jest.fn().mockResolvedValue({ paymentMode: 'AUTO' }), updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
       platformModel: { findUnique: jest.fn().mockResolvedValue({ isFree: false }) },
       $queryRaw: jest.fn().mockResolvedValue([{ status: 'ACTIVE' }]),
@@ -148,7 +153,7 @@ describe("ComputeCreditService.chargeUsage", () => {
     };
 
     settings = {
-      getEffectiveValue: jest.fn((key: string) => FLAT_PRICE_SETTINGS[key]),
+      getEffectiveValue: jest.fn((key: string) => RETIRED_PRICE_SETTINGS[key]),
     };
 
     // 闸门默认不限额 —— 这组用例锁的是扣费顺序与恒等式，不是分配规则。
@@ -181,6 +186,7 @@ describe("ComputeCreditService.chargeUsage", () => {
       allowance,
       allowanceNotifier,
       new ModelBillingService(prisma, settings),
+      { isEnterpriseMode: jest.fn().mockResolvedValue(false), recordSettlement: jest.fn(), recordTransfer: jest.fn() } as never,
     );
   });
 
@@ -188,6 +194,7 @@ describe("ComputeCreditService.chargeUsage", () => {
 
   const charge = (overrides: Record<string, unknown> = {}) =>
     svc.chargeUsage({
+      computeExecutionId: "execution-1",
       enterpriseId: ENTERPRISE,
       subscriptionId: SUBSCRIPTION,
       employeeId: "emp-1",
@@ -195,7 +202,7 @@ describe("ComputeCreditService.chargeUsage", () => {
       sessionId: "sess-1",
       messageId: "msg-1",
       modelId: "unknown-model",
-      inputTokens: 10_000, // × ¥1 / 1K = ¥10
+      inputTokens: 10_000, // 仅记录用量，费用由 execution.grossCny 确认
       outputTokens: 0,
       ...overrides,
     } as any);
@@ -205,7 +212,8 @@ describe("ComputeCreditService.chargeUsage", () => {
     creditRow = makeCredit({ grantedCNY: new Decimal(50) });
     allowanceCap = new Decimal(0);
     prisma.enterpriseMember.findUnique.mockResolvedValue({ paymentMode: 'PERSONAL_ONLY' });
-    const billingSnapshot = await svc.getBillingSnapshot('unknown-model', ENTERPRISE, 'user-1');
+    const billingSnapshot = undefined;
+    execution.fundingContext.paymentMode = (await prisma.enterpriseMember.findUnique()).paymentMode;
     prisma.enterpriseMember.findUnique.mockResolvedValue({ paymentMode: 'ENTERPRISE_ONLY' });
     const result = await charge({ billingSnapshot });
     expect(result.personalPaidCNY.toNumber()).toBe(10);
@@ -221,7 +229,8 @@ describe("ComputeCreditService.chargeUsage", () => {
     personalBalance = new Decimal(40);
     allowanceCap = new Decimal(3);
     prisma.enterpriseMember.findUnique.mockResolvedValue({ paymentMode: 'ENTERPRISE_ONLY' });
-    const billingSnapshot = await svc.getBillingSnapshot('unknown-model', ENTERPRISE, 'user-1');
+    const billingSnapshot = undefined;
+    execution.fundingContext.paymentMode = (await prisma.enterpriseMember.findUnique()).paymentMode;
     const result = await charge({ billingSnapshot });
     expect(result.walletPaidCNY.toNumber()).toBe(3);
     expect(result.unpaidCNY.toNumber()).toBe(7);
@@ -263,93 +272,51 @@ describe("ComputeCreditService.chargeUsage", () => {
     expect(personalWallet.consumeUpTo).not.toHaveBeenCalled();
   });
 
-  it('活动免费保留非零 token 用量账单，不消耗赠送、钱包或额度', async () => {
+  it('ignores a local free flag and uses the confirmed CNY fee', async () => {
     prisma.platformModel.findUnique.mockResolvedValue({ isFree: true });
-    creditRow = makeCredit({ grantedCNY: new Decimal(50) });
-    personalBalance = new Decimal(40);
-    allowanceCap = new Decimal(0);
+    expect((await charge()).costCNY.toNumber()).toBe(10);
+    expect(createdRecord.inputPriceUsdPerMillion).toBeNull();
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
 
-    const result = await charge();
-
-    expect(result.costCNY.toNumber()).toBe(0);
-    expect(result.unpaidCNY.toNumber()).toBe(0);
-    expect(Number(createdRecord.inputPriceUsdPerMillion)).toBe(0);
-    expect(createdRecord.inputTokens).toBe(10_000);
+  it('accepts a confirmed zero fee without a local free flag', async () => {
+    execution.grossCny = new Decimal(0);
+    expect((await charge()).costCNY.toNumber()).toBe(0);
     expect(walletBalance.toNumber()).toBe(100);
-    expect(personalBalance.toNumber()).toBe(40);
-    expect(creditRow.usedCNY.toNumber()).toBe(0);
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(allowanceNotifier.afterCharge).not.toHaveBeenCalled();
   });
 
-  it('关闭免费恢复中转倍率，并只应用一次倍率', async () => {
-    (global.fetch as jest.Mock).mockImplementation(async () => new Response(JSON.stringify({
-      object: 'sub2api.key_billing', schema_version: 1, billing_scope: 'token', effective_rate_multiplier: 0.5,
-    })));
-
-    const result = await charge();
-
-    expect(result.costCNY.toNumber()).toBe(5);
-    expect(walletBalance.toNumber()).toBe(95);
-    expect(Number(createdRecord.inputPriceUsdPerMillion)).toBeCloseTo(1000 / 7.2 / 2);
+  it('ignores token counts and forged pricing snapshots', async () => {
+    execution.grossCny = new Decimal('5.123456');
+    const result = await charge({ inputTokens: 0, outputTokens: 0,
+      billingSnapshot: { isFree: true, usdToCnyRate: 999, billingMultiplier: 0 } });
+    expect(result.costCNY.toFixed(6)).toBe('5.123456');
+    expect(createdRecord.usdToCnyRate).toBeNull();
   });
 
-  it('冻结的免费规则在活动关闭后仍以零元结算', async () => {
-    prisma.platformModel.findUnique.mockResolvedValue({ isFree: true });
-    const billingSnapshot = await svc.getBillingSnapshot('unknown-model');
-    prisma.platformModel.findUnique.mockResolvedValue({ isFree: false });
-
-    expect((await charge({ billingSnapshot })).costCNY.toNumber()).toBe(0);
-    expect(global.fetch).not.toHaveBeenCalled();
-  });
-
-  it('免费模型余额为零且额度用尽时仍放行，不查询资金闸门', async () => {
-    prisma.platformModel.findUnique.mockResolvedValue({ isFree: true });
-    walletBalance = new Decimal(0);
+  it('does not bypass the balance gate for historical free flags', async () => {
     allowance.check.mockResolvedValue({ allowed: false, enterpriseFundsAllowed: false });
-
-    expect(await svc.checkBalanceBeforeConversation(ENTERPRISE, SUBSCRIPTION, 'user-1', 'unknown-model'))
-      .toMatchObject({ allowed: true, enterpriseFundsAllowed: true });
-    expect(allowance.check).not.toHaveBeenCalled();
-  });
-
-  it('非免费模型仍受额度与余额闸门限制', async () => {
-    allowance.check.mockResolvedValue({ allowed: false, enterpriseFundsAllowed: false, reason: '额度用尽' });
-
-    expect(await svc.checkBalanceBeforeConversation(ENTERPRISE, SUBSCRIPTION, 'user-1', 'unknown-model'))
+    expect(await svc.checkBalanceBeforeConversation(ENTERPRISE, SUBSCRIPTION, 'user-1', { isFree: true } as never))
       .toMatchObject({ allowed: false, enterpriseFundsAllowed: false });
   });
 
-  it('未知中转倍率不扣费，也不落入倍率 1', async () => {
-    (global.fetch as jest.Mock).mockRejectedValue(new Error('unavailable'));
-
-    await expect(charge()).rejects.toMatchObject({
-      status: 502,
-      response: { origin: 'sep', stage: 'transport', message: 'unavailable' },
-    });
+  it.each([
+    { feeStatus: 'PENDING' }, { grossCny: null }, { grossCny: new Decimal('0.0000001') },
+    { grossCny: new Decimal(-1) }, { grossCny: new Decimal(100000000) }, { billId: null },
+    { billVersion: null }, { enterpriseId: 'other' }, { kind: 'video' },
+    { fundingContext: { modelId: 'other', userId: 'user-1' } },
+    { fundingContext: { modelId: 'unknown-model', userId: 'other' } },
+  ])('refuses an unconfirmed or mismatched compute bill: %p', async invalid => {
+    Object.assign(execution, invalid);
+    await expect(charge()).rejects.toBeInstanceOf(ConflictException);
     expect(prisma.computeUsageRecord.create).not.toHaveBeenCalled();
     expect(wallet.consumeComputeUpTo).not.toHaveBeenCalled();
-    expect(personalWallet.consumeUpTo).not.toHaveBeenCalled();
-    expect(prisma.subscriptionCredit.updateMany).not.toHaveBeenCalled();
-    expect(allowance.commitCharge).not.toHaveBeenCalled();
   });
 
-  it.each([429, 503])('中转倍率接口返回 %i 时保留状态及原因，不扣费', async (status) => {
-    const body = { error: { code: 'BILLING_UNAVAILABLE', message: 'Billing lookup unavailable' } };
-    (global.fetch as jest.Mock).mockResolvedValue(new Response(JSON.stringify(body), {
-      status,
-      headers: { 'x-request-id': 'billing-request-1' },
-    }));
-
-    await expect(charge()).rejects.toMatchObject({
-      status,
-      upstreamError: { status, body },
-      diagnosticHeaders: { 'x-request-id': 'billing-request-1' },
-    });
+  it('refuses local-only settlement even with a free snapshot', async () => {
+    await expect(charge({ computeExecutionId: undefined, billingSnapshot: { isFree: true } }))
+      .rejects.toMatchObject({ response: { code: 'COMPUTE_FINAL_FEE_REQUIRED' } });
     expect(prisma.computeUsageRecord.create).not.toHaveBeenCalled();
-    expect(wallet.consumeComputeUpTo).not.toHaveBeenCalled();
-    expect(personalWallet.consumeUpTo).not.toHaveBeenCalled();
-    expect(prisma.subscriptionCredit.updateMany).not.toHaveBeenCalled();
-    expect(allowance.commitCharge).not.toHaveBeenCalled();
   });
 
   it('关闭企业拒绝新扣费，并按账号、企业的顺序锁定', async () => {
@@ -463,7 +430,7 @@ describe("ComputeCreditService.chargeUsage", () => {
       walletPaidCNY: new Decimal(0),
       personalPaidCNY: new Decimal(0),
       unpaidCNY: new Decimal(0),
-      fallbackPricing: true,
+      fallbackPricing: false,
     });
     creditRow = makeCredit({ grantedCNY: new Decimal(50) });
 
@@ -478,15 +445,15 @@ describe("ComputeCreditService.chargeUsage", () => {
     expect(creditRow!.usedCNY.toNumber()).toBe(0);
   });
 
-  it("幂等键由 sessionId + messageId 构成", async () => {
+  it("幂等键由算力执行编号构成", async () => {
     creditRow = null;
 
     await charge({ sessionId: "sess-9", messageId: "msg-9" });
 
     expect(prisma.computeUsageRecord.findUnique).toHaveBeenCalledWith({
-      where: { idempotencyKey: "sess-9:msg-9" },
+      where: { idempotencyKey: "compute:execution-1" },
     });
-    expect(createdRecord.idempotencyKey).toBe("sess-9:msg-9");
+    expect(createdRecord.idempotencyKey).toBe("compute:execution-1");
   });
 
   it("❗并发扣同一笔赠送额度时抛冲突，整笔重试而不是静默少扣", async () => {
@@ -498,7 +465,7 @@ describe("ComputeCreditService.chargeUsage", () => {
     expect(prisma.computeUsageRecord.create).not.toHaveBeenCalled();
   });
 
-  it("账单落库时同时记下 Token 明细与计价参数，便于事后复核", async () => {
+  it("账单落库记下 Token 明细和算力确认费用，不保留本地计价参数", async () => {
     creditRow = makeCredit({ grantedCNY: new Decimal(50) });
 
     await charge({ inputTokens: 1000, outputTokens: 500 });
@@ -513,16 +480,17 @@ describe("ComputeCreditService.chargeUsage", () => {
       modelId: "unknown-model",
       inputTokens: 1000,
       outputTokens: 500,
-      fallbackPricing: true,
+      fallbackPricing: false,
     });
-    expect(Number(createdRecord.usdToCnyRate)).toBe(7.2);
-    // Token 只是明细：金额由单价算出，不是 token 数本身
-    expect(Number(createdRecord.costCNY)).toBeCloseTo(1, 6);
+    expect(createdRecord.usdToCnyRate).toBeNull();
+    // Token 只是明细，金额来自算力平台费用单。
+    expect(Number(createdRecord.costCNY)).toBe(10);
   });
 
   it("成本为 0 的调用不扣任何余额，但仍留一条账单", async () => {
     creditRow = makeCredit({ grantedCNY: new Decimal(50) });
 
+    execution.grossCny = new Decimal(0);
     const result = await charge({ inputTokens: 0, outputTokens: 0 });
 
     expect(result.costCNY.toNumber()).toBe(0);
@@ -645,7 +613,8 @@ describe("ComputeCreditService.chargeUsage", () => {
       walletBalance = new Decimal(3);
       personalBalance = new Decimal(50);
 
-      const result = await charge({ userId: null });
+      execution.fundingContext.userId = null;
+    const result = await charge({ userId: null });
 
       expect(personalWallet.consumeUpTo).not.toHaveBeenCalled();
       expect(result.personalPaidCNY.toNumber()).toBe(0);
@@ -683,7 +652,8 @@ describe("ComputeCreditService.chargeUsage", () => {
       creditRow = null;
       personalBalance = new Decimal(50);
 
-      const result = await charge({ inputTokens: 0, outputTokens: 0 });
+      execution.grossCny = new Decimal(0);
+    const result = await charge({ inputTokens: 0, outputTokens: 0 });
 
       expect(result.personalPaidCNY.toNumber()).toBe(0);
       expect(personalBalance.toNumber()).toBe(50);

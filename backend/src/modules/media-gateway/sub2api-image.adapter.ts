@@ -24,12 +24,13 @@ const ModelsSchema = z.object({
 });
 const PricingSchema = z.object({
   ...LongdaoReceiptMetadataFields,
-  object: z.literal('sub2api.image_pricing'), schema_version: z.union([z.literal(1), z.literal(2)]), currency: z.enum(['USD', 'CNY']),
+  object: z.literal('sub2api.image_pricing'), schema_version: z.union([z.literal(1), z.literal(2)]), currency: z.literal('CNY'),
   model: ModelIdSchema, operation: z.enum(['generate', 'edit']), size: z.string(), n: z.number().int(),
   quality: z.string().min(1).max(128), billing_mode: z.enum(['image', 'per_request', 'token']),
   pricing_status: z.enum(['quoted', 'unavailable']), pricing_source: z.string().min(1),
   pricing_authority: z.literal('sub2api_customer_billing').optional(),
-  amount_usd: z.string().regex(/^\d+(?:\.\d{1,12})?$/).nullable().optional().transform(value => value ?? null), pricing_version: z.string().min(1).max(128),
+  amount_usd: z.unknown().optional().transform(() => null), pricing_version: z.string().max(128),
+  quote_scope: z.literal('platform_validation').optional(),
   contract_version: z.literal(1).optional(), enterprise_id: z.string().optional(), exchange_rate: z.string().optional(),
   amount_cny: z.string().regex(/^\d+\.[0-9]{6}$/).nullable().optional(), quote_id: z.string().min(1).max(128).optional(),
   effective_rate_multiplier: z.number().finite().nonnegative(),
@@ -113,14 +114,16 @@ export class Sub2apiImageAdapter {
     return [...models.values()].sort((a, b) => a.modelId < b.modelId ? -1 : a.modelId > b.modelId ? 1 : 0);
   }
 
-  async pricing(input: MediaRealAnyQuoteRequest, modelId = 'gpt-image-2', snapshot?: Sub2apiImageConnection): Promise<Sub2apiImagePrice> {
+  async pricing(input: MediaRealAnyQuoteRequest, modelId = 'gpt-image-2', snapshot?: Sub2apiImageConnection, validation = false): Promise<Sub2apiImagePrice> {
     // V1/V2 requests retain the historical model allow-list. V3 carries the
     // negotiated spec and may target an explicitly configured upstream model.
     if ('parameters' in input && !isSupportedImageModel(modelId)) unavailable();
     const spec = resolveSub2apiImageSpec(input, 'quote');
-    const result = await this.call('/sub2api/images/pricing', {
-      method: 'POST', body: JSON.stringify({ model: modelId, operation: input.operation,
-        size: spec.size, n: spec.count, quality: spec.quality }),
+    const body = { model: modelId, operation: input.operation, size: spec.size, n: spec.count, quality: spec.quality };
+    if (validation && !this.computeProtocol) unavailable('PRICE_UNAVAILABLE', '人民币报价校验需要配置算力平台服务签名');
+    const result = validation ? { value: await this.computeProtocol.json('/api/v1/sep/validation/image/pricing', { method: 'POST', body }) }
+      : await this.call('/sub2api/images/pricing', {
+      method: 'POST', body: JSON.stringify(body),
       headers: { 'Content-Type': 'application/json' },
     }, 15_000, 64 * 1024, false, undefined, snapshot);
     const parsed = PricingSchema.safeParse(result.value);
@@ -128,7 +131,10 @@ export class Sub2apiImageAdapter {
     const price = parsed.data;
     if (price.model !== modelId || price.operation !== input.operation || price.size !== spec.size ||
       price.n !== spec.count || price.quality !== spec.quality || price.pricing_status !== 'quoted' ||
-      price.billing_mode === 'token' || (snapshot?.compute ? price.currency !== 'CNY' || price.contract_version !== 1 || price.enterprise_id !== snapshot.compute.enterpriseId || price.amount_cny == null || !price.quote_id || price.quote_id !== price.pricing_version : price.currency !== 'USD' || price.amount_usd === null) || Date.parse(price.expires_at) <= Date.now() ||
+      price.billing_mode === 'token' || (validation
+        ? price.currency !== 'CNY' || price.contract_version !== 1 || price.quote_scope !== 'platform_validation' || price.amount_cny == null
+        : snapshot?.compute ? price.currency !== 'CNY' || price.contract_version !== 1 || price.enterprise_id !== snapshot.compute.enterpriseId || price.amount_cny == null || !price.quote_id || price.quote_id !== price.pricing_version
+          : price.contract_version !== 1 || price.quote_scope !== 'platform_validation' || price.amount_cny == null) || Date.parse(price.expires_at) <= Date.now() ||
       Date.parse(price.expires_at) > Date.now() + 120_000 || Date.parse(price.observed_at) > Date.now() + 5000 ||
       (/fallback|default|unknown/i.test(price.pricing_source) &&
         !(price.pricing_source === 'fallback' && price.pricing_authority === 'sub2api_customer_billing'))) unavailable('PRICE_UNAVAILABLE', {

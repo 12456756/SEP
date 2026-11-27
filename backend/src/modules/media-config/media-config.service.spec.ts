@@ -42,7 +42,7 @@ function fixture(config?: any) {
   };
   const imageAdapter: any = {
     discoverModels: jest.fn().mockResolvedValue([{ modelId: 'gpt-image-2', displayName: 'GPT Image 2' }]),
-    pricing: jest.fn().mockResolvedValue({ amount_usd: '0.04' }),
+    pricing: jest.fn().mockResolvedValue({ currency: 'CNY', amount_cny: '0.280000' }),
   };
   const sync: any = { sync: jest.fn() };
   const catalog = mediaCatalogStub();
@@ -104,7 +104,7 @@ describe('MediaConfigService', () => {
       verificationSpec: { size: '2048x2048', count: 1, quality: 'ultra' } }))
       .toMatchObject({ profile: { verified: true }, executionTested: false });
     expect(imageAdapter.pricing).toHaveBeenCalledWith(expect.objectContaining({ protocolVersion: 3,
-      requestedSpec: expect.objectContaining({ size: '2048x2048', count: 1, quality: 'ultra' }) }), row.modelId, { base: 'https://relay.example/v1', key: 'test-secret' });
+      requestedSpec: expect.objectContaining({ size: '2048x2048', count: 1, quality: 'ultra' }) }), row.modelId, { base: 'https://relay.example/v1', key: 'test-secret' }, true);
   });
 
   it('uses equivalent pixel dimensions for explicit verification and rejects an unexpressible combination', async () => {
@@ -115,7 +115,7 @@ describe('MediaConfigService', () => {
       verificationSpec: { width: 2048, height: 1024, count: 1, quality: 'ultra' } });
     expect(imageAdapter.pricing).toHaveBeenCalledWith(expect.objectContaining({ requestedSpec: {
       size: '2048x1024', width: 2048, height: 1024, count: 1, quality: 'ultra',
-    } }), row.modelId, { base: 'https://relay.example/v1', key: 'test-secret' });
+    } }), row.modelId, { base: 'https://relay.example/v1', key: 'test-secret' }, true);
     imageAdapter.pricing.mockClear();
     await expect(service.verifyProfile(row.profileId, { expectedConfigVersion: row.configVersion,
       verificationSpec: { size: 'auto', width: 2048, height: 1024, count: 1, quality: 'ultra' } }))
@@ -289,8 +289,8 @@ describe('MediaConfigService', () => {
       .resolves.toMatchObject({ executionTested: false, profile: { verified: true } });
     expect(imageAdapter.discoverModels).toHaveBeenCalledTimes(1);
     expect(imageAdapter.pricing).toHaveBeenCalledTimes(12);
-    expect(imageAdapter.pricing).toHaveBeenCalledWith(expect.objectContaining({ parameters: expect.objectContaining({ count: 1 }) }), 'gpt-image-2', { base: 'https://relay.example/v1', key: 'test-secret' });
-    expect(imageAdapter.pricing).toHaveBeenCalledWith(expect.objectContaining({ operation: 'edit' }), 'gpt-image-2', { base: 'https://relay.example/v1', key: 'test-secret' });
+    expect(imageAdapter.pricing).toHaveBeenCalledWith(expect.objectContaining({ parameters: expect.objectContaining({ count: 1 }) }), 'gpt-image-2', { base: 'https://relay.example/v1', key: 'test-secret' }, true);
+    expect(imageAdapter.pricing).toHaveBeenCalledWith(expect.objectContaining({ operation: 'edit' }), 'gpt-image-2', { base: 'https://relay.example/v1', key: 'test-secret' }, true);
     expect(prisma.mediaModelProfile.updateMany).toHaveBeenCalledWith(expect.objectContaining({
       where: { profileId: 'product-image', configVersion: 'cfg_1' }, data: { verified: true, configVersion: expect.stringMatching(/^cfg_/) },
     }));

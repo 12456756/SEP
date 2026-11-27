@@ -123,31 +123,15 @@ describe('ModelManagement upstream catalog', () => {
     expect(screen.getByText('VendorX Alpha')).toBeInTheDocument();
   });
 
-  it('updates the per-model free campaign setting independently from model enablement', async () => {
+  it('does not expose retired local free or fallback pricing controls', async () => {
+    vi.mocked(api.get).mockResolvedValue([{ ...active, isFree: true, hasPricing: false }, retired]);
     mount();
     synchronize();
     await screen.findByText('VendorX Alpha');
-
-    fireEvent.click(screen.getByRole('checkbox', { name: '活动免费 VendorX Alpha' }));
-
-    await waitFor(() => expect(api.patch).toHaveBeenCalledWith('/models/upstream-1', { isFree: true }));
-    expect(api.patch).not.toHaveBeenCalledWith('/models/upstream-1', { enabled: true });
-  });
-
-  it('turns an existing free campaign off and keeps the checkbox unchanged when saving fails', async () => {
-    const free = { ...active, isFree: true };
-    vi.mocked(api.get).mockResolvedValue([free, retired]);
-    mount();
-    synchronize();
-    await screen.findByText('VendorX Alpha');
-
-    const checkbox = screen.getByRole('checkbox', { name: '活动免费 VendorX Alpha' });
-    expect(checkbox).toBeChecked();
-    vi.mocked(api.patch).mockRejectedValueOnce(new Error('保存失败'));
-    fireEvent.click(checkbox);
-
-    await waitFor(() => expect(api.patch).toHaveBeenCalledWith('/models/upstream-1', { isFree: false }));
-    expect(checkbox).toBeChecked();
+    expect(screen.queryByRole('checkbox', { name: /活动免费/ })).not.toBeInTheDocument();
+    expect(screen.queryByText('保底计费')).not.toBeInTheDocument();
+    expect(screen.getByText(/模型报价和最终费用由算力平台确认/)).toBeInTheDocument();
+    expect(api.patch).not.toHaveBeenCalled();
   });
 
   it('replaces the prior catalog and clears filters when upstream is synchronized again', async () => {

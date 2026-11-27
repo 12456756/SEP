@@ -265,8 +265,9 @@ export class MediaConfigService {
       // Pricing is read-only. Bound concurrency and never call the execution endpoint here.
       for (let offset = 0; offset < checks.length; offset += 3) {
         await Promise.all(checks.slice(offset, offset + 3).map(async input => {
-          const price = await this.imageAdapter!.pricing(input, profile.modelId, snapshot);
-          if (!price.amount_usd || new Decimal(price.amount_usd).lte(0)) throw new ServiceUnavailableException('模型没有可用的正金额报价');
+          const price = await this.imageAdapter!.pricing(input, profile.modelId, snapshot, true);
+          if (price.currency !== 'CNY' || price.amount_cny == null || !new Decimal(price.amount_cny).isFinite()
+            || new Decimal(price.amount_cny).lt(0)) throw new ServiceUnavailableException('算力平台没有返回有效的人民币报价');
         }));
       }
       if (mediaConnectionFingerprint(await this.settingService.getMediaConnection('image')) !== expectedFingerprint) {

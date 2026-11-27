@@ -7,8 +7,10 @@ import { MAX_MEDIA_REFERENCE_COUNT } from 'shared';
 import { PrismaService } from '../../prisma/prisma.service';
 import { exceptionDetails } from '../../common/errors/error-diagnostics';
 import { ComputeMediaSnapshotSchema, type ComputeMediaSnapshot } from '../compute-integration/compute-media.service';
+import { MediaUpstreamWaitSchema } from './media-upstream-retry';
 
 const asyncConfiguration = {
+  upstreamWait: MediaUpstreamWaitSchema.optional(),
   asyncProtocol: z.literal('longdao-image-v2').optional(),
   dispatchState: z.enum(['NOT_DISPATCHED', 'DISPATCHING']).optional(),
   connectionFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(),

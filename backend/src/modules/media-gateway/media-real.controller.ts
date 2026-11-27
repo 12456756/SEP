@@ -28,7 +28,7 @@ import { MediaPaymentModeInterceptor } from './media-payment-mode.interceptor';
 @ApiResponse({ status: 404, description: '当前作用域内不存在资源' })
 @ApiResponse({ status: 409, description: '幂等冲突、报价/配置失效或不支持取消' })
 @ApiResponse({ status: 410, description: '参考或结果已过期' })
-@ApiResponse({ status: 429, description: '默认业务限流' })
+@ApiResponse({ status: 429, description: '本次操作被限流；保留上游错误正文和 Retry-After，已保存回执时附 X-SEP-Receipt-ID' })
 @ApiResponse({ status: 503, description: '真实媒体未启用、连接不可用或存储暂不可用；查原 ID，不重发生成' })
 @SkipThrottle({ auth: true, chat: true })
 @UseGuards(ClientEmploymentGuard, MediaRealGuard)
@@ -73,7 +73,7 @@ export class MediaRealController {
 
   @Post('requests')
   @ApiOperation({ summary: '按幂等键提交一次真实图片执行' })
-  @ApiResponse({ status: 200, description: '已结束的真实回执；生成、文件和账务状态分别表达' })
+  @ApiResponse({ status: 200, description: '本次操作成功返回的真实回执；本次上游 HTTP 错误保留原状态' })
   @ApiResponse({ status: 202, description: '已受理或提交结果不明的真实回执' })
   async submit(
     @ClientEmployment() claims: ClientEmploymentClaims,

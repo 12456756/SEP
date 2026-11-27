@@ -8,6 +8,14 @@
 
 ## 独立服务器发布
 
+2026-11-27 起，本轮升级采用[独立数据库蓝绿部署](../../docs/deployment/2026-11-27-isolated-blue-green.md)。Actions 默认先执行 `rehearse`，再使用同一标签执行 `stage`、业务验收及 `activate`；需要恢复时执行 `rollback`。下文 `sep-deploy.sh deploy` 描述的是旧的原位置替换流程，不再作为本轮发布入口；独立环境已接管或待验收时，该旧入口会拒绝运行。
+
+正式发布使用 GitHub Actions 的 `Deploy to Production`，选择 `main` 手动运行。工作流只允许 `12456756/SEP` 的 `main`，固定本次触发的完整提交号，先核对该提交的 `Quality Gates`。检查进行中时最多等待 20 分钟；失败、取消、没有对应检查或 GitHub API 无法确认时直接停止，不连接生产服务器。排队期间 `main` 已更新时，旧发布停止，需要从最新 `main` 重新发起；不自动改为发布另一份代码。读取检查结果使用 GitHub 自动提供的 `github.token`，不需要新增 Secret。
+
+`Quality Gates` 同时运行业务检查及部署脚本回归。后者覆盖质量门禁、Prisma 生产打包、上传回退及回滚安全，任意一个作业失败都不能发布。重复运行同一次发布时，镜像标签由提交前 12 位和 Actions 运行编号、重跑次数的摘要组成；每次尝试有独立标签，不覆盖旧镜像，也不因上一次失败留下镜像而无法重试。不要通过删除正在使用或回滚所需的镜像来解决重跑冲突。
+
+以下命令用于排障时的手工操作；不会自行查询 GitHub 质量检查，不能替代正式 Actions 发布入口。
+
 在本地将待发布提交归档，加入本目录已验证的部署文件，传到 `root@121.37.128.126:/www/sep/releases/<sha>/`，核对完整归档 SHA256 后解压至该目录的 `source/`。业务代码来自固定提交，不在服务器执行 git pull。部署脚本及配置若为待提交修订，须另行记录文件哈希。
 
 ```bash
@@ -16,7 +24,7 @@ SEP_RELEASE_SHA=<完整40位提交> bash deploy/standalone/sep-deploy.sh check
 SEP_RELEASE_SHA=<完整40位提交> bash deploy/standalone/sep-deploy.sh deploy
 ```
 
-如发布包含待提交修复，必须归档基线提交与全部修复文件，记录归档 SHA256，并使用 `SEP_RELEASE_TAG=<提交前12位>-<归档SHA256前12位>` 区分该构建；`SEP_RELEASE_SHA` 仍记录真实基线提交。`check` 和 `deploy` 使用同一组变量。脚本拒绝覆盖已存在的镜像标签；实际构建标签记录在备份的 `release-tag` 和 `/www/sep/.deploy/active-artifact` 中。每次构建以当前运行的 backend/web 镜像作为运行时基础镜像；构建依赖使用初始迁移备份中的 `sep-migrator` 镜像，若本机标签缺失则从 `/www/sep/backups/bootstrap-20261103/images.tar.gz` 恢复。
+历史排障曾归档未提交修复，使用 `SEP_RELEASE_TAG=<提交前12位>-<归档SHA256前12位>` 区分构建；`SEP_RELEASE_SHA` 记录真实基线提交。日常发布应先提交修复、通过质量检查，再由 Actions 发布完整提交，避免线上代码与 Git 版本不一致。脚本拒绝覆盖已存在的镜像标签；实际构建标签记录在备份的 `release-tag` 和 `/www/sep/.deploy/active-artifact` 中。每次构建以当前运行的 backend/web 镜像作为运行时基础镜像；构建工具链使用 `release.env` 指向的 `sep-migrator` 镜像，首次发布缺省使用初始迁移版本。初始镜像标签缺失时可从 `/www/sep/backups/bootstrap-20261103/images.tar.gz` 恢复；备份不包含的后续版本会明确报错。
 
 脚本固定使用新机 `/www/sep`、独立 Docker 网络和新域名；先检查健康、有效中转计费契约、队列及项目基线，再构建。构建阶段复用服务器现有 Node/pnpm 工具链、运行时基础镜像与 Web 基础镜像；后端根据发布归档中的锁文件执行 `pnpm install --frozen-lockfile --filter backend...`，再构建并生成自包含生产依赖包。因此服务器构建需要能访问 pnpm 配置的依赖源；依赖下载失败时发布会在进入维护状态前停止。Web 镜像从同一归档构建页面，并复制该版本的 `public/` 静态资源。
 
@@ -25,6 +33,10 @@ SEP_RELEASE_SHA=<完整40位提交> bash deploy/standalone/sep-deploy.sh deploy
 构建成功后，SEP 短暂返回 503 和 Retry-After，客户端下载及线上 `LONGDAO-AI` 标记区块保持服务；排空并仅 TERM 停止旧应用后备份 PostgreSQL、Redis 和业务文件，应用增量迁移，再替换前后端。失败时先隔离新流量、确认新进程退出，按旧镜像恢复应用及持久配置；不反向迁移数据库，不恢复旧备份覆盖新数据。停止超时会保留维护状态，禁止强杀或启动第二套 Worker。
 
 成功后镜像指针和显式功能开关保存于 `/www/sep/deploy/release.env`，版本记录位于 `/www/sep/.deploy/active-release`，备份保存在 `/www/sep/backups/release-*`。本机 Skills 导入默认关闭；正式客户端 0.4.0 测试配置为 `SKILL_IMPORT_ENABLED=true`、`SKILL_IMPORT_INSTANCE_ID=sep-default` 和 `SKILL_IMPORT_MIN_CLIENT_VERSION=0.4.0`。实例 ID 必须与客户端受信站点配置完全一致，不能只满足格式校验后任意命名，否则客户端会拒绝深链接。部署脚本会校验并保留这些设置。关闭时将开关改回 `false`，并排空、重建后端容器。
+
+日志按 `preflight`、`build-images`、`prepare-backup`、`maintenance-and-drain`、`backup-data`、`migrate-database`、`replace-application`、`verify-application`、`reopen-traffic`、`record-release` 标记阶段。失败时报告所在阶段；维护前失败会明确说明线上应用保持运行。不要在迁移或切换时直接取消 Actions，也不要为了缩短耗时跳过备份、排空或回滚检查。
+
+当前仍存在的边界：Web 构建沿用基础镜像内的依赖，仅在 `web/package.json` 与基线一致时允许发布；变更 Web 依赖或根工具链时，要先调整并验证相应构建流程。质量检查中的 `pnpm build` 不等同于实际 Docker 镜像构建，脚本回归也不等同于测试环境演练。详细原因、验证和后续优化见 [2026-11-19 发布复盘](../../docs/deployment/2026-11-20-deployment-retrospective.md)。
 
 ## 配置与数据
 

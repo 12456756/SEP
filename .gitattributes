@@ -1,0 +1,3 @@
+# Asset versions are hashes of canonical bytes on both Windows and Linux.
+backend/src/common/employee-avatar-assets.json text eol=lf
+web/public/assets/avatar-libraries/open-peeps/*.svg text eol=lf

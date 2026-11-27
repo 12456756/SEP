@@ -188,7 +188,7 @@ export class GatewayController {
         let checkpointError: unknown;
         const streamLogger = this.logger;
         let finalizationError: unknown;
-        const controller = this;
+        const executions = this.executions;
         const checkpoint = async (usage: ChatCompletionUsage | null) => {
           if (!usage || (savedUsage?.prompt_tokens === usage.prompt_tokens && savedUsage?.completion_tokens === usage.completion_tokens)) return;
           try { await saveUsage(usage); }
@@ -229,7 +229,7 @@ export class GatewayController {
                   throw gatewayUpstreamError('UPSTREAM_INCOMPLETE_STREAM', 'sub2api 流未完整结束');
                 }
                 try {
-                  await waitForGatewayOperation(controller.executions.finish(executionId!, {
+                  await waitForGatewayOperation(executions.finish(executionId!, {
                     finishReason: summary.finishReason, done: summary.done,
                   }));
                   finalized = true;

@@ -5,7 +5,7 @@ import { contractResult } from './longdao-media.test-support';
 describe('Longdao media receipt contract', () => {
   it('keeps a 502 exhausted submission as a closed, uncharged failure, including every error', async () => {
     const body = contractResult('original', { task_id: null, submission_status: 'failed', status: null,
-      billing: { status: 'not_charged', actual_cost_usd: '0' },
+      billing: { status: 'not_charged', actual_cost_cny: '0' },
       submission_retry: { attempts: 4, max_attempts: 4, exhausted: true, errors: [{ attempt: 4, message: 'EOF' }] },
       error: { message: 'EOF', operation: 'create' } }).contract;
     const result = await readLongdaoMedia(new Response(JSON.stringify(body), { status: 502 }), 'secret', 'original');
@@ -18,7 +18,7 @@ describe('Longdao media receipt contract', () => {
 
   it('ends generation independently of billing trouble or failed refunds', () => {
     const evidence = executionEvidence(contractResult('original', { task_id: null, submission_status: 'failed', status: null,
-      billing: { status: 'unknown', actual_cost_usd: null, error: { source: 'platform', message: 'database unavailable' } } }));
+      billing: { status: 'unknown', actual_cost_cny: null, error: { source: 'platform', message: 'database unavailable' } } }));
     expect(mediaClientActions(evidence, 'unavailable', true)).toMatchObject({ generationFinished: true, canStartNewRequest: true, pollPurpose: 'billing' });
   });
 
@@ -36,10 +36,19 @@ describe('Longdao media receipt contract', () => {
   });
 
   it.each([
-    { status: 'not_charged', actual_cost_usd: null }, { status: 'not_charged', actual_cost_usd: '1' },
-    { status: 'settled', actual_cost_usd: null }, { status: 'unknown', actual_cost_usd: '0' },
+    { status: 'not_charged', actual_cost_cny: '1' },
+    { status: 'unknown', actual_cost_cny: '0' },
   ])('rejects contradictory monetary evidence %j', billing => {
     expect(() => contractResult('original', { billing })).toThrow();
+  });
+
+  it('accepts receipts without USD and never converts historical USD diagnostics', () => {
+    const confirmed = executionEvidence(contractResult('original', { billing: { status: 'settled' } }));
+    expect(confirmed.billing).toEqual({ status: 'settled', actualCostCny: null });
+    const historical = executionEvidence(contractResult('original', {
+      billing: { status: 'settled', actual_cost_usd: '9999.123456' },
+    }));
+    expect(historical.billing).toEqual({ status: 'settled', actualCostCny: null });
   });
 
   it('rejects another request or task even in an HTTP 200 envelope', async () => {
@@ -58,7 +67,7 @@ describe('Longdao media receipt contract', () => {
 
   it('accepts explicit image pre-dispatch failure without an echo ID only on the original POST response', async () => {
     const body = { schema_version: 2, request_id: '', submission_status: 'failed', status: 'failed',
-      billing: { status: 'not_charged', actual_cost_usd: '0' }, error: { message: 'No configured asynchronous account' } };
+      billing: { status: 'not_charged', actual_cost_cny: '0' }, error: { message: 'No configured asynchronous account' } };
     const response = () => new Response(JSON.stringify(body), { status: 503 });
     const parsed = await readLongdaoMedia(response(), 'key', 'original', undefined, true);
     expect(executionEvidence(parsed)).toMatchObject({ requestId: 'original', submissionStatus: 'failed',
@@ -68,19 +77,19 @@ describe('Longdao media receipt contract', () => {
 
   it('does not regress completed generation or confirmed billing after a failed query', () => {
     const previous = executionEvidence(contractResult('original', { status: 'completed', is_final: true,
-      billing: { status: 'settled', actual_cost_usd: '0.12' } }));
+      billing: { status: 'settled', actual_cost_cny: '0.12' } }));
     const incoming = executionEvidence(contractResult('original', { operation: 'query', status: 'queued', is_final: false,
-      billing: { status: 'unknown', actual_cost_usd: null }, operation_error: { message: 'Provider unavailable' } }, 503));
+      billing: { status: 'unknown', actual_cost_cny: null }, operation_error: { message: 'Provider unavailable' } }, 503));
     expect(mergeExecutionEvidence(previous, incoming)).toMatchObject({ generationStatus: 'completed', isFinal: true,
-      billing: { status: 'settled', actualCostUsd: '0.12' }, operationError: { status: 503 } });
+      billing: { status: 'settled', actualCostCny: '0.12' }, operationError: { status: 503 } });
   });
 
   it('keeps an uncharged closed submission and its original diagnostics on later observations', () => {
     const previous = executionEvidence(contractResult('original', { task_id: 'diagnostic-only', status: null,
       submission_status: 'protocol_error', submission_error: { message: 'Bad provider receipt' },
-      billing: { status: 'not_charged', actual_cost_usd: '0' } }, 502));
+      billing: { status: 'not_charged', actual_cost_cny: '0' } }, 502));
     const incoming = executionEvidence(contractResult('original', { status: 'queued' }));
     expect(mergeExecutionEvidence(previous, incoming)).toMatchObject({ submissionStatus: 'protocol_error', generationStatus: null,
-      submissionError: { message: 'Bad provider receipt' }, billing: { status: 'not_charged', actualCostUsd: '0' } });
+      submissionError: { message: 'Bad provider receipt' }, billing: { status: 'not_charged', actualCostCny: '0' } });
   });
 });

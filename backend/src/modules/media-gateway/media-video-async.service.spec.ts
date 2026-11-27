@@ -2,6 +2,7 @@ import { HttpException } from '@nestjs/common';
 import { enterpriseMediaStub } from '../../../test/stubs/enterprise-media.stub';
 import { MediaVideoRealReceiptSchema } from 'shared';
 import { MediaUpstreamException } from '../../common/errors/media-upstream.exception';
+import { UpstreamHttpException } from '../../common/errors/upstream-http.exception';
 import { MediaVideoRealService } from './media-video-real.service';
 import { MediaVideoRealStore } from './media-video-real.store';
 import { contractResult } from './longdao-media.test-support';
@@ -60,7 +61,14 @@ function harness(recoveryLease?: MediaVideoRecoveryLeaseService) {
     const request = { ...value, clientRequestId, quoteId: quote.quoteId };
     return { request, receipt: await service.submit(videoClaims, request) };
   }
-  return { db, store, adapter, asyncAdapter, cache, billing: { ...billing, settleCompute }, config, runtime, service, submit, enterprise };
+  async function submitFailure(status: number) {
+    const quote = await service.quote(videoClaims, value);
+    const request = { ...value, clientRequestId: 'new-video', quoteId: quote.quoteId };
+    await expect(service.submit(videoClaims, request)).rejects.toMatchObject({ status });
+    const record = await store.findByClientId(videoClaims.enterpriseId, request.clientRequestId, scope);
+    return { request, receipt: MediaVideoRealReceiptSchema.parse(record.receipt) };
+  }
+  return { db, store, adapter, asyncAdapter, cache, billing: { ...billing, settleCompute }, config, runtime, service, submit, submitFailure, enterprise };
 }
 
 describe('MediaVideoRealService v2 client receipts', () => {
@@ -231,7 +239,7 @@ describe('MediaVideoRealService v2 client receipts', () => {
       submission_status, status: null, billing: { status: 'not_charged', actual_cost_usd: '0' },
       error: { message: 'upstream connection closed', upstream_status: 503 },
       submission_retry: { attempts: 4, max_attempts: 4, exhausted: true, errors: [{ message: 'EOF' }] } }, 502));
-    const { receipt, request } = await h.submit();
+    const { receipt, request } = await h.submitFailure(502);
     expect(MediaVideoRealReceiptSchema.parse(receipt)).toMatchObject({ status: 'FAILED', billingStatus: 'RELEASED',
       upstreamError: { status: 502, body: { error: { message: 'upstream connection closed' } } },
       execution: { submissionRetry: { attempts: 4, exhausted: true } },
@@ -279,7 +287,8 @@ describe('MediaVideoRealService v2 client receipts', () => {
     const h = harness(); const { receipt } = await h.submit();
     h.adapter.queryContract.mockImplementation(async (_c, id) => contractResult(id, { status: 'queued', status_source: 'cached',
       operation: 'query', error: { message: 'upstream 404', upstream_status: 404 } }, 502));
-    const result = await h.service.receipt(videoClaims, receipt.receiptId);
+    await expect(h.service.receipt(videoClaims, receipt.receiptId)).rejects.toMatchObject({ status: 502 });
+    const result = (await h.store.findRequest(scope, receipt.receiptId)).receipt;
     expect(result).toMatchObject({ status: 'QUEUED', execution: { operationError: { status: 502 } }, clientActions: { pollPurpose: 'generation' } });
     expect(h.billing.release).not.toHaveBeenCalled();
   });
@@ -287,7 +296,8 @@ describe('MediaVideoRealService v2 client receipts', () => {
   it('does not infer free failure from missing Redis records', async () => {
     const h = harness(); const { receipt } = await h.submit();
     h.adapter.queryContract.mockRejectedValue(new MediaUpstreamException({ status: 404, body: { message: 'record expired' } }));
-    expect(await h.service.receipt(videoClaims, receipt.receiptId)).toMatchObject({ status: 'QUEUED', execution: { operationError: { status: 404 } } });
+    await expect(h.service.receipt(videoClaims, receipt.receiptId)).rejects.toMatchObject({ status: 404 });
+    expect((await h.store.findRequest(scope, receipt.receiptId)).receipt).toMatchObject({ status: 'QUEUED', execution: { operationError: { status: 404 } } });
     expect(h.billing.release).not.toHaveBeenCalled();
   });
 
@@ -396,7 +406,7 @@ describe('MediaVideoRealService v2 client receipts', () => {
       billing: { status: 'not_charged', actual_cost_usd: '0' },
       operation_error: { message: 'Invalid upstream model' }, submission_error: { code: 'video_protocol_error', message: 'Invalid upstream model' },
       submission_record_error: { message: 'Association save failed' }, http_status: 502 }, 502));
-    const { receipt, request } = await h.submit();
+    const { receipt, request } = await h.submitFailure(502);
     expect(receipt).toMatchObject({ status: 'FAILED', billingStatus: 'RELEASED', execution: {
       taskId: 'task-diagnostic', submissionStatus: 'protocol_error', submissionError: { code: 'video_protocol_error' },
       submissionRecordError: { message: 'Association save failed' } }, clientActions: { shouldPoll: false, canStartNewRequest: true } });
@@ -412,12 +422,52 @@ describe('MediaVideoRealService v2 client receipts', () => {
       operation_error: { code: 'ACCESS_DENIED', message: 'Cannot read original task' } }, 403);
     if (operation === 'query') h.adapter.queryContract.mockResolvedValueOnce(result);
     else h.adapter.cancelContract.mockResolvedValueOnce(result);
-    const updated = operation === 'query' ? await h.service.receipt(videoClaims, receipt.receiptId)
-      : await h.service.cancel(videoClaims, receipt.receiptId);
+    await expect(operation === 'query' ? h.service.receipt(videoClaims, receipt.receiptId)
+      : h.service.cancel(videoClaims, receipt.receiptId)).rejects.toMatchObject({ status: 403 });
+    const updated = (await h.store.findRequest(scope, receipt.receiptId)).receipt;
     expect(updated).toMatchObject({ status: 'QUEUED', billingStatus: receipt.billingStatus, execution: {
       requestId: receipt.execution!.requestId, taskId: 'task-original', submissionStatus: 'accepted', generationStatus: 'queued',
       operation, operationError: { status: 403 } }, clientActions: { canStartNewRequest: false } });
     expect(h.billing.release).not.toHaveBeenCalled(); expect(h.billing.settleCompute).not.toHaveBeenCalled();
+  });
+
+  it.each(['raw', 'contract'])('preserves a current %s cancellation 429 and the running task', async mode => {
+    const h = harness(); h.db.state.model.capabilities.supportsCancel = true;
+    const { receipt } = await h.submit();
+    const reason = { code: 'rate_limit_exceeded', message: 'Synthetic cancellation limited' };
+    if (mode === 'raw') h.adapter.cancelContract.mockRejectedValueOnce(new MediaUpstreamException({
+      status: 429, body: { error: reason }, headers: { 'retry-after': '6' },
+    }));
+    else h.adapter.cancelContract.mockResolvedValueOnce({ ...contractResult('current-cancel', {
+      task_id: null, status: null, submission_status: 'unobserved', receipt_operation: 'cancel',
+      operation_error: reason, billing: { status: 'unknown', actual_cost_cny: null },
+    }, 429), headers: { 'retry-after': '6' } });
+    await expect(h.service.cancel(videoClaims, receipt.receiptId)).rejects.toMatchObject({ status: 429,
+      diagnosticHeaders: { 'retry-after': '6', 'X-SEP-Receipt-ID': receipt.receiptId } });
+    expect((await h.store.findRequest(scope, receipt.receiptId)).receipt).toMatchObject({ status: 'QUEUED',
+      billingStatus: receipt.billingStatus, execution: { operationError: { status: 429 } } });
+    expect(h.billing.release).not.toHaveBeenCalled(); expect(h.adapter.submitContract).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['create', 'query', 'cancel'] as const)('preserves signed transport 429 during %s', async operation => {
+    const h = harness(); h.db.state.model.capabilities.supportsCancel = true;
+    const failure = new UpstreamHttpException({ status: 429, body: { error: {
+      code: 'rate_limit_exceeded', message: 'Synthetic signed transport limit',
+    } } }, { 'retry-after': '5' });
+    if (operation === 'create') {
+      h.adapter.submitContract.mockRejectedValueOnce(failure);
+      const { receipt } = await h.submitFailure(429);
+      expect(receipt).toMatchObject({ status: 'SUBMISSION_UNKNOWN', billingStatus: 'RECONCILING' });
+    } else {
+      const { receipt } = await h.submit();
+      if (operation === 'query') h.adapter.queryContract.mockRejectedValueOnce(failure);
+      else h.adapter.cancelContract.mockRejectedValueOnce(failure);
+      await expect(operation === 'query' ? h.service.receipt(videoClaims, receipt.receiptId)
+        : h.service.cancel(videoClaims, receipt.receiptId)).rejects.toMatchObject({ status: 429,
+        upstreamError: { body: failure.upstreamError.body }, diagnosticHeaders: { 'retry-after': '5' } });
+      expect((await h.store.findRequest(scope, receipt.receiptId)).receipt.status).toBe('QUEUED');
+    }
+    expect(h.billing.release).not.toHaveBeenCalled(); expect(h.adapter.submitContract).toHaveBeenCalledTimes(1);
   });
 
   it('stops output recovery after its original expiry without extending retention', async () => {

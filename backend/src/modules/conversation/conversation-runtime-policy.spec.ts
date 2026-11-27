@@ -5,6 +5,7 @@ import { ConversationStreamService } from './conversation-stream.service';
 import { GatewayModelPolicyService } from '../gateway/gateway-model-policy.service';
 import type { SseEvent } from './conversation.types';
 import { enterpriseConnectionStub } from '../../../test/stubs/enterprise-connection.stub';
+import { UpstreamHttpException } from '../../common/errors/upstream-http.exception';
 
 // Both SDK imports resolve to the same CJS stub in this repository's Jest config.
 jest.mock('ai', () => ({
@@ -22,12 +23,14 @@ describe('Web model runtime policy lifecycle', () => {
   let knowledge: any;
   let lostLock: (error: unknown) => void;
   let policy: ModelRuntimePolicySnapshot;
+  let enterpriseFundsAllowed: boolean;
   const release = jest.fn();
   const stopRenewal = jest.fn();
 
   beforeEach(() => {
     jest.clearAllMocks();
     (streamText as jest.Mock).mockReset();
+    enterpriseFundsAllowed = true;
     policy = { version: 5, values: Object.fromEntries(MODEL_RUNTIME_POLICY_FIELDS.map((field) => [field.key, Number(field.defaultValue)])) as ModelRuntimePolicySnapshot['values'] };
     prisma = {
       conversationSession: { findUnique: jest.fn().mockResolvedValue({ id: 'session', userId: 'user', employeeId: 'employee',
@@ -58,7 +61,8 @@ describe('Web model runtime policy lifecycle', () => {
           modelId: 'model', isFree: false, billingMultiplier: 1, rate: 7,
           inputPriceUsdPerMillion: 0.15, outputPriceUsdPerMillion: 0.6, isFallback: false,
         }),
-        checkBalanceBeforeConversation: jest.fn().mockResolvedValue({ allowed: true, enterpriseFundsAllowed: true }),
+        checkBalanceBeforeConversation: jest.fn().mockImplementation(async () => ({ allowed: true,
+          enterpriseFundsAllowed, personalBalanceCNY: 20, reason: 'Synthetic personal payment notice' })),
         chargeUsage: jest.fn().mockResolvedValue({ alreadyCharged: true }),
       } as never,
       policies, admission, new GatewayModelPolicyService({} as never, {} as never, {} as never), enterpriseConnectionStub() as never);
@@ -128,6 +132,54 @@ describe('Web model runtime policy lifecycle', () => {
     expect(global.fetch).not.toHaveBeenCalled();
     expect(sessionLock.releaseLock).toHaveBeenCalled();
     expect(stopRenewal).toHaveBeenCalled();
+  });
+
+  it('throws upstream 429 before the first event and retains its original diagnostic', async () => {
+    const failure = new UpstreamHttpException({ status: 429, body: { error: {
+      code: 'rate_limit_exceeded', message: 'Synthetic upstream rate limit',
+    } } }, { 'retry-after': '7' });
+    (streamText as jest.Mock).mockReset();
+    mockStep('error', [{ type: 'error', error: failure }]);
+    await expect(collect()).rejects.toBe(failure);
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(sessionLock.releaseLock).toHaveBeenCalled();
+  });
+
+  it('keeps the transport 429 when the SDK wraps its exception', async () => {
+    const body = { error: { code: 'rate_limit_exceeded', message: 'Synthetic transport rate limit' } };
+    (global.fetch as jest.Mock).mockResolvedValueOnce(new Response(JSON.stringify(body), {
+      status: 429, headers: { 'content-type': 'application/json', 'retry-after': '4' },
+    }));
+    (streamText as jest.Mock).mockReset().mockImplementationOnce(options => ({
+      fullStream: (async function* () {
+        try { await options.model.fetch('https://relay.test/v1/chat/completions', { body: JSON.stringify({ model: 'model' }) }); }
+        catch { yield { type: 'error', error: new Error('Synthetic SDK wrapper') }; }
+      })(), finishReason: Promise.resolve('error'), usage: Promise.resolve({}),
+    }));
+    await expect(collect()).rejects.toMatchObject({ status: 429,
+      upstreamError: { body }, diagnosticHeaders: { 'retry-after': '4' } });
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not commit HTTP 200 with a self-payment notice before an upstream 429', async () => {
+    enterpriseFundsAllowed = false;
+    const failure = new UpstreamHttpException({ status: 429, body: { error: { message: 'Synthetic initial limit' } } });
+    (streamText as jest.Mock).mockReset(); mockStep('error', [{ type: 'error', error: failure }]);
+    const events: SseEvent[] = [];
+    const collectEvents = async () => {
+      for await (const event of service.streamConversation('session', 'question', 'user')) events.push(event);
+    };
+    await expect(collectEvents()).rejects.toBe(failure);
+    expect(events).toEqual([]);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('delivers the self-payment notice before the first successful model content', async () => {
+    enterpriseFundsAllowed = false;
+    const events = await collect();
+    expect(events[0]).toMatchObject({ event: 'notice', data: { code: 'COMPUTE_SELF_PAID', personalBalanceCNY: '20.00' } });
+    expect(events[1]).toMatchObject({ event: 'text_delta', data: 'reply' });
+    expect(events.at(-1).event).toBe('done');
   });
 
   it('preserves completed tool results when the next model reservation is refused', async () => {

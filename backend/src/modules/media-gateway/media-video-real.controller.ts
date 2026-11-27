@@ -32,7 +32,7 @@ import { VideoReferenceUploadInterceptor, type VideoReferenceUploadRequest } fro
 @ApiResponse({ status: 409, description: 'Configuration, concurrency or idempotency conflict; cancellation unsupported' })
 @ApiResponse({ status: 410, description: 'Reference or original result expired' })
 @ApiResponse({ status: 413, description: 'Reference exceeds 10MiB' })
-@ApiResponse({ status: 429, description: 'Rate limited' })
+@ApiResponse({ status: 429, description: 'Current operation rate limited; preserves upstream body and Retry-After, with X-SEP-Receipt-ID when saved' })
 @ApiResponse({ status: 502, description: 'Upstream response or media integrity failure' })
 @ApiResponse({ status: 503, description: 'Execution disabled, storage or verified pricing unavailable' })
 @SkipThrottle({ auth: true, chat: true })
@@ -84,7 +84,7 @@ export class MediaVideoRealController {
 
   @Post('requests')
   @Header('Cache-Control', 'no-store')
-  @ApiOperation({ summary: 'Submit once or recover the original real video request' })
+  @ApiOperation({ summary: 'Submit once or recover the original real video request; preserve current upstream HTTP failures' })
   async submit(@ClientEmployment() claims: ClientEmploymentClaims, @Body(new MediaSpecValidationPipe(MediaVideoRealRequestSchema)) input: MediaVideoRealRequest,
     @Res({ passthrough: true }) response: Response) {
     const receipt = await this.media.submit(claims, input);

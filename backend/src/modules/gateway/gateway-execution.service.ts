@@ -5,7 +5,7 @@ import { Cron } from '@nestjs/schedule';
 import { PrismaService } from '../../prisma/prisma.service';
 import { ComputeCreditService } from '../compute-credit/compute-credit.service';
 import type { ClientEmploymentClaims } from '../client/client-employment.guard';
-import { ModelBillingSnapshotSchema, type ChatCompletionUsage, type ModelRuntimePolicySnapshot, type ModelBillingSnapshot } from 'shared';
+import { type ChatCompletionUsage, type ModelRuntimePolicySnapshot, type ModelBillingSnapshot } from 'shared';
 import { validGatewayUsage } from './gateway-response';
 import { timeoutValue } from './gateway-stream';
 import { waitForGatewayOperation } from './gateway-operation';
@@ -28,7 +28,7 @@ export class GatewayExecutionService implements OnModuleInit {
   }
 
   async start(claims: ClientEmploymentClaims, employeeId: string, modelId: string, requestId: string,
-    snapshot?: ModelRuntimePolicySnapshot, billingSnapshot?: ModelBillingSnapshot) {
+    snapshot?: ModelRuntimePolicySnapshot, _billingSnapshot?: ModelBillingSnapshot) {
     const budget = snapshot ? Math.max(
       snapshot.values.GATEWAY_STREAM_TOTAL_TIMEOUT_MS,
       snapshot.values.GATEWAY_NON_STREAM_TIMEOUT_MS,
@@ -37,7 +37,9 @@ export class GatewayExecutionService implements OnModuleInit {
       timeoutValue(this.config, 'GATEWAY_NON_STREAM_TIMEOUT_MS', 120000),
     );
     const enterpriseMode = await this.integrations?.isEnterpriseMode(claims.enterpriseId) ?? false;
-    const frozenBilling = enterpriseMode ? { source: 'compute', currency: 'CNY' } : ModelBillingSnapshotSchema.parse(billingSnapshot ?? await this.credit.getBillingSnapshot(modelId));
+    if (!enterpriseMode) throw new ServiceUnavailableException({ code: 'COMPUTE_FINAL_FEE_REQUIRED',
+      message: '企业尚未接通算力平台人民币结算，不能使用本地模型定价' });
+    const frozenBilling = { source: 'compute', currency: 'CNY' };
     try {
       return await this.prisma.$transaction(async tx => {
         const users = await tx.$queryRaw<Array<{ id: string; status: string }>>`SELECT id, status FROM users WHERE id = ${claims.sub} FOR UPDATE`;
@@ -132,22 +134,10 @@ export class GatewayExecutionService implements OnModuleInit {
         await this.prisma.gatewayExecution.updateMany({ where: owned, data: { settlementLeaseUntil: null } });
         return;
       }
-      const frozenBilling = execution.billingSnapshot
-        ? ModelBillingSnapshotSchema.parse(execution.billingSnapshot)
-        : await this.credit.getLegacyBillingSnapshot(execution.modelId);
-      const result = await waitForGatewayOperation(this.credit.chargeUsage({
-        enterpriseId: execution.enterpriseId, userId: execution.userId,
-        subscriptionId: execution.subscriptionId, employeeId: execution.employeeId,
-        sessionId: 'gateway-execution', messageId: execution.id, modelId: execution.modelId,
-        inputTokens: execution.inputTokens!, outputTokens: execution.outputTokens!,
-        billingSnapshot: frozenBilling,
-      }));
-      const settled = await waitForGatewayOperation(this.prisma.gatewayExecution.updateMany({ where: owned, data: {
-        status: 'SETTLED', usageRecordId: result.usageRecordId, settlementLeaseUntil: null,
+      await waitForGatewayOperation(this.prisma.gatewayExecution.updateMany({ where: owned, data: {
+        status: 'NEEDS_RECONCILIATION', errorCode: 'COMPUTE_FINAL_FEE_REQUIRED', settlementLeaseUntil: null,
       } }));
-      if (!settled.count) return;
-      this.logger.log({ event: 'gateway_settled', executionId: id, requestId: execution.requestId,
-        usageRecordId: result.usageRecordId, alreadyCharged: result.alreadyCharged });
+      this.logger.warn({ event: 'gateway_legacy_fee_requires_reconciliation', executionId: id, requestId });
     } catch (error) {
       this.logger.error({ event: 'gateway_settlement_pending', executionId: id, requestId });
       // Timed-out operations may still commit: preserve ownership until lease expiry.

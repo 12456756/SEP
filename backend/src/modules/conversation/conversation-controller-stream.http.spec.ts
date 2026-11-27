@@ -7,6 +7,7 @@ import {
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { HttpExceptionFilter } from '../../common/filters/http-exception.filter';
+import { UpstreamHttpException } from '../../common/errors/upstream-http.exception';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { ConversationController } from './conversation.controller';
 import { ConversationService } from './conversation.service';
@@ -95,6 +96,31 @@ describe('ConversationController first-event HTTP contract', () => {
       expect.any(AbortSignal),
       expect.any(Function),
     );
+  });
+
+  it('preserves a pre-event upstream 429 body and waiting headers', async () => {
+    const body = { error: { code: 'rate_limit_exceeded', message: 'Synthetic model limit', details: { window: 60 } } };
+    streamConversation.mockImplementation(async function* () {
+      throw new UpstreamHttpException({ status: 429, body }, { 'retry-after': '8', 'x-request-id': 'compute-limited' });
+    });
+    const result = await request(app.getHttpServer()).post(endpoint).send({ content: 'Hello' }).expect(429);
+    expect(result.body).toEqual(body);
+    expect(result.headers['retry-after']).toBe('8');
+    expect(result.headers['x-compute-request-id']).toBe('compute-limited');
+    expect(result.headers['content-type']).toContain('application/json');
+  });
+
+  it('reports an upstream 429 in SSE once response headers were already sent', async () => {
+    const body = { error: { code: 'rate_limit_exceeded', message: 'Synthetic second step limit' } };
+    streamConversation.mockImplementation(async function* () {
+      yield { event: 'text_delta', data: 'Started' };
+      throw new UpstreamHttpException({ status: 429, body }, { 'retry-after': '8' });
+    });
+    const result = await request(app.getHttpServer()).post(endpoint).send({ content: 'Hello' }).expect(200);
+    expect(result.text).toContain('event: error');
+    expect(result.text).toContain('"httpStatus":429');
+    expect(result.text).toContain('Synthetic second step limit');
+    expect(result.text).not.toContain('event: done');
   });
 
   it('returns a successful SSE stream as HTTP 200 and exactly one service-provided done', async () => {

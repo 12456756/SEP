@@ -51,9 +51,8 @@ describe('MediaRealService asynchronous client receipts', () => {
     const h = imageHarness();
     h.adapter.submitAsync.mockImplementation(async (_i, _r, _m, id) => contractResult(id, { task_id: null, status: 'failed',
       submission_status, billing: { status: 'not_charged', actual_cost_usd: '0' }, error: { message: 'original provider failure', details: { reason: 'connection closed' } } }, 502));
-    const { receipt, request } = await h.submit();
+    const { receipt, request } = await h.submitFailure(502);
     expect(MediaRealAnyReceiptSchema.parse(receipt)).toMatchObject({ status: 'FAILED', billingStatus: 'RELEASED',
-      clientActions: { submissionFinished: true, generationFinished: true, canStartNewRequest: true, shouldPoll: false },
       upstreamError: { status: 502, body: { error: { message: 'original provider failure', details: { reason: 'connection closed' } } } } });
     await h.service.submit(imageClaims, request);
     expect(h.adapter.submitAsync).toHaveBeenCalledTimes(1);
@@ -66,9 +65,9 @@ describe('MediaRealService asynchronous client receipts', () => {
     h.adapter.submitAsync.mockImplementation(async (_i, _r, _m, id) => contractResult(id, { task_id: null,
       submission_status: 'failed', status: null, billing: { status: 'not_charged', actual_cost_usd: '0' }, error: { message: 'EOF' } }, 502));
     h.billing.settleCompute.mockRejectedValueOnce(new HttpException('database unavailable', 503));
-    const { receipt } = await h.submit();
+    const { receipt } = await h.submitFailure(502);
     expect(receipt).toMatchObject({ status: 'FAILED', billingStatus: 'RECONCILING',
-      billingError: { status: 503 }, clientActions: { generationFinished: true, canStartNewRequest: true, pollPurpose: 'billing' } });
+      billingError: { status: 503 } });
     const recovered = await h.service.receipt(imageClaims, receipt.receiptId);
     // The query is the authoritative retry of the original closed request.
     expect(recovered.execution!.requestId).toBe(receipt.execution!.requestId);
@@ -79,9 +78,8 @@ describe('MediaRealService asynchronous client receipts', () => {
     h.adapter.submitAsync.mockImplementation(async (_i, _r, _m, id) => contractResult(id, { task_id: null,
       submission_status: 'failed', status: 'failed', billing: { status: 'unknown', actual_cost_usd: null,
         error: { source: 'platform', message: 'ledger unavailable' } } }, 503));
-    const { receipt } = await h.submit();
-    expect(receipt).toMatchObject({ status: 'FAILED', billingStatus: 'RECONCILING', execution: { billing: { status: 'unknown' } },
-      clientActions: { generationFinished: true, canStartNewRequest: true, pollPurpose: 'billing' } });
+    const { receipt } = await h.submitFailure(503);
+    expect(receipt).toMatchObject({ status: 'FAILED', billingStatus: 'RECONCILING', execution: { billing: { status: 'unknown' } } });
     expect(h.billing.release).not.toHaveBeenCalled();
     expect(h.billing.settleCompute).not.toHaveBeenCalled();
   });
@@ -102,7 +100,8 @@ describe('MediaRealService asynchronous client receipts', () => {
     const h = imageHarness();
     const { receipt } = await h.submit();
     h.adapter.queryAsync.mockRejectedValue(new MediaUpstreamException({ status: 404, body: { error: { message: 'request expired' } } }));
-    const result = await h.service.receipt(imageClaims, receipt.receiptId);
+    await expect(h.service.receipt(imageClaims, receipt.receiptId)).rejects.toMatchObject({ status: 404 });
+    const result = (await h.store.findRequest(receipt.receiptId)).receipt;
     expect(result).toMatchObject({ status: 'RUNNING', execution: { generationStatus: 'in_progress', operationError: { status: 404 } } });
     expect(h.billing.release).not.toHaveBeenCalled();
   });

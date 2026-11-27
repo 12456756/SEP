@@ -51,20 +51,15 @@ describe('ModelService admin model settings', () => {
     expect(prisma.platformModel.create).toHaveBeenCalledWith({ data: expect.objectContaining({ enabled: false }) });
   });
 
-  it('persists the free flag independently of enablement', async () => {
-    await service.updateModel(model.id, { isFree: true });
-
-    expect(prisma.platformModel.update).toHaveBeenCalledWith({
-      where: { id: model.id },
-      data: { isFree: true },
-    });
+  it('rejects local free pricing changes', async () => {
+    await expect(service.updateModel(model.id, { isFree: true })).rejects.toBeInstanceOf(BadRequestException);
+    expect(prisma.platformModel.update).not.toHaveBeenCalled();
   });
-
 
   it('rejects an unknown platform model', async () => {
     prisma.platformModel.findUnique.mockResolvedValue(null);
 
-    await expect(service.updateModel('missing', { isFree: true })).rejects.toBeInstanceOf(NotFoundException);
+    await expect(service.updateModel('missing', { label: 'Missing' })).rejects.toBeInstanceOf(NotFoundException);
     expect(prisma.platformModel.update).not.toHaveBeenCalled();
   });
 

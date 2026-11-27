@@ -26,13 +26,12 @@ import {
   type MessageAttachment,
   type ModelBillingSnapshot,
 } from "shared";
-import { calculateBilledCost } from '../model/model-billing.service';
 import { SettingService } from "../setting/setting.service";
 import { UploadService } from "../upload/upload.service";
 import { AttachmentContextService } from "./attachment-context.service";
 import { resolveSub2ApiProviderConfig } from "./sub2api-provider-config";
 import { sanitizeError } from '../../common/errors/error-diagnostics';
-import { fetchModelUpstream, streamErrorDetails } from '../../common/errors/upstream-http.exception';
+import { fetchModelUpstream, streamErrorDetails, UpstreamHttpException } from '../../common/errors/upstream-http.exception';
 import { ModelRuntimePolicyService } from "../setting/model-runtime-policy.service";
 import { GatewayAdmissionService } from "../gateway/gateway-admission.service";
 import { GatewayModelPolicyService } from "../gateway/gateway-model-policy.service";
@@ -79,6 +78,8 @@ export class ConversationStreamService {
     signal?: AbortSignal,
     onAbort?: (reason: unknown) => void,
   ): AsyncGenerator<SseEvent> {
+    let hasEmittedEvent = false;
+    let pendingNotice: SseEvent | undefined;
     // 1. 验证会话归属 + 加载 employee 配置
     const session = await this.prisma.conversationSession.findUnique({
       where: { id: sessionId },
@@ -223,7 +224,8 @@ export class ConversationStreamService {
     if (!gate.enterpriseFundsAllowed) {
       // 改道自费不是错误：对话照常进行，只是这一轮的钱从成员个人余额出。
       // 用 notice 而不是 error —— 前端的 error 分支会中止本轮渲染。
-      yield {
+      // Keep headers available for an initial upstream HTTP failure.
+      pendingNotice = {
         event: "notice",
         data: {
           message: gate.reason,
@@ -393,6 +395,7 @@ export class ConversationStreamService {
         // Reserve the complete serialized request once per SDK step, including tools/history.
         let reservation: Promise<void> | undefined;
         let reservationError: unknown;
+        let upstreamError: unknown;
         const provider = createOpenAICompatible({
           name: "sub2api", baseURL, apiKey, includeUsage: enterpriseBilling || !hasTools,
           fetch: async (url, options) => {
@@ -407,7 +410,8 @@ export class ConversationStreamService {
             lifecycle!.assertActive();
             assertOwnership();
             bumpIdle();
-            return fetchModelUpstream(url, options, [apiKey], modelFetch);
+            try { return await fetchModelUpstream(url, options, [apiKey], modelFetch); }
+            catch (error) { upstreamError = error; throw error; }
           },
         });
 
@@ -448,10 +452,16 @@ export class ConversationStreamService {
             const rawChunk = next.value;
             // 有动静就重新计时 —— 判定的是「卡住了」，不是「写得久」
             const chunk = rawChunk as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+            if (pendingNotice && ['text-delta', 'tool-call', 'reasoning', 'reasoning-start', 'reasoning-end'].includes(chunk.type)) {
+              hasEmittedEvent = true;
+              yield pendingNotice;
+              pendingNotice = undefined;
+            }
             switch (chunk.type) {
               case "text-delta": {
                 const delta: string = chunk.text ?? chunk.textDelta ?? "";
                 accumulatedText += delta;
+                hasEmittedEvent = true;
                 yield { event: "text_delta", data: delta };
                 break;
               }
@@ -465,6 +475,7 @@ export class ConversationStreamService {
                     unknown
                   >,
                 });
+                hasEmittedEvent = true;
                 yield {
                   event: "tool_start",
                   data: { name: chunk.toolName, capabilityId: cap?.id },
@@ -475,7 +486,10 @@ export class ConversationStreamService {
               case "reasoning-start":
               case "reasoning-end": {
                 const text: string = chunk.content ?? chunk.text ?? "";
-                if (text) yield { event: "reasoning_delta", data: text };
+                if (text) {
+                  hasEmittedEvent = true;
+                  yield { event: "reasoning_delta", data: text };
+                }
                 break;
               }
               // AI SDK v7 在 fullStream 中以 error chunk 上报上游错误，
@@ -488,7 +502,7 @@ export class ConversationStreamService {
             }
           }
         } catch (streamError) {
-          streamError = reservationError ?? streamError;
+          streamError = reservationError ?? upstreamError ?? streamError;
           lifecycle.assertActive();
           assertOwnership();
           // 🔴 修复 P0-1: 捕获流消费异常
@@ -498,6 +512,8 @@ export class ConversationStreamService {
           // 而这条消息决定了用户下一步该找谁（换模型 / 找运维看中转）。
           const timedOutSeconds = Math.round(policy.values.SUB2API_STREAM_IDLE_TIMEOUT_MS / 1000);
           const details = streamErrorDetails(streamError, { policyVersion: policy.version });
+          if (!hasEmittedEvent && (streamError instanceof UpstreamHttpException ||
+            streamError instanceof HttpException && streamError.getStatus() === 429)) throw streamError;
           yield {
             event: "error",
             data: idleTimedOut
@@ -587,9 +603,8 @@ export class ConversationStreamService {
             `[Billing Check] usage=${JSON.stringify(usage)}, input=${inputTokens}, output=${outputTokens}`,
           );
 
-          // 计算消息成本（用于账单明细和成本分析）。
-          // 与 chargeUsage 共用调用开始时的快照，活动中途切换不会改变本笔价格。
-          const costCNY = billingSnapshot ? calculateBilledCost(billingSnapshot, inputTokens, outputTokens).costCNY : null;
+          // 最终费用由算力费用单异步确认，消息保存时不根据 Token 估价。
+          const costCNY = null;
 
           lifecycle.assertActive();
           assertOwnership();
@@ -642,6 +657,8 @@ export class ConversationStreamService {
           await this.conversationService.autoGenerateTitle(sessionId, content);
           lifecycle.assertActive();
           assertOwnership();
+          hasEmittedEvent = true;
+          if (pendingNotice) { yield pendingNotice; pendingNotice = undefined; }
           yield { event: "done", data: { messageId: saved.id, usage } };
           break;
         }
@@ -807,10 +824,14 @@ export class ConversationStreamService {
             metadata: handledByMetadata,
           },
         });
+        hasEmittedEvent = true;
+        if (pendingNotice) { yield pendingNotice; pendingNotice = undefined; }
         yield { event: "done", data: { messageId: saved.id, usage: {} } };
       }
     } catch (err) {
       if (!lease) throw err;
+      if (!hasEmittedEvent && (err instanceof UpstreamHttpException ||
+        err instanceof HttpException && err.getStatus() === 429)) throw err;
       this.logger.error(`Stream error session=${sessionId} requestId=${requestId} policyVersion=${policy.version} status=${err instanceof HttpException ? err.getStatus() : 'internal'}`);
       const details = streamErrorDetails(err, { policyVersion: policy.version });
       yield {
@@ -1078,11 +1099,7 @@ export class ConversationStreamService {
             `（企业资金不足或本周期算力额度已用尽）`,
         );
       }
-      if (result.fallbackPricing) {
-        this.logger.warn(
-          `Model ${modelId} has no configured pricing — charged at fallback rate. Add it to MODEL_PRICING.`,
-        );
-      }
+
     } catch (err) {
       // 计费失败不应阻断对话，记录错误即可
       this.logger.error(`Failed to record usage for user ${userId}`, err);

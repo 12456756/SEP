@@ -16,13 +16,14 @@ import { MediaVideoRealController } from './media-video-real.controller';
 import { MediaVideoRealGuard } from './media-video-real.guard';
 import { MediaVideoRealService } from './media-video-real.service';
 import { MediaVideoRealStore } from './media-video-real.store';
-import { videoClaims, videoRealPrisma } from './media-video-real.test-support';
+import { scope, videoClaims, videoRealPrisma } from './media-video-real.test-support';
 import { Sub2apiVideoAdapter } from './sub2api-video.adapter';
 import { VideoFileCacheService } from './video-file-cache.service';
 import { VideoReferenceUploadService } from './video-reference-upload.service';
 import { contractResult } from './longdao-media.test-support';
 import { MediaVideoMaintenanceService } from './media-video-maintenance.service';
 import { MediaVideoRealReceiptSchema } from 'shared';
+import { Decimal } from '@prisma/client/runtime/library';
 
 const run = promisify(execFile);
 const prefix = '/api/gateway/v1/media/video-real';
@@ -44,9 +45,10 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
   let files: VideoFileCacheService;
   let createService: () => MediaVideoRealService;
   let nextUpload: { status: number; body: unknown; headers?: Record<string, string> } | undefined;
-  let createFailure: { status: number; patch: Record<string, unknown> } | undefined;
-  let rawCreateFailure: { status: number; body: unknown } | undefined;
-  let queryFailure: { status: number; body: unknown } | undefined;
+  let createFailure: { status: number; patch: Record<string, unknown>; headers?: Record<string, string> } | undefined;
+  let rawCreateFailure: { status: number; body: unknown; headers?: Record<string, string> } | undefined;
+  let queryFailure: { status: number; body: unknown; headers?: Record<string, string> } | undefined;
+  let queryHeaders: Record<string, string> = {};
   let queryPatch: Record<string, unknown> = {};
   let usagePatch: Record<string, unknown> = {};
   let contentFailures = 0;
@@ -146,21 +148,21 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
         submissions.push({ body: JSON.parse(init.body as string), headers });
         originalRequestId = headers.get('X-Client-Request-ID');
         if (generationLost) throw new Error('Synthetic lost generation response');
-        if (rawCreateFailure) return json(rawCreateFailure.body, rawCreateFailure.status);
+        if (rawCreateFailure) return json(rawCreateFailure.body, rawCreateFailure.status, rawCreateFailure.headers);
         return json(contractResult(originalRequestId, {
           object: 'video', task_id: 'original-task', id: 'original-task', model: modelId, receipt_operation: 'create',
           ...createFailure?.patch,
         }).contract, createFailure?.status ?? 200,
-          { 'X-Client-Request-ID': headers.get('X-Client-Request-ID') });
+          { 'X-Client-Request-ID': headers.get('X-Client-Request-ID'), ...createFailure?.headers });
       }
       if (url.endsWith('/videos/original-task')) {
-        if (queryFailure) return json(queryFailure.body, queryFailure.status);
+        if (queryFailure) return json(queryFailure.body, queryFailure.status, queryFailure.headers);
         return json(contractResult(originalRequestId, {
         object: 'video', task_id: 'original-task', id: 'original-task', model: modelId, receipt_operation: 'query',
         status: completeTasks ? 'completed' : 'in_progress', is_final: completeTasks,
         billing: completeTasks ? { status: 'settled', actual_cost_usd: '0.2' } : { status: 'pending', actual_cost_usd: null },
         ...queryPatch,
-      }).contract);
+      }).contract, 200, queryHeaders);
       }
       if (url.includes('/videos/') && new URL(url).searchParams.get('id_type') === 'request_id') {
         if (restoreLostSubmission) return json(contractResult(originalRequestId, {
@@ -211,7 +213,7 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
   });
   afterEach(() => {
     nextUpload = undefined; generationLost = false; completeTasks = false; createFailure = undefined; rawCreateFailure = undefined; queryFailure = undefined;
-    queryPatch = {}; usagePatch = {}; contentFailures = 0; contentAttempts = 0; restoreLostSubmission = false;
+    queryPatch = {}; queryHeaders = {}; usagePatch = {}; contentFailures = 0; contentAttempts = 0; restoreLostSubmission = false;
   });
   afterAll(async () => {
     upstream?.mockRestore(); await app?.close();
@@ -331,25 +333,105 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
     const initial = await post('/requests').send(body).expect(202);
     expect(initial.body).toMatchObject({ status: 'SUBMISSION_UNKNOWN', receiptVersion: 2,
       execution: { submissionStatus: 'unknown' }, clientActions: { shouldPoll: true, pollPurpose: 'submission' } });
-    const recovered = await post('/requests').send(body).expect(202);
-    expect(recovered.body.status).toBe('SUBMISSION_UNKNOWN'); expect(submissions).toHaveLength(before + 1);
+    const recovered = await post('/requests').send(body).expect(404);
+    expect(recovered.body.submission_status).toBe('unobserved');
+    expect((await store.findRequest(scope, initial.body.receiptId)).receipt.status).toBe('SUBMISSION_UNKNOWN');
+    expect(submissions).toHaveLength(before + 1);
     await post('/requests').send({ ...body, creativeBrief: 'Different request' }).expect(409);
+  });
+
+  it.each(['raw', 'contract'])('preserves a current %s video query 429 without replaying generation', async mode => {
+    const body = await prepare(`query-limit-${mode}`);
+    const created = (await post('/requests').send(body).expect(202)).body;
+    const reason = { code: 'rate_limit_exceeded', message: 'Synthetic video query limited' };
+    queryFailure = { status: 429, headers: { 'retry-after': '9', 'x-request-id': 'compute-video-limited' },
+      body: mode === 'raw' ? { error: reason } : contractResult('current-query', {
+        task_id: null, status: null, submission_status: 'unobserved', receipt_operation: 'query',
+        operation_error: reason, billing: { status: 'unknown', actual_cost_cny: null },
+      }).contract };
+    const refused = await get(`/requests/${created.receiptId}`).expect(429);
+    expect(refused.headers['retry-after']).toBe('9');
+    expect(refused.headers['x-compute-request-id']).toBe('compute-video-limited');
+    expect(refused.headers['x-sep-receipt-id']).toBe(created.receiptId);
+    expect(refused.body).toEqual(queryFailure.body);
+    queryFailure = undefined;
+    queryPatch = { status: 'failed', is_final: true, task_error: reason,
+      submission_error: reason, http_status: 429, billing: { status: 'not_charged', actual_cost_cny: '0' } };
+    const recovered = (await get(`/requests/${created.receiptId}`).expect(200)).body;
+    expect(recovered).toMatchObject({ status: 'FAILED', execution: { taskError: reason, submissionHttpStatus: 429 } });
+    expect(submissions).toHaveLength(1);
+  });
+
+  it('forwards video pending wait headers and refreshes them with each upstream reply', async () => {
+    const body = await prepare('pending-wait');
+    createFailure = { status: 202, patch: {}, headers: { 'retry-after': '20' } };
+    const created = await post('/requests').send(body).expect(202);
+    expect(created.headers['retry-after']).toBe('20'); expect(created.body.pollAfterMs).toBeGreaterThan(18000);
+    queryHeaders = { 'retry-after': '30' };
+    const pending = await get(`/requests/${created.body.receiptId}`).expect(200);
+    expect(pending.headers['retry-after']).toBe('30'); expect(pending.body.pollAfterMs).toBeGreaterThan(28000);
+    queryHeaders = {};
+    const next = await get(`/requests/${created.body.receiptId}`).expect(200);
+    expect(next.headers['retry-after']).toBeUndefined(); expect(next.body.pollAfterMs).toBe(3000);
+    expect(submissions).toHaveLength(1); expect(taskQueries()).toHaveLength(2);
+  });
+
+  it('updates repeated video query limits and clears them after successful client-ID lookup', async () => {
+    const body = await prepare('query-repeated-limit');
+    const created = (await post('/requests').send(body).expect(202)).body;
+    for (const seconds of ['2', '12']) {
+      queryFailure = { status: 429, body: { error: { message: 'Synthetic repeated video query limit', retry_after: Number(seconds) } },
+        headers: { 'retry-after': seconds } };
+      const limited = await get(`/requests/by-client-id/${body.clientRequestId}`).expect(429);
+      expect(limited.headers['retry-after']).toBe(seconds); expect(limited.body).toEqual(queryFailure.body);
+    }
+    queryFailure = undefined;
+    const recovered = await get(`/requests/by-client-id/${body.clientRequestId}`).expect(200);
+    expect(recovered.body.receiptId).toBe(created.receiptId); expect(recovered.body.status).toBe('RUNNING');
+    expect(recovered.body.execution).not.toHaveProperty('operationError'); expect(recovered.body).not.toHaveProperty('upstreamError');
+    expect(recovered.headers['retry-after']).toBeUndefined(); expect(taskQueries()).toHaveLength(3); expect(submissions).toHaveLength(1);
+  });
+
+  it('rechecks a video query 429 after independent settlement and removes it on successful lookup', async () => {
+    const body = await prepare('settled-query-recovery');
+    const created = (await post('/requests').send(body).expect(202)).body;
+    completeTasks = true;
+    queryPatch = { billing: { status: 'unknown', actual_cost_cny: null } };
+    const delivered = (await get(`/requests/${created.receiptId}`).expect(200)).body;
+    expect(delivered).toMatchObject({ status: 'SUCCEEDED', billingStatus: 'RECONCILING' });
+    queryFailure = { status: 429, body: { error: { message: 'Synthetic query temporarily limited' } }, headers: { 'retry-after': '8' } };
+    enterprise.media.fee.mockResolvedValueOnce({ id: `execution_${created.receiptId}`, feeStatus: 'FINAL', grossCny: new Decimal('0.7') });
+    const limited = await get(`/requests/${created.receiptId}`).expect(429);
+    expect(limited.headers['retry-after']).toBe('8');
+    queryFailure.headers = { 'retry-after': '15' };
+    const again = await get(`/requests/${created.receiptId}`).expect(429);
+    expect(again.headers['retry-after']).toBe('15');
+    const before = taskQueries().length;
+    queryFailure = undefined; queryPatch = {};
+    const recovered = await get(`/requests/${created.receiptId}`).expect(200);
+    expect(taskQueries()).toHaveLength(before + 1);
+    expect(recovered.body).toMatchObject({ status: 'SUCCEEDED', billingStatus: 'SETTLED', fileStatus: 'available' });
+    expect(recovered.body.execution).not.toHaveProperty('operationError'); expect(recovered.body).not.toHaveProperty('upstreamError');
+    expect(recovered.headers['retry-after']).toBeUndefined(); expect(submissions).toHaveLength(1); expect(billing.settleCompute).toHaveBeenCalledTimes(1);
   });
 
   it.each([400, 401, 402, 403, 409, 422, 429, 500, 502, 503, 504])(
     'closes an explicit HTTP %s creation failure with its original reason and no charge', async httpStatus => {
       const reason = { code: 'synthetic_video_creation_failure', message: `Reference video creation rejected (${httpStatus})` };
-      createFailure = { status: httpStatus, patch: {
+      createFailure = { status: httpStatus, headers: { 'retry-after': '7' }, patch: {
         task_id: null, id: null, submission_status: 'failed', status: null, http_status: httpStatus,
         submission_error: reason, operation_error: reason, billing: { status: 'not_charged', actual_cost_usd: '0' },
       } };
       const body = await prepare(`refused-${httpStatus}`);
-      const receipt = (await post('/requests').send(body).expect(200)).body;
+      const refused = await post('/requests').send(body).expect(httpStatus);
+      expect(refused.headers['retry-after']).toBe('7');
+      expect(refused.body).toMatchObject({ submission_error: reason, http_status: httpStatus });
+      const receipt = (await get(`/requests/${refused.headers['x-sep-receipt-id']}`).expect(200)).body;
       expect(MediaVideoRealReceiptSchema.safeParse(receipt).success).toBe(true);
       expect(receipt).toMatchObject({ operation: 'video-to-video', status: 'FAILED', billingStatus: 'RELEASED',
         fileStatus: 'unavailable', execution: { submissionStatus: 'failed', generationStatus: null,
           submissionError: reason, submissionHttpStatus: httpStatus, operationError: { status: httpStatus },
-          billing: { status: 'not_charged', actualCostUsd: '0' } },
+          billing: { status: 'not_charged', actualCostCny: null } },
         clientActions: { generationFinished: true, canStartNewRequest: true, shouldPoll: false },
       });
       expect((await post('/requests').send(body).expect(200)).body.receiptId).toBe(receipt.receiptId);
@@ -365,7 +447,8 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
       submission_record_error: { message: 'Synthetic association record unavailable' }, http_status: 502,
       billing: { status: 'not_charged', actual_cost_usd: '0' } } };
     const body = await prepare('protocol-refused');
-    const receipt = (await post('/requests').send(body).expect(200)).body;
+    const refused = await post('/requests').send(body).expect(502);
+    const receipt = (await get(`/requests/${refused.headers['x-sep-receipt-id']}`).expect(200)).body;
     expect(receipt).toMatchObject({ status: 'FAILED', billingStatus: 'RELEASED', execution: {
       submissionStatus: 'protocol_error', taskId: 'diagnostic-task', submissionError: reason,
       submissionRecordError: { message: 'Synthetic association record unavailable' },
@@ -374,10 +457,13 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
     expect(submissions).toHaveLength(1); expect(taskQueries()).toHaveLength(0); expect(contentAttempts).toBe(0);
   });
 
-  it.each([403, 502])('does not infer rejection or refund from HTTP %s without a full receipt', async status => {
-    rawCreateFailure = { status, body: { error: { code: 'incomplete_reply', message: 'Synthetic missing task and billing evidence' } } };
+  it.each([403, 429, 502])('preserves HTTP %s without inferring rejection or refund from an incomplete receipt', async status => {
+    rawCreateFailure = { status, headers: { 'retry-after': '4' }, body: { error: { code: 'incomplete_reply', message: 'Synthetic missing task and billing evidence' } } };
     const body = await prepare(`incomplete-${status}`);
-    const receipt = (await post('/requests').send(body).expect(202)).body;
+    const refused = await post('/requests').send(body).expect(status);
+    expect(refused.body).toEqual(rawCreateFailure.body);
+    expect(refused.headers['retry-after']).toBe('4');
+    const receipt = (await store.findRequest(scope, refused.headers['x-sep-receipt-id'])).receipt;
     expect(receipt).toMatchObject({ status: 'SUBMISSION_UNKNOWN', billingStatus: 'RECONCILING', execution: {
       submissionStatus: 'unknown', operationError: { status, body: rawCreateFailure.body },
     }, clientActions: { canStartNewRequest: false, pollPurpose: 'submission' } });
@@ -394,7 +480,8 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
     billing.settleCompute.mockRejectedValueOnce(new HttpException({ error: { code: 'wallet_unavailable',
       message: 'Synthetic reservation release unavailable' } }, 503));
     const body = await prepare('release-recovery');
-    const receipt = (await post('/requests').send(body).expect(200)).body;
+    const refused = await post('/requests').send(body).expect(403);
+    const receipt = (await store.findRequest(scope, refused.headers['x-sep-receipt-id'])).receipt;
     expect(receipt).toMatchObject({ status: 'FAILED', billingStatus: 'RECONCILING',
       billingError: { status: 503, body: { error: { message: 'Synthetic reservation release unavailable' } } },
       execution: { billing: { status: 'not_charged' } },
@@ -432,7 +519,7 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
       billing: { status: 'unknown', actual_cost_usd: null, error: { message: 'Synthetic compute settlement unavailable' } } };
     const failed = (await get(`/requests/${receipt.receiptId}`).expect(200)).body;
     expect(failed).toMatchObject({ status: 'FAILED', billingStatus: 'RECONCILING', execution: {
-      generationStatus: 'failed', billing: { status: 'unknown', actualCostUsd: null,
+      generationStatus: 'failed', billing: { status: 'unknown', actualCostCny: null,
         error: { message: 'Synthetic compute settlement unavailable' } },
     }, clientActions: { generationFinished: true, canStartNewRequest: true, pollPurpose: 'billing' } });
     expect(billing.release).not.toHaveBeenCalled(); expect(billing.settleCompute).not.toHaveBeenCalled();
@@ -444,11 +531,83 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
     expect(contentAttempts).toBe(0); expect(submissions).toHaveLength(1);
   });
 
+  it('settles an independent final bill while the video receipt still says pending', async () => {
+    const body = await prepare('independent-final-fee');
+    const receipt = (await post('/requests').send(body).expect(202)).body;
+    enterprise.media.fee.mockResolvedValueOnce({ id: `execution_${receipt.receiptId}`,
+      feeStatus: 'FINAL', grossCny: new Decimal('0.700000') });
+    const calls = enterprise.media.fee.mock.calls.length;
+    const recovered = (await get(`/requests/${receipt.receiptId}`).expect(200)).body;
+    expect(recovered).toMatchObject({ status: 'RUNNING', billingStatus: 'SETTLED', actualCostCny: '0.700000',
+      execution: { billing: { status: 'pending' } } });
+    expect(enterprise.media.fee).toHaveBeenCalledTimes(calls + 1);
+    expect(billing.settleCompute).toHaveBeenCalledTimes(1);
+    expect(billing.settleCompute).toHaveBeenCalledWith(receipt.receiptId, `execution_${receipt.receiptId}`, modelId);
+    expect(submissions).toHaveLength(1);
+  });
+
+  it('releases a confirmed zero bill despite a failed video status query and never generates again', async () => {
+    const body = await prepare('query-failed-final-zero');
+    const receipt = (await post('/requests').send(body).expect(202)).body;
+    queryFailure = { status: 503, body: { error: { code: 'status_unavailable', message: 'Synthetic status unavailable' } } };
+    enterprise.media.fee.mockResolvedValueOnce({ id: `execution_${receipt.receiptId}`,
+      feeStatus: 'FINAL', grossCny: new Decimal(0) });
+    billing.settleCompute.mockImplementationOnce(async id => {
+      db.state.reservations.get(id).status = 'RELEASED'; return 'RELEASED';
+    });
+    await background();
+    const refused = await get(`/requests/${receipt.receiptId}`).expect(503);
+    expect(refused.body).toEqual(queryFailure.body);
+    const recovered = (await store.findRequest(scope, receipt.receiptId)).receipt;
+    expect(recovered).toMatchObject({ billingStatus: 'RELEASED', actualCostCny: '0.000000',
+      execution: { operationError: { status: 503, body: queryFailure.body } } });
+    expect(billing.settleCompute).toHaveBeenCalledTimes(1);
+    expect(billing.release).not.toHaveBeenCalled();
+    expect(submissions).toHaveLength(1);
+  });
+
+  it('retries a final bill after a fee lookup failure even when video status stays unavailable', async () => {
+    const body = await prepare('fee-retry-without-status');
+    const receipt = (await post('/requests').send(body).expect(202)).body;
+    queryFailure = { status: 503, body: { error: { code: 'status_unavailable', message: 'Synthetic status unavailable' } } };
+    enterprise.media.fee.mockRejectedValueOnce(new HttpException({ error: { code: 'fee_unavailable', message: 'Synthetic fee unavailable' } }, 503));
+    await get(`/requests/${receipt.receiptId}`).expect(503);
+    const pending = (await store.findRequest(scope, receipt.receiptId)).receipt;
+    expect(pending).toMatchObject({ billingStatus: 'RECONCILING', billingError: {
+      status: 503, body: { error: { code: 'fee_unavailable' } },
+    } });
+    expect(billing.settleCompute).not.toHaveBeenCalled(); expect(billing.release).not.toHaveBeenCalled();
+    enterprise.media.fee.mockResolvedValueOnce({ id: `execution_${receipt.receiptId}`,
+      feeStatus: 'FINAL', grossCny: new Decimal('0.500000') });
+    await background();
+    await get(`/requests/${receipt.receiptId}`).expect(503);
+    const recovered = (await store.findRequest(scope, receipt.receiptId)).receipt;
+    expect(recovered).toMatchObject({ billingStatus: 'SETTLED', actualCostCny: '0.500000',
+      execution: { operationError: { status: 503 } } });
+    expect(recovered).not.toHaveProperty('billingError');
+    expect(billing.settleCompute).toHaveBeenCalledTimes(1); expect(submissions).toHaveLength(1);
+  });
+
+  it('keeps a failed task reserved until the independent bill is final', async () => {
+    const body = await prepare('failed-final-fee-pending');
+    const receipt = (await post('/requests').send(body).expect(202)).body;
+    queryPatch = { status: 'failed', is_final: true, billing: { status: 'pending', actual_cost_usd: null } };
+    enterprise.media.fee.mockResolvedValueOnce({ id: `execution_${receipt.receiptId}`, feeStatus: 'PENDING', grossCny: null });
+    const calls = enterprise.media.fee.mock.calls.length;
+    const pending = (await get(`/requests/${receipt.receiptId}`).expect(200)).body;
+    expect(pending).toMatchObject({ status: 'FAILED', billingStatus: 'RECONCILING',
+      clientActions: { generationFinished: true, pollPurpose: 'billing' } });
+    expect(enterprise.media.fee).toHaveBeenCalledTimes(calls + 1);
+    expect(billing.settleCompute).not.toHaveBeenCalled(); expect(billing.release).not.toHaveBeenCalled();
+    expect(submissions).toHaveLength(1);
+  });
+
   it('retries original content after download failure without resubmitting or charging twice', async () => {
     const body = await prepare('download-recovery');
     const receipt = (await post('/requests').send(body).expect(202)).body;
     completeTasks = true; contentFailures = 1;
-    const failed = (await get(`/requests/${receipt.receiptId}`).expect(200)).body;
+    await get(`/requests/${receipt.receiptId}`).expect(503);
+    const failed = (await store.findRequest(scope, receipt.receiptId)).receipt;
     expect(failed).toMatchObject({ fileStatus: 'download_failed', billingStatus: 'SETTLED', execution: {
       generationStatus: 'completed', operation: 'download', operationError: { status: 503, body: { error: {
         code: 'content_temporarily_unavailable', message: 'Synthetic original video download interrupted',
@@ -496,7 +655,9 @@ describe('reference video real HTTP chain (fake compute, real streaming and file
       billing: { status: 'unknown', actual_cost_usd: null }, operation_error: {
         code: 'query_denied', message: 'Synthetic original task lookup denied' },
     }).contract } : { status: 502, body: { error: { code: 'bad_reply', message: 'Synthetic malformed query reply' } } };
-    const failed = (await get(`/requests/${receipt.receiptId}`).expect(200)).body;
+    const refused = await get(`/requests/${receipt.receiptId}`).expect(queryFailure.status);
+    expect(refused.body).toEqual(queryFailure.body);
+    const failed = (await store.findRequest(scope, receipt.receiptId)).receipt;
     expect(failed).toMatchObject({ status: 'QUEUED', billingStatus: receipt.billingStatus, execution: {
       requestId: receipt.execution.requestId, taskId: 'original-task', submissionStatus: 'accepted', generationStatus: 'queued',
       operationError: { status: queryFailure.status },

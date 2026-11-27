@@ -43,7 +43,7 @@ function setup(real = false) {
     : key === 'NODE_ENV' ? 'test' : 'true') };
   const videoAdapter: any = { connection: jest.fn(async () => ({ fingerprint: 'test' })),
     discover: jest.fn(async () => [{ modelId: 'minimax-h3', displayName: 'H3' }, { modelId: 'minimax-m3', displayName: 'M3' }]),
-    pricing: jest.fn(async () => ({ amount_usd: '0.12' })) };
+    pricing: jest.fn(async () => ({ currency: 'CNY', amount_cny: '0.840000' })) };
   const videoFiles: any = { assertAvailable: jest.fn(async () => {}) };
   const settings: any = { getEffectiveValue: jest.fn(async key => key === SETTING_KEYS.MEDIA_BASE_URL ? 'https://relay.example/v1' : 'key'),
     getMediaConnection: jest.fn(async () => ({ baseUrl: 'https://video.example/v1', apiKey: 'video-key', source: 'database' })),
@@ -74,7 +74,7 @@ describe('MediaVideoConfigService real configuration', () => {
     await f.service.verifyProfile(saved.profileId, { expectedConfigVersion: saved.configVersion,
       verificationSpec: { durationSeconds: 5, resolution: '720p', audio: false } });
     expect(f.videoAdapter.pricing).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ operation: 'video-to-video',
-      videoReferenceIds: ['verification-only'], referenceIds: [], requestedSpec: expect.objectContaining({ audio: false }) }), f.row.modelId);
+      videoReferenceIds: ['verification-only'], referenceIds: [], requestedSpec: expect.objectContaining({ audio: false }) }), f.row.modelId, true);
     await f.service.updateProfile(saved.profileId, { expectedConfigVersion: f.row.configVersion, enabled: true });
     const runtime = await f.service.getRuntimeVideoV3('ent-1');
     expect(runtime.tools).toContain('video_from_video');
@@ -154,7 +154,7 @@ describe('MediaVideoConfigService real configuration', () => {
       verificationSpec: { durationSeconds: 1200, resolution: '1440p', frameRate: 144, audio: false } }))
       .toMatchObject({ profile: { verified: true, enabled: false }, executionTested: false });
     expect(f.videoAdapter.pricing).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ protocolVersion: 3,
-      requestedSpec: expect.objectContaining({ durationSeconds: 1200, resolution: '1440p' }) }), f.row.modelId);
+      requestedSpec: expect.objectContaining({ durationSeconds: 1200, resolution: '1440p' }) }), f.row.modelId, true);
     await f.service.updateProfile(f.row.profileId, { expectedConfigVersion: f.row.configVersion, enabled: true });
     expect((await f.service.getRuntimeVideoV3('ent-1')).executionAvailable).toBe(true);
     expect((await f.service.getRuntimeVideo('ent-1')).executionAvailable).toBe(false);

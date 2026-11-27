@@ -31,9 +31,9 @@ const response = (value: unknown, status = 200, headers = {}) => new Response(JS
   status, headers: { 'Content-Type': 'application/json', 'X-Client-Request-ID': 'server-request-1', ...headers },
 });
 function price(extra = {}) {
-  return { object: 'sub2api.video_pricing', schema_version: 1, currency: 'USD', model: 'minimax-h3', operation: 'text-to-video',
+  return { object: 'sub2api.video_pricing', schema_version: 1, currency: 'CNY', contract_version: 1, quote_scope: 'platform_validation', model: 'minimax-h3', operation: 'text-to-video',
     resolution: '720p', duration_seconds: 4, billing_mode: 'video', pricing_status: 'quoted', pricing_source: 'customer_video_contract',
-    pricing_authority: 'sub2api_customer_billing', amount_usd: '0.128000', pricing_version: 'price-1', effective_rate_multiplier: 1,
+    pricing_authority: 'sub2api_customer_billing', amount_cny: '0.896000', pricing_version: 'price-1', effective_rate_multiplier: 1,
     observed_at: new Date(Date.now()).toISOString(), expires_at: new Date(Date.now() + 60_000).toISOString(), ...extra };
 }
 const usage = (extra = {}) => ({ object: 'sub2api.video_request_usage', schema_version: 1, currency: 'USD',
@@ -178,7 +178,7 @@ describe('Sub2apiVideoAdapter (mock fetch only)', () => {
 
   it('verifies customer pricing and sends the complete pricing echo', async () => {
     fetchMock.mockResolvedValueOnce(response(price()));
-    await expect(adapter.pricing(CONNECTION, input(), 'minimax-h3')).resolves.toMatchObject({ amount_usd: '0.128000' });
+    await expect(adapter.pricing(CONNECTION, input(), 'minimax-h3')).resolves.toMatchObject({ amount_cny: '0.896000' });
     expect(fetchMock.mock.calls[0][0]).toBe(BASE + '/sub2api/videos/pricing');
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ model: 'minimax-h3', operation: 'text-to-video', resolution: '720p', duration_seconds: 4 });
   });
@@ -234,7 +234,7 @@ describe('Sub2apiVideoAdapter (mock fetch only)', () => {
     { model: 'other' }, { operation: 'image-to-video' }, { resolution: '2k' }, { duration_seconds: 8 },
     { billing_mode: 'token' }, { pricing_status: 'unavailable' }, { pricing_source: 'public_fallback' },
     { pricing_source: 'fallback' }, { pricing_authority: undefined }, { pricing_authority: 'public_catalog' },
-    { amount_usd: null }, { amount_usd: '-0.1' }, { amount_usd: '0.1234567890123' },
+    { amount_cny: null }, { amount_cny: '-0.100000' }, { amount_cny: '0.1234567' },
     { effective_rate_multiplier: -1 }, { expires_at: '2020-01-01T00:00:00Z' },
     { expires_at: '2099-01-01T00:00:00Z' }, { observed_at: '2099-01-01T00:00:00Z' },
     { observed_at: '2020-01-01T00:00:00Z' },
@@ -245,8 +245,8 @@ describe('Sub2apiVideoAdapter (mock fetch only)', () => {
   });
 
   it('accepts per-request zero prices only with complete customer billing authority', async () => {
-    fetchMock.mockResolvedValueOnce(response(price({ billing_mode: 'per_request', amount_usd: '0' })));
-    await expect(adapter.pricing(CONNECTION, input(), 'minimax-h3')).resolves.toMatchObject({ amount_usd: '0' });
+    fetchMock.mockResolvedValueOnce(response(price({ billing_mode: 'per_request', amount_cny: '0.000000' })));
+    await expect(adapter.pricing(CONNECTION, input(), 'minimax-h3')).resolves.toMatchObject({ amount_cny: '0.000000' });
   });
 
   it('reads settled usage by billing ID, and pending usage has no amount', async () => {

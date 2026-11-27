@@ -48,7 +48,7 @@ const CATEGORY_META: Record<string, { label: string; description: string; icon: 
   auth: { label: '认证与安全', description: '邮件、钉钉、微信、QQ 登录与登录风控', icon: ShieldCheck },
   ai: { label: 'AI 服务', description: '上游渠道、默认模型与响应策略', icon: Sparkles },
   'model-runtime-policy': { label: '模型运行策略', description: '模型超时、业务请求频率、并发与资源预留', icon: SlidersHorizontal },
-  billing: { label: '计费与额度', description: '汇率、单价与算力赠送规则', icon: Database },
+  billing: { label: '计费与额度', description: '算力赠送规则', icon: Database },
   payments: { label: '支付与收款', description: '支付渠道和平台收款配置', icon: Database },
   users: { label: '用户与企业', description: '注册、审核与使用限制', icon: UsersRound },
   security: { label: '安全与数据', description: '内容过滤、IP 与数据留存', icon: ShieldCheck },

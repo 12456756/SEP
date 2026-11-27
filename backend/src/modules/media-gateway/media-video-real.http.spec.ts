@@ -112,7 +112,7 @@ describe('real video controller and guard HTTP', () => {
     const prior = code === 'IDEMPOTENCY_CONFLICT' ? { enterpriseId: privateDetail }
       : code === 'BILLING_PENDING' ? { ...videoClaims, enterpriseId: videoClaims.enterpriseId,
         userId: videoClaims.sub, subscriptionId: videoClaims.subscriptionId,
-        reservedCny: { equals: () => true }, usdToCnyRate: { equals: () => true }, status: 'RELEASED' }
+        reservedCny: { equals: () => true }, usdToCnyRate: null, status: 'RELEASED' }
       : null;
     const tx = {
       enterpriseMember: { findUnique: jest.fn(async () => ({ paymentMode: 'AUTO' })) },
@@ -124,9 +124,9 @@ describe('real video controller and guard HTTP', () => {
       personalWallet: { findUnique: jest.fn(async () => null), updateMany: jest.fn() },
     };
     const prisma = { $transaction: jest.fn(async (work: (value: typeof tx) => unknown) => work(tx)) };
-    const billing = new MediaRealBillingService(prisma as never);
+    const billing = new MediaRealBillingService(prisma as never, { isEnterpriseMode: jest.fn().mockResolvedValue(true) } as never);
     media.submit.mockImplementation(() => billing.reserve(videoClaims, privateDetail, '1.000000',
-      code === 'INVALID_PARAMETER' ? Number.NaN : 7));
+      code === 'INVALID_PARAMETER' ? Number.NaN : null));
     const requestId = `billing-http-${code}`;
     const response = await post('/requests').set('X-Request-ID', requestId)
       .send({ ...input, quoteId: 'quote-1', clientRequestId: 'client-1' }).expect(status);

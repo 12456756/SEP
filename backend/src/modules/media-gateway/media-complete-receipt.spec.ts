@@ -68,10 +68,9 @@ describe('complete Longdao receipts and client recovery', () => {
     h.adapter.submitAsync.mockImplementation(async (_i, _r, _m, id) => contractResult(id, {
       task_id: 'task-retained', model: 'invalid-provider-model', submission_status: 'protocol_error', status: null,
       billing: metadata.billing, submission_error: originalError, operation_error: originalError }, 502));
-    const { receipt, request } = await h.submit();
+    const { receipt, request } = await h.submitFailure(502);
     expect(MediaRealAnyReceiptSchema.parse(receipt)).toMatchObject({ status: 'FAILED', billingStatus: 'RELEASED',
-      execution: { submissionStatus: 'protocol_error', taskId: 'task-retained', submissionError: originalError },
-      clientActions: { canStartNewRequest: true, shouldPoll: false } });
+      execution: { submissionStatus: 'protocol_error', taskId: 'task-retained', submissionError: originalError } });
     await h.service.submit(imageClaims, request);
     expect(h.adapter.submitAsync).toHaveBeenCalledTimes(1);
     expect(h.adapter.queryAsync).not.toHaveBeenCalled();
@@ -83,7 +82,8 @@ describe('complete Longdao receipts and client recovery', () => {
     h.adapter.queryAsync.mockImplementationOnce(async () => contractResult('current-query', {
       ...metadata, request_id: 'current-query', receipt_operation: 'query', submission_status: 'unobserved',
       billing: { status: 'unknown', actual_cost_usd: null }, operation_error: { code: 'ACCESS_DENIED', message: 'Original key disabled' } }, 403));
-    const result = await h.service.receipt(imageClaims, receipt.receiptId);
+    await expect(h.service.receipt(imageClaims, receipt.receiptId)).rejects.toMatchObject({ status: 403 });
+    const result = (await h.store.findRequest(receipt.receiptId)).receipt;
     expect(result).toMatchObject({ status: 'RUNNING', billingStatus: receipt.billingStatus, execution: {
       requestId: receipt.execution!.requestId, taskId: 'task-original', submissionStatus: 'accepted', generationStatus: 'in_progress',
       operation: 'query', operationError: { status: 403, body: { request_id: 'current-query' } } } });
@@ -109,9 +109,8 @@ describe('complete Longdao receipts and client recovery', () => {
     h.adapter.submitAsync.mockImplementationOnce(async (_i, _r, _m, id) => contractResult(id, { task_id: 'diagnostic-only',
       submission_status: 'protocol_error', status: null, submission_error: originalError,
       billing: { status: 'unknown', actual_cost_usd: null, error: { message: 'Ledger unavailable' } } }, 503));
-    const { receipt } = await h.submit();
-    expect(receipt).toMatchObject({ status: 'FAILED', billingStatus: 'RECONCILING',
-      clientActions: { canStartNewRequest: true, pollPurpose: 'billing' } });
+    const { receipt } = await h.submitFailure(503);
+    expect(receipt).toMatchObject({ status: 'FAILED', billingStatus: 'RECONCILING' });
     expect(h.billing.release).not.toHaveBeenCalled();
     h.adapter.queryAsync.mockImplementationOnce(async (_c, id) => contractResult(id, { task_id: 'diagnostic-only',
       submission_status: 'protocol_error', status: null, operation: 'query', operation_error: null,
@@ -137,21 +136,21 @@ describe('complete quote and usage response compatibility', () => {
   afterEach(() => jest.restoreAllMocks());
   const quoteMetadata = { ...metadata, receipt_operation: 'pricing', submission_status: 'not_applicable',
     billing: { status: 'not_applicable', actual_cost_usd: null, error: null } };
-  const price = () => ({ currency: 'USD', billing_mode: 'per_request', pricing_status: 'quoted',
-    pricing_source: 'customer_contract', pricing_authority: 'sub2api_customer_billing', amount_usd: '0.1',
+  const price = () => ({ currency: 'CNY', contract_version: 1, quote_scope: 'platform_validation', billing_mode: 'per_request', pricing_status: 'quoted',
+    pricing_source: 'customer_contract', pricing_authority: 'sub2api_customer_billing', amount_cny: '0.700000',
     pricing_version: 'price-1', effective_rate_multiplier: 1, observed_at: new Date().toISOString(), expires_at: new Date(Date.now() + 60000).toISOString() });
   const respond = (body: unknown) => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
 
   it('accepts v2 image quotes with non-task metadata', async () => {
     fetchMock.mockResolvedValueOnce(respond({ ...quoteMetadata, ...price(), object: 'sub2api.image_pricing', model: 'gpt-image-2',
       operation: 'generate', size: '1024x1024', n: 1, quality: 'medium' }));
-    expect(await images.pricing(image, 'gpt-image-2', connection)).toMatchObject({ schema_version: 2, amount_usd: '0.1' });
+    expect(await images.pricing(image, 'gpt-image-2', connection)).toMatchObject({ schema_version: 2, amount_cny: '0.700000', amount_usd: null });
   });
 
   it('accepts v2 video quotes while preserving the business operation', async () => {
     fetchMock.mockResolvedValueOnce(respond({ ...quoteMetadata, ...price(), object: 'sub2api.video_pricing', model: 'seedance-2.0',
       operation: 'text-to-video', resolution: '720p', duration_seconds: 4 }));
-    expect(await videos.pricing(connection, video, 'seedance-2.0')).toMatchObject({ schema_version: 2, amount_usd: '0.1', operation: 'text-to-video' });
+    expect(await videos.pricing(connection, video, 'seedance-2.0')).toMatchObject({ schema_version: 2, amount_cny: '0.700000', amount_usd: null, operation: 'text-to-video' });
   });
 
   it('accepts video usage metadata without treating financial status as generation status', async () => {

@@ -31,7 +31,7 @@ export * from './compute-integration.dto';
 // 真正的白名单是 `platform_models` 表：`ModelService.syncFromUpstream()` 从
 // GET /v1/models 拉全量、新模型默认 enabled=false、上游消失的标 isStale。
 // 「这个模型能不能用」由 `POST /models/:id/test` 回答（按**流式**测，见该方法）。
-// 价格仍在下方 MODEL_PRICING，未配价的走 FALLBACK_PRICING 保底。
+// 模型费用统一由算力平台以人民币确认。
 // ============================================================================
 
 /**
@@ -60,15 +60,6 @@ export * from './model-runtime-policy';
 export const UpdateSettingsDtoSchema = z.record(z.string(), z.string());
 export type UpdateSettingsDto = z.infer<typeof UpdateSettingsDtoSchema>;
 
-/**
- * 汇率默认值。真实生效值优先取系统设置（SETTING_KEYS.USD_TO_CNY_RATE），
- * 由调用方通过 calculateCost 的 rate 参数传入；此常量仅作兜底。
- * 汇率会波动，硬编码会导致改一次就要重新构建部署，故做成可配置项。
- */
-export const DEFAULT_USD_TO_CNY_RATE = 7.2;
-
-/** @deprecated 用 DEFAULT_USD_TO_CNY_RATE，或从系统设置读取生效值。 */
-export const USD_TO_CNY_RATE = DEFAULT_USD_TO_CNY_RATE;
 
 export const SETTING_KEYS = {
   SUB2API_BASE_URL: "SUB2API_BASE_URL",
@@ -328,41 +319,6 @@ export const SETTING_FIELDS: readonly SettingFieldMeta[] = [
     type: "string",
   },
   // 计费与额度
-  {
-    key: SETTING_KEYS.USD_TO_CNY_RATE,
-    label: "美元汇率（USD→CNY）",
-    secret: false,
-    envFallback: "USD_TO_CNY_RATE",
-    placeholder: String(DEFAULT_USD_TO_CNY_RATE),
-    category: "billing",
-    type: "number",
-    unit: "元/美元",
-    min: 0,
-  },
-  {
-    key: SETTING_KEYS.FALLBACK_PRICE_INPUT,
-    label: "保底计费-输入价格",
-    secret: false,
-    envFallback: "FALLBACK_PRICE_INPUT",
-    placeholder: "0.001",
-    category: "billing",
-    description: "未单独配置模型价格时的输入 token 单价。",
-    type: "number",
-    unit: "元/1K tokens",
-    min: 0,
-  },
-  {
-    key: SETTING_KEYS.FALLBACK_PRICE_OUTPUT,
-    label: "保底计费-输出价格",
-    secret: false,
-    envFallback: "FALLBACK_PRICE_OUTPUT",
-    placeholder: "0.002",
-    category: "billing",
-    description: "未单独配置模型价格时的输出 token 单价。",
-    type: "number",
-    unit: "元/1K tokens",
-    min: 0,
-  },
   {
     key: SETTING_KEYS.DEFAULT_EMPLOYEE_GIFT_CNY,
     label: "订阅赠送算力默认值",
@@ -1691,56 +1647,6 @@ export interface UserProfileResponse {
   updatedAt: Date;
 }
 
-// ============================================================================
-// Model Pricing (计费价格表)
-// ----------------------------------------------------------------------------
-// 单位：美元 / 1M tokens
-// 数据来源：各厂商官网定价（截至 2026-07）
-// ============================================================================
-
-export interface ModelPricing {
-  inputPrice: number; // 输入 token 单价（美元 / 1M tokens）
-  outputPrice: number; // 输出 token 单价（美元 / 1M tokens）
-}
-
-export const MODEL_PRICING: Record<string, ModelPricing> = {
-  // ── 中转（sub2api）实际提供的模型。2026-09-05 用 GET /v1/models 核过：
-  //    上游只有 gemini-* 一族，任何 gpt-* / claude-* 都会 404 model_not_found。
-  //    价格按 flash / flash-lite / pro 三档定，同档不同后缀（-low/-high/-extra-low）
-  //    只是推理预算档位，单价相同。
-  "gemini-2.5-flash": { inputPrice: 0.15, outputPrice: 0.6 },
-  "gemini-3.5-flash": { inputPrice: 0.15, outputPrice: 0.6 },
-  "gemini-3.5-flash-low": { inputPrice: 0.15, outputPrice: 0.6 },
-  "gemini-3.5-flash-high": { inputPrice: 0.15, outputPrice: 0.6 },
-  "gemini-3.5-flash-extra-low": { inputPrice: 0.15, outputPrice: 0.6 },
-  "gemini-3.5-flash-lite": { inputPrice: 0.075, outputPrice: 0.3 },
-  "gemini-3.6-flash": { inputPrice: 0.15, outputPrice: 0.6 },
-  "gemini-3.7-flash": { inputPrice: 0.15, outputPrice: 0.6 },
-  "gemini-3.8-flash": { inputPrice: 0.15, outputPrice: 0.6 },
-  "gemini-3.1-flash-image": { inputPrice: 0.15, outputPrice: 0.6 },
-  "gemini-3.1-flash-lite-preview": { inputPrice: 0.075, outputPrice: 0.3 },
-  "gemini-3-pro-preview": { inputPrice: 1.25, outputPrice: 10.0 },
-  "gemini-3.1-pro-preview": { inputPrice: 1.25, outputPrice: 10.0 },
-  "gemini-3.1-pro-preview-low": { inputPrice: 1.25, outputPrice: 10.0 },
-  // ── 上游已不提供，但**历史账单里还有这些 modelId**（实测本地库：gpt-4o-mini
-  //    106 条、gpt-4o 41 条、claude-3-5-sonnet 14 条），价格必须留着：
-  //    删掉会让老记录在任何重算路径上掉到保底价，与已入账金额对不上；
-  //    而且 FALLBACK_PRICING 取的是本表最高价，删掉最贵的那几档等于悄悄
-  //    调低了「未配价模型」的保底单价 —— 那正是用来堵免费对话漏洞的。
-  "gpt-4o": { inputPrice: 2.5, outputPrice: 10.0 },
-  "gpt-4o-mini": { inputPrice: 0.15, outputPrice: 0.6 },
-  "claude-sonnet-5": { inputPrice: 3.0, outputPrice: 15.0 },
-  "claude-haiku-4-5": { inputPrice: 0.8, outputPrice: 4.0 },
-  "deepseek-v4-flash": { inputPrice: 0.14, outputPrice: 0.55 },
-  "deepseek-v4-pro": { inputPrice: 2.19, outputPrice: 8.77 },
-};
-
-/** 解析汇率配置值，非法输入回退默认值（避免把 NaN 写进账单）。 */
-export function parseUsdToCnyRate(raw: string | undefined): number {
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : DEFAULT_USD_TO_CNY_RATE;
-}
-
 /**
  * 解析一个「元」金额配置值。非法/负数/空值一律回退 `fallback`，
  * 绝不把 NaN 或负数写进账本。最多保留两位小数。
@@ -1754,112 +1660,14 @@ export function parseCnyAmount(raw: string | undefined, fallback = 0): number {
   return Math.round(n * 100) / 100;
 }
 
-/**
- * 运营配置的保底单价（元 / 1K tokens）。两项都配了才生效 ——
- * 只配一半会让另一半静默走「已知模型最高单价」，账单口径变得无法解释。
- */
-export interface FallbackPriceConfigCNY {
-  inputCnyPer1K: number;
-  outputCnyPer1K: number;
-}
-
-/** 从系统设置的原始字符串解析保底单价；任一项缺失/非法则返回 null（走默认保底价）。 */
-export function parseFallbackPriceConfig(
-  rawInput: string | undefined,
-  rawOutput: string | undefined,
-): FallbackPriceConfigCNY | null {
-  // 空白必须当「未配置」处理：Number('') === 0，直接 Number() 会把一个从未设置过的
-  // 配置项解析成 0 元单价，让所有未配价模型静默变成免费对话。
-  const input = parsePositivePrice(rawInput);
-  const output = parsePositivePrice(rawOutput);
-  if (input === null || output === null) return null;
-  return { inputCnyPer1K: input, outputCnyPer1K: output };
-}
-
-/** 单价：空白/非法/负数 → null；否则返回数值（允许 0，表示运营明确「免费」）。 */
-function parsePositivePrice(raw: string | undefined): number | null {
-  if (raw === undefined || raw === null || String(raw).trim() === '') {
-    return null;
-  }
-  const value = Number(raw);
-  return Number.isFinite(value) && value >= 0 ? value : null;
-}
-
-/**
- * 保底价：取 MODEL_PRICING 中各维度的最高单价。
- * 未在价格表中的模型（上游 57 个里只有 7 个配了价）按此保底计费，
- * 宁可多收也不漏收，避免未配价模型被启用后「免费对话」。
- * 管理端应对这类模型显示警示，提醒尽快补上真实价格。
- */
-export const FALLBACK_PRICING: ModelPricing = {
-  inputPrice: Math.max(
-    ...Object.values(MODEL_PRICING).map((p) => p.inputPrice),
-  ),
-  outputPrice: Math.max(
-    ...Object.values(MODEL_PRICING).map((p) => p.outputPrice),
-  ),
-};
-
-/** 该模型是否已配置真实价格（未配则计费走保底价）。 */
-export function hasPricing(modelId: string): boolean {
-  return modelId in MODEL_PRICING;
-}
-
+/** Historical pricing snapshot shape; never used to calculate new charges. */
 export interface ComputeCostBreakdown {
   costUSD: number;
   costCNY: number;
   isFallback: boolean;
   rate: number;
-  /** 本次实际使用的输入/输出单价（美元 / 1M tokens），写进账单以便复核 */
   inputPriceUsdPerMillion: number;
   outputPriceUsdPerMillion: number;
-}
-
-/**
- * 计算单次对话的成本。
- *
- * @param modelId 模型 ID
- * @param inputTokens 输入 token 数
- * @param outputTokens 输出 token 数
- * @param rate 生效汇率，省略则用默认值（调用方应从系统设置读取后传入）
- * @param fallbackConfig 运营配置的保底单价（元/1K tokens）。仅对**未配价模型**生效；
- *   给出时按它计价，并换算回等价美元单价写入账单，保证账单口径始终是同一套字段。
- */
-export function calculateCost(
-  modelId: string,
-  inputTokens: number,
-  outputTokens: number,
-  rate: number = DEFAULT_USD_TO_CNY_RATE,
-  fallbackConfig?: FallbackPriceConfigCNY | null,
-): ComputeCostBreakdown {
-  const isFallback = !hasPricing(modelId);
-
-  // 未配价 + 运营配了保底价：以人民币单价为准。换算成 USD/1M 存档，
-  // 让 ComputeUsageRecord 的单价字段对所有账单保持同一含义。
-  const pricing =
-    isFallback && fallbackConfig
-      ? {
-          inputPrice: (fallbackConfig.inputCnyPer1K / rate) * 1000,
-          outputPrice: (fallbackConfig.outputCnyPer1K / rate) * 1000,
-        }
-      : isFallback
-        ? FALLBACK_PRICING
-        : MODEL_PRICING[modelId];
-
-  const costUSD =
-    (inputTokens * pricing.inputPrice + outputTokens * pricing.outputPrice) /
-    1_000_000;
-  const costCNY = costUSD * rate;
-
-  // 返回 rate 与单价：账单需可复核 —— 改价改汇率后旧账单仍应能解释当时的金额
-  return {
-    costUSD,
-    costCNY,
-    isFallback,
-    rate,
-    inputPriceUsdPerMillion: pricing.inputPrice,
-    outputPriceUsdPerMillion: pricing.outputPrice,
-  };
 }
 
 // ============================================================================

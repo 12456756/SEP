@@ -79,6 +79,8 @@ async function bootstrap() {
   app.enableCors({
     origin: corsOrigins.length > 0 ? corsOrigins : ['http://localhost:3000', 'http://localhost:4173'],
     credentials: true,
+    exposedHeaders: ['Retry-After', 'X-Request-ID', 'X-Compute-Request-ID', 'X-Compute-Status',
+      'X-SEP-Error-Source', 'X-SEP-Receipt-ID', 'X-SEP-Client-Request-ID'],
   });
 
   // Global API prefix

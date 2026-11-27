@@ -86,5 +86,12 @@ export function imageHarness() {
     const request = { ...input, clientRequestId, quoteId: quote.quoteId };
     return { receipt: await service.submit(imageClaims, request), request };
   };
-  return { service, prisma, config, mediaConfig, adapter, cache, billing: billing as typeof billing & { settleCompute: jest.Mock }, store, records, journals, submit, profile, enterprise };
+  const submitFailure = async (status: number) => {
+    const quote = await service.quote(imageClaims, imageInput);
+    const request = { ...imageInput, clientRequestId: 'client-1', quoteId: quote.quoteId };
+    await expect(service.submit(imageClaims, request)).rejects.toMatchObject({ status });
+    const record = await store.findByClientId(imageClaims.enterpriseId, request.clientRequestId);
+    return { receipt: MediaRealAnyReceiptSchema.parse(record.receipt), request };
+  };
+  return { service, prisma, config, mediaConfig, adapter, cache, billing: billing as typeof billing & { settleCompute: jest.Mock }, store, records, journals, submit, submitFailure, profile, enterprise };
 }

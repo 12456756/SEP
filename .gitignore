@@ -44,6 +44,7 @@ outputs/relay-home/
 # Misc
 .turbo/
 .cache/
+__pycache__/
 temp/
 web/.next-dev/
 

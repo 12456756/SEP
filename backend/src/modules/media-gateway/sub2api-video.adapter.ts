@@ -27,12 +27,13 @@ const TaskSchema = z.object({
 });
 const PricingSchema = z.object({
   ...LongdaoReceiptMetadataFields,
-  object: z.literal('sub2api.video_pricing'), schema_version: z.union([z.literal(1), z.literal(2)]), currency: z.enum(['USD', 'CNY']),
+  object: z.literal('sub2api.video_pricing'), schema_version: z.union([z.literal(1), z.literal(2)]), currency: z.literal('CNY'),
   model: ModelIdSchema, operation: MediaVideoOperationSchema,
   resolution: z.string().min(1).max(128), duration_seconds: z.number().int().positive().safe(),
   billing_mode: z.enum(['video', 'per_request']), pricing_status: z.enum(['quoted', 'unavailable']),
   pricing_source: z.string().trim().min(1).max(128), pricing_authority: z.literal('sub2api_customer_billing'),
-  amount_usd: MediaVideoUsdSchema.nullable().optional().transform(value => value ?? null), pricing_version: z.string().min(1).max(128),
+  amount_usd: z.unknown().optional().transform(() => null), pricing_version: z.string().max(128),
+  quote_scope: z.literal('platform_validation').optional(),
   contract_version: z.literal(1).optional(), enterprise_id: z.string().optional(), exchange_rate: z.string().optional(),
   amount_cny: z.string().regex(/^\d+\.[0-9]{6}$/).nullable().optional(), quote_id: z.string().min(1).max(128).optional(),
   effective_rate_multiplier: z.number().finite().nonnegative(),
@@ -108,12 +109,14 @@ export class Sub2apiVideoAdapter {
     return [...models.values()].sort((a, b) => a.modelId < b.modelId ? -1 : a.modelId > b.modelId ? 1 : 0);
   }
 
-  async pricing(connection: Sub2apiVideoConnection, input: Sub2apiVideoInput, modelId: string): Promise<Sub2apiVideoPrice> {
+  async pricing(connection: Sub2apiVideoConnection, input: Sub2apiVideoInput, modelId: string, validation = false): Promise<Sub2apiVideoPrice> {
     const dimensions = this.pricingDimensions(input, modelId, 'quote');
-    const result = await this.json(connection, '/sub2api/videos/pricing', {
+    const body = { model: modelId, operation: input.operation, resolution: dimensions.resolution, duration_seconds: dimensions.durationSeconds };
+    if (validation && !this.computeProtocol) unavailable('PRICE_UNAVAILABLE', '人民币报价校验需要配置算力平台服务签名');
+    const result = validation ? { value: await this.computeProtocol.json('/api/v1/sep/validation/video/pricing', { method: 'POST', body }) }
+      : await this.json(connection, '/sub2api/videos/pricing', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: modelId, operation: input.operation,
-        resolution: dimensions.resolution, duration_seconds: dimensions.durationSeconds }),
+      body: JSON.stringify(body),
     });
     const parsed = PricingSchema.safeParse(result.value);
     if (!parsed.success) unavailable('PRICE_UNAVAILABLE', { message: 'Video quote response validation failed', errors: parsed.error.issues });
@@ -121,7 +124,9 @@ export class Sub2apiVideoAdapter {
     const now = Date.now();
     if (price.model !== modelId || price.operation !== input.operation || price.resolution !== dimensions.resolution ||
       price.duration_seconds !== dimensions.durationSeconds || price.pricing_status !== 'quoted' ||
-      (connection.compute ? price.currency !== 'CNY' || price.contract_version !== 1 || price.enterprise_id !== connection.compute.enterpriseId || price.amount_cny == null || !price.quote_id || price.quote_id !== price.pricing_version : price.currency !== 'USD' || price.amount_usd === null) ||
+      (validation ? price.currency !== 'CNY' || price.contract_version !== 1 || price.quote_scope !== 'platform_validation' || price.amount_cny == null
+        : connection.compute ? price.currency !== 'CNY' || price.contract_version !== 1 || price.enterprise_id !== connection.compute.enterpriseId || price.amount_cny == null || !price.quote_id || price.quote_id !== price.pricing_version
+          : price.contract_version !== 1 || price.quote_scope !== 'platform_validation' || price.amount_cny == null) ||
       /public|fallback|default|unknown/i.test(price.pricing_source) ||
       Date.parse(price.observed_at) > now + 5000 || Date.parse(price.expires_at) <= now ||
       Date.parse(price.expires_at) > now + 120_000 || Date.parse(price.expires_at) <= Date.parse(price.observed_at) ||

@@ -13,7 +13,7 @@ import { MediaConfigService } from '../media-config/media-config.service';
 import { clientSubscriptionAccessWhere } from '../client/client-subscription-access';
 import type { ClientEmploymentClaims } from '../client/client-employment.guard';
 import { MAX_MEDIA_REFERENCE_TOTAL_BYTES, effectiveImageLimits, IMAGE_REFERENCE_MAX_BYTES, MediaAuthorizationSchema, MediaCapabilitiesSchema } from 'shared';
-import type { MediaImageSpecV3, MediaRealAnyQuoteRequest, MediaRealAnyRequest, MediaRealQuoteRequestV3, MediaRealReceipt, MediaRealErrorCode } from 'shared';
+import type { MediaImageSpecV3, MediaRealAnyQuoteRequest, MediaRealAnyRequest, MediaRealQuoteRequestV3, MediaRealReceipt, MediaRealErrorCode, MediaUpstreamError } from 'shared';
 import { MediaJsonValueSchema, MediaRealAnyQuoteRequestSchema, MediaRealAnyRequestSchema, MediaRealAnyReceiptSchema } from 'shared';
 import { inspectReferenceImage } from './media-reference-image';
 import { MediaByteCacheService } from './media-byte-cache.service';
@@ -22,9 +22,10 @@ import { MediaRealStore, RealRequestRecord, realMediaStorageUnavailable } from '
 import { ImageDispatchError, resolveSub2apiImageSpec, SUB2API_IMAGE_ADAPTER_VERSION, Sub2apiImageAdapter } from './sub2api-image.adapter';
 import { isSupportedImageModel } from './image-model-contract';
 import { mediaRealSemanticHash } from './media-real-semantics';
-import { MediaUpstreamException, mediaFailure, retainMediaFailure } from '../../common/errors/media-upstream.exception';
+import { MediaUpstreamException, mediaFailure, mediaOperationException, retainMediaFailure } from '../../common/errors/media-upstream.exception';
 import { exceptionDetails } from '../../common/errors/error-diagnostics';
-import { closedSubmission, executionEvidence, executionFailure, IMAGE_SUBMISSION_BUDGET_MS, MEDIA_SAVE_GRACE_MS, mediaClientActions, mergeExecutionEvidence, recoverableTaskId,
+import { hasFailedMediaQuery, mediaPollAfter, updateMediaWait, withMediaWait } from './media-upstream-retry';
+import { closedSubmission, executionEvidence, executionFailure, IMAGE_SUBMISSION_BUDGET_MS, MEDIA_SAVE_GRACE_MS, mediaClientActions, mediaOperationFailure, mergeExecutionEvidence, recoverableTaskId,
   type LongdaoMediaResult } from './longdao-media-contract';
 
 const REFERENCE_TTL = 15 * 60_000;
@@ -103,7 +104,7 @@ export class MediaRealService {
       pricingVersion: price.pricing_version, billingStatus: 'NOT_RESERVED', funding,
       ...(!('parameters' in dto) ? { protocolVersion: 3 as const, semanticHashVersion: 3 as const,
         specRevision: (dto as MediaRealQuoteRequestV3).specRevision, profileId: profile.profileId, configVersion: profile.configVersion,
-        modelId: profile.modelId, adapterVersion: SUB2API_IMAGE_ADAPTER_VERSION, amountUsd: price.amount_usd!,
+        modelId: profile.modelId, adapterVersion: SUB2API_IMAGE_ADAPTER_VERSION, amountUsd: null,
         connectionFingerprint: snapshot!.fingerprint,
         effectiveSpec, billingDimensions: { size: effectiveSpec.size!, count: effectiveSpec.count!, quality: effectiveSpec.quality! },
         normalizationNotes: this.normalizationNotes(dto, effectiveSpec) } : {}),
@@ -180,7 +181,7 @@ export class MediaRealService {
         dispatchState: 'NOT_DISPATCHED', connectionFingerprint: connectionSnapshot.fingerprint },
       receipt: { ...nowReceipt, receiptId: 'pending', receiptVersion: 2, fileStatus: 'pending', execution: {
         requestId, taskId: null, submissionStatus: 'submitting', generationStatus: null, isFinal: null,
-        observedAt: null, statusSource: null, billing: { status: 'pending', actualCostUsd: null },
+        observedAt: null, statusSource: null, billing: { status: 'pending', actualCostCny: null },
       } }, upstreamRequestId: requestId,
       submissionDeadline: new Date(Date.now() + IMAGE_SUBMISSION_BUDGET_MS + MEDIA_SAVE_GRACE_MS),
     });
@@ -209,7 +210,7 @@ export class MediaRealService {
       if (notReserved && record.receipt.execution) {
         await this.computeMedia.closeUnsent(claims.enterpriseId, 'image', receiptId);
         record.receipt.execution.submissionStatus = 'not_submitted'; record.receipt.fileStatus = 'unavailable';
-        record.receipt.execution.billing = { status: 'not_charged', actualCostUsd: '0' };
+        record.receipt.execution.billing = { status: 'not_charged', actualCostCny: '0.000000' };
       }
       return this.snapshot(await this.store.save(record));
     }
@@ -225,6 +226,7 @@ export class MediaRealService {
       return this.snapshot(record);
     }
     let dispatchStarted = false;
+    let operationFailure: MediaUpstreamError | undefined;
     try {
       if (!('parameters' in dto)) {
         await this.authorize(claims);
@@ -244,6 +246,7 @@ export class MediaRealService {
       dispatchStarted = true;
       const result = await this.adapter.submitAsync(adapterInput, referenceBytes, profile.modelId, requestId,
         dispatchConnection?.connection ?? connectionSnapshot.connection);
+      operationFailure = mediaOperationFailure(result);
       record = await this.applyAsyncResult(record, result);
     } catch (failure) {
       if (failure instanceof ImageDispatchError && failure.upstreamError) record.receipt.upstreamError = failure.upstreamError;
@@ -272,12 +275,16 @@ export class MediaRealService {
         record.receipt.execution.submissionStatus = dispatchStarted ? 'unknown' : 'not_submitted';
         record.receipt.execution.operationError = mediaFailure(failure);
         record.receipt.execution.taskId ??= recoverableTaskId(failure, requestId);
-        if (!dispatchStarted) record.receipt.execution.billing = { status: 'not_charged', actualCostUsd: '0' };
+        if (!dispatchStarted) record.receipt.execution.billing = { status: 'not_charged', actualCostCny: '0.000000' };
       }
       record = await this.saveExecution(record);
+      if (failure instanceof MediaUpstreamException || failure instanceof ImageDispatchError && failure.upstreamError) {
+        throw mediaOperationException(record.receipt.upstreamError!, record.receipt);
+      }
       return this.snapshot(record);
     }
 
+    if (operationFailure) throw mediaOperationException(operationFailure, record.receipt);
     return this.snapshot(record);
   }
 
@@ -439,9 +446,10 @@ export class MediaRealService {
       result.clientActions = mediaClientActions(result.execution, result.fileStatus ?? 'pending', ['RESERVED', 'RECONCILING'].includes(result.billingStatus));
       result.recovery.canQuery = result.clientActions.shouldPoll;
       result.recovery.canDownload = result.fileStatus === 'available' && result.outputs.length > 0;
-      result.pollAfterMs = result.clientActions.shouldPoll ? result.clientActions.pollPurpose === 'billing' ? 15000 : 3000 : null;
+      result.pollAfterMs = result.clientActions.shouldPoll
+        ? mediaPollAfter(record.configuration, result.clientActions.pollPurpose === 'billing' ? 15000 : 3000) : null;
     }
-    return MediaRealAnyReceiptSchema.parse(result);
+    return withMediaWait(MediaRealAnyReceiptSchema.parse(result), record.configuration);
   }
 
   private async saveExecution(desired: RealRequestRecord): Promise<RealRequestRecord> {
@@ -546,18 +554,20 @@ export class MediaRealService {
   }
 
   private async recoverAsync(record: RealRequestRecord): Promise<RealRequestRecord> {
-    if (record.receipt.billingStatus === 'NOT_RESERVED' && closedSubmission(record.receipt.execution!)) return record;
-    if ((closedSubmission(record.receipt.execution!) || ['failed', 'cancelled'].includes(record.receipt.execution!.generationStatus!)) && record.receipt.billingStatus === 'RELEASED' ||
-        ['available', 'expired'].includes(record.receipt.fileStatus!) && ['SETTLED', 'RELEASED'].includes(record.receipt.billingStatus)) return record;
+    const retryQuery = hasFailedMediaQuery(record.receipt);
+    if (!retryQuery && record.receipt.billingStatus === 'NOT_RESERVED' && closedSubmission(record.receipt.execution!)) return record;
+    if (!retryQuery && ((closedSubmission(record.receipt.execution!) || ['failed', 'cancelled'].includes(record.receipt.execution!.generationStatus!)) && record.receipt.billingStatus === 'RELEASED' ||
+        ['available', 'expired'].includes(record.receipt.fileStatus!) && ['SETTLED', 'RELEASED'].includes(record.receipt.billingStatus))) return record;
+    let operationFailure: MediaUpstreamError | undefined;
     try {
-      if ((record.configuration as { compute?: ComputeMediaSnapshot }).compute
+      if (!retryQuery && (record.configuration as { compute?: ComputeMediaSnapshot }).compute
         && (record.configuration as { dispatchState?: string }).dispatchState !== 'NOT_DISPATCHED'
         && record.receipt.execution!.billing.status === 'not_charged'
         && (closedSubmission(record.receipt.execution!) || record.receipt.execution!.isFinal)) {
         return this.settleAsyncBilling(record);
       }
       const original = record.configuration as { compute?: ComputeMediaSnapshot; dispatchState?: string };
-      if (record.receipt.execution!.billing.status === 'not_charged' && record.receipt.execution!.generationStatus !== 'completed'
+      if (!retryQuery && record.receipt.execution!.billing.status === 'not_charged' && record.receipt.execution!.generationStatus !== 'completed'
         && (!original.compute || original.dispatchState === 'NOT_DISPATCHED'
           && await this.computeMedia.closeUnsent(record.enterpriseId, 'image', record.id))) {
         try {
@@ -571,7 +581,7 @@ export class MediaRealService {
         if (record.submissionDeadline.getTime() > Date.now()) return record;
         if (configuration.compute && !await this.computeMedia.closeUnsent(record.enterpriseId, 'image', record.id)) return record;
         record.receipt.status = 'FAILED'; record.receipt.execution!.submissionStatus = 'not_submitted';
-        record.receipt.fileStatus = 'unavailable'; record.receipt.execution!.billing = { status: 'not_charged', actualCostUsd: '0' };
+        record.receipt.fileStatus = 'unavailable'; record.receipt.execution!.billing = { status: 'not_charged', actualCostCny: '0.000000' };
         const closed = await this.store.saveGuarded(record);
         if (!closed.updated) return closed.record;
         record = closed.record;
@@ -583,12 +593,13 @@ export class MediaRealService {
       const own = await this.computeMedia.connection(record.enterpriseId, 'image', configuration.compute, record.id);
       const snapshot = { connection: own, fingerprint: own.fingerprint };
       if (!configuration.connectionFingerprint || configuration.connectionFingerprint !== snapshot.fingerprint) error(409, 'CONFIG_CHANGED', '原图片连接已变更，不能使用其他 Key 恢复任务');
-      if (record.receipt.execution!.generationStatus !== 'completed' || !['SETTLED', 'RELEASED'].includes(record.receipt.billingStatus)) {
+      if (retryQuery || record.receipt.execution!.generationStatus !== 'completed' || !['SETTLED', 'RELEASED'].includes(record.receipt.billingStatus)) {
         const result = await this.adapter.queryAsync(snapshot.connection, record.receipt.execution!.requestId,
           closedSubmission(record.receipt.execution!) ? null : record.receipt.execution!.taskId);
+        operationFailure = mediaOperationFailure(result);
         record = await this.applyAsyncResult(record, result);
       }
-      if (record.receipt.execution?.generationStatus === 'completed' && record.receipt.execution.taskId && !record.receipt.outputs.length) {
+      if (!operationFailure && record.receipt.execution?.generationStatus === 'completed' && record.receipt.execution.taskId && !record.receipt.outputs.length) {
         try {
           const config = record.configuration as { outputExpiresAt?: string };
           config.outputExpiresAt ??= new Date(Date.now() + OUTPUT_TTL).toISOString();
@@ -604,9 +615,15 @@ export class MediaRealService {
           record.receipt.outputs = [{ outputId, kind: 'image', mimeType: metadata.mimeType, width: metadata.width,
             height: metadata.height, byteLength: bytes.length, sha256: sha(bytes), expiresAt }];
           record.receipt.status = 'SUCCEEDED'; record.receipt.fileStatus = 'available'; record.receipt.errorCode = null;
+          if (record.receipt.execution!.operation === 'download') {
+            delete record.receipt.execution!.operationError;
+            record.receipt.upstreamError = executionFailure(record.receipt.execution!, 200);
+            updateMediaWait(record.configuration, {});
+          }
           const spec = (record.configuration as { effectiveSpec?: ReturnType<typeof resolveSub2apiImageSpec> }).effectiveSpec;
           if (spec) this.applyActualSpec(record, spec);
         } catch (failure) {
+          if (failure instanceof MediaUpstreamException) operationFailure ??= mediaFailure(failure);
           record.receipt.fileStatus = 'download_failed'; record.receipt.errorCode = 'OUTPUT_FAILED';
           record.receipt.execution!.operationError = mediaFailure(failure);
           record.receipt.execution!.operation = 'download';
@@ -615,15 +632,18 @@ export class MediaRealService {
         record = await this.store.save(record);
       }
     } catch (failure) {
+      if (failure instanceof MediaUpstreamException) operationFailure ??= mediaFailure(failure);
       record.receipt.execution!.operation = 'query';
       record.receipt.execution!.operationError = mediaFailure(failure);
       record.receipt.upstreamError = mediaFailure(failure);
       record = await this.store.save(record);
     }
+    if (operationFailure) throw mediaOperationException(operationFailure, record.receipt);
     return record;
   }
 
   private async applyAsyncResult(record: RealRequestRecord, result: LongdaoMediaResult): Promise<RealRequestRecord> {
+    updateMediaWait(record.configuration, result.headers);
     const incoming = executionEvidence(result);
     if (incoming.submissionStatus === 'unobserved') {
       record.receipt.execution = mergeExecutionEvidence(record.receipt.execution!, incoming);

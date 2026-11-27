@@ -8,6 +8,7 @@ import type { MediaVideoRealQuote, MediaVideoRealReceipt, MediaVideoRealReferenc
 import { PrismaService } from '../../prisma/prisma.service';
 import { videoGatewayError, videoStorageUnavailable } from './media-video-gateway.store';
 import { ComputeMediaSnapshotSchema } from '../compute-integration/compute-media.service';
+import { MediaUpstreamWaitSchema } from './media-upstream-retry';
 
 export const VIDEO_REAL_ADAPTER = 'sub2api-video-v1';
 const id = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
@@ -58,6 +59,7 @@ const VideoInputMetadataSchema = z.object({
 }).strict();
 export type VideoInputMetadata = z.infer<typeof VideoInputMetadataSchema>;
 const DispatchSchema = z.object({
+  upstreamWait: MediaUpstreamWaitSchema.optional(),
   contractVersion: z.literal(2).optional(),
   cancelSupported: z.boolean().optional(),
   quoteId: id,

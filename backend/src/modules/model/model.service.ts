@@ -7,7 +7,7 @@ import {
 } from "@nestjs/common";
 import { PrismaService } from "../../prisma/prisma.service";
 import { SettingService } from "../setting/setting.service";
-import { SETTING_KEYS, hasPricing, type UpdatePlatformModelDto } from "shared";
+import { SETTING_KEYS, type UpdatePlatformModelDto } from "shared";
 import { ModelBillingService } from './model-billing.service';
 import { z } from 'zod';
 import { localError, sanitizeError } from '../../common/errors/error-diagnostics';
@@ -165,14 +165,13 @@ export class ModelService {
 
   /**
    * 管理端：列出平台全部模型（含禁用与失效）。
-   * 附带 hasPricing 标记 —— 未配价的模型启用后按保底价计费，
-   * 前端据此显示警示，提醒尽快在 MODEL_PRICING 补上真实价格。
+   * 价格由算力平台管理，本地历史价格字段不再作为有效配置返回。
    */
   async listAll() {
     const rows = await this.prisma.platformModel.findMany({
       orderBy: [{ sortOrder: "asc" }, { modelId: "asc" }],
     });
-    return rows.map((r) => ({ ...r, hasPricing: hasPricing(r.modelId) }));
+    return rows.map((r) => ({ ...r, isFree: false, hasPricing: false, pricingInputPer1M: null, pricingOutputPer1M: null }));
   }
 
   /**
@@ -209,8 +208,8 @@ export class ModelService {
       description: r.description,
       contextLength: r.contextLength,
       maxOutputTokens: r.maxOutputTokens,
-      pricingInputPer1M: r.pricingInputPer1M?.toNumber() ?? null,
-      pricingOutputPer1M: r.pricingOutputPer1M?.toNumber() ?? null,
+      pricingInputPer1M: null,
+      pricingOutputPer1M: null,
       supportedFeatures: r.supportedFeatures,
     }));
   }
@@ -226,11 +225,12 @@ export class ModelService {
 
   // ── 修改 ────────────────────────────────────────────────────────────────
 
-  /** 管理端：更新单个模型（启用状态 / 活动免费 / 显示名 / 排序）。 */
+  /** 管理端：更新单个模型（启用状态 / 显示名 / 排序）。 */
   async updateModel(
     id: string,
     data: UpdatePlatformModelDto,
   ) {
+    if (data.isFree !== undefined) throw new BadRequestException('模型费用由算力平台管理，SEP 不再设置活动免费');
     const found = await this.prisma.platformModel.findUnique({ where: { id } });
     if (!found) throw new NotFoundException(`Model ${id} not found`);
     if (data.enabled === true && found.isStale) {
@@ -243,11 +243,10 @@ export class ModelService {
         ...(data.enabled !== undefined && { enabled: data.enabled }),
         ...(data.label !== undefined && { label: data.label }),
         ...(data.sortOrder !== undefined && { sortOrder: data.sortOrder }),
-        ...(data.isFree !== undefined && { isFree: data.isFree }),
       },
     });
     // 与 listAll 保持同样的返回结构，避免前端 PlatformModel 类型与实际响应不一致
-    return { ...updated, hasPricing: hasPricing(updated.modelId) };
+    return { ...updated, isFree: false, hasPricing: false, pricingInputPer1M: null, pricingOutputPer1M: null };
   }
 
   /** 管理端：测试模型可用性（发送一个简单的测试消息）。 */

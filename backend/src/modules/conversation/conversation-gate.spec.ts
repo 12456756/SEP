@@ -136,11 +136,8 @@ describe("ConversationStreamService —— 逐条消息的额度闸门", () => {
 
     // 越过闸门后才会去拿锁 —— 拿到哨兵就证明这一轮没被拦
     expect(error).toBe(REACHED_LOCK);
-    expect(events).toHaveLength(1);
-    expect(events[0].event).toBe("notice");
-    const data = events[0].data as Record<string, unknown>;
-    expect(data.code).toBe("COMPUTE_SELF_PAID");
-    expect(data.personalBalanceCNY).toBe("20.00");
+    // Payment notices wait for model content, so a later initial 429 can remain HTTP 429.
+    expect(events).toHaveLength(0);
   });
 
   it("企业资金可用时不多发事件，直接进入正常流程", async () => {

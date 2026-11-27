@@ -72,7 +72,7 @@ describe('automatic media discovery → stored contract → authorized runtime (
     expect(f.prisma.enterpriseModelConfig.upsert).not.toHaveBeenCalled();
     f.authorize({ enabledProfileIds: [row.profileId], defaultProfileId: row.profileId, maxOutputs: 2 });
     expect(await f.image.getRuntimeMedia('ent-1')).toMatchObject({ executionAvailable: false, profiles: [] });
-    f.imageAdapter.pricing.mockResolvedValue({ amount_usd: '0.04' });
+    f.imageAdapter.pricing.mockResolvedValue({ currency: 'CNY', amount_cny: '0.280000' });
     await f.image.verifyProfile(row.profileId, { expectedConfigVersion: row.configVersion });
     await f.image.updateProfile(row.profileId, { expectedConfigVersion: row.configVersion, enabled: true });
     const runtime = await f.image.getRuntimeMedia('ent-1');
@@ -98,7 +98,7 @@ describe('automatic media discovery → stored contract → authorized runtime (
     expect(await f.video.getRuntimeVideo('ent-1')).toMatchObject({ executionAvailable: false, profiles: [] });
     f.enable();
     expect(await f.video.getRuntimeVideo('ent-1')).toMatchObject({ executionAvailable: false, profiles: [] });
-    f.videoAdapter.pricing.mockResolvedValue({ amount_usd: '0.12' });
+    f.videoAdapter.pricing.mockResolvedValue({ currency: 'CNY', amount_cny: '0.840000' });
     await f.video.verifyProfile(row.profileId, { expectedConfigVersion: row.configVersion });
     await f.video.updateProfile(row.profileId, { expectedConfigVersion: row.configVersion, enabled: true });
     const runtime = await f.video.getRuntimeVideo('ent-1');

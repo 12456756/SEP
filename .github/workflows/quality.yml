@@ -9,7 +9,28 @@ concurrency:
   group: quality-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
+  deployment-contract:
+    name: Deployment script regression checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check release quality guard and Prisma packaging
+        run: node --test scripts/check-release-quality.test.cjs deploy/standalone/prisma-client-artifact.test.cjs
+      - name: Check transfer and rollback safety
+        run: |
+          python3 -m unittest discover -s deploy/standalone -p 'test_blue_green.py' -v
+          bash -n scripts/deploy-standalone.sh deploy/standalone/sep-deploy.sh deploy/production/sep-deploy.sh
+          bash scripts/test-deploy-transfer.sh
+          bash deploy/standalone/test-sep-deploy.sh
+          bash deploy/production/test-sep-deploy.sh
   quality:
     name: Lint, typecheck, test & build
     runs-on: ubuntu-latest

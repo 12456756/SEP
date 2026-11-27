@@ -56,7 +56,7 @@ export class ModelController {
   @UseGuards(RolesGuard)
   @Roles('ADMIN')
   @ApiOperation({ summary: '更新模型（启用状态/活动免费开关/显示名/排序，仅管理员）' })
-  @ApiResponse({ status: 200, description: '更新后的模型，包含 isFree 活动免费配置' })
+  @ApiResponse({ status: 200, description: '更新后的模型；模型费用统一由算力平台管理' })
   @ApiResponse({ status: 400, description: '模型配置字段无效' })
   update(
     @Param('id') id: string,

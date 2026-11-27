@@ -119,7 +119,7 @@ export const UpdatePlatformModelDtoSchema = z.object({
 }).strict();
 export type UpdatePlatformModelDto = z.infer<typeof UpdatePlatformModelDtoSchema>;
 
-/** 仅由服务端生成，冻结调用开始时的单价、倍率和汇率。 */
+/** Historical local pricing snapshots are readable for audit only, never for new charges. */
 export const ModelBillingSnapshotSchema = z.object({
   paymentMode: PaymentModeSchema.optional(),
   modelId: z.string().min(1),

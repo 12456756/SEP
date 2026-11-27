@@ -7,7 +7,10 @@ export const MediaSubmissionStatusSchema = z.enum([
 export const MediaReceiptOperationSchema = z.enum(['create', 'query', 'cancel', 'download', 'pricing', 'usage']);
 export const MediaBillingEvidenceSchema = z.object({
   status: z.enum(['pending', 'settled', 'not_charged', 'unknown', 'not_applicable']),
-  actualCostUsd: z.string().regex(/^\d+(?:\.\d{1,12})?$/).nullable(), error: MediaJsonValueSchema.optional(),
+  actualCostCny: z.string().regex(/^\d+(?:\.\d{1,6})?$/).nullable().optional(),
+  /** Historical cached receipts only; never used to calculate or confirm fees. */
+  actualCostUsd: z.string().regex(/^\d+(?:\.\d{1,12})?$/).nullable().optional(),
+  error: MediaJsonValueSchema.optional(),
 }).strict();
 
 export const MediaExecutionEvidenceSchema = z.object({

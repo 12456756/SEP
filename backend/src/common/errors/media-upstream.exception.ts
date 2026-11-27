@@ -9,6 +9,14 @@ export class MediaUpstreamException extends UpstreamHttpException {
   }
 }
 
+export function mediaOperationException(failure: MediaUpstreamError,
+  receipt: { receiptId?: string; clientRequestId?: string }): MediaUpstreamException {
+  return new MediaUpstreamException(failure, { ...failure.headers,
+    ...(receipt.receiptId ? { 'X-SEP-Receipt-ID': receipt.receiptId } : {}),
+    ...(receipt.clientRequestId ? { 'X-SEP-Client-Request-ID': receipt.clientRequestId } : {}),
+  });
+}
+
 export function mediaFailure(error: unknown): MediaUpstreamError {
   if (error instanceof UpstreamHttpException) return { ...error.upstreamError, headers: error.diagnosticHeaders };
   if (error instanceof HttpException) return { status: error.getStatus(), body: exceptionDetails(error) };

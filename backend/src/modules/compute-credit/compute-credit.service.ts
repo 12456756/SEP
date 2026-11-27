@@ -26,8 +26,8 @@ import {
   type ModelBillingSnapshot,
   type PaymentMode,
 } from "shared";
-import { calculateBilledCost, ModelBillingService } from '../model/model-billing.service';
-import { ComputeSettlementDecisionSchema, ModelBillingSnapshotSchema, PaymentModeSchema } from 'shared';
+import { ModelBillingService } from '../model/model-billing.service';
+import { ComputeSettlementDecisionSchema, PaymentModeSchema } from 'shared';
 import { ComputeIntegrationService } from '../compute-integration/compute-integration.service';
 import { readPaymentMode } from './payment-preference';
 import type {
@@ -274,18 +274,6 @@ export class ComputeCreditService {
     const paymentMode = typeof model === 'object' ? model.paymentMode ?? 'AUTO'
       : userId ? await readPaymentMode(this.prisma, enterpriseId, userId) : 'AUTO';
     const enterpriseMode = await this.integrations?.isEnterpriseMode(enterpriseId) ?? false;
-    if (model && !enterpriseMode) {
-      const free = typeof model === 'string'
-        ? (await this.prisma.platformModel.findUnique({ where: { modelId: model }, select: { isFree: true } }))?.isFree === true
-        : model.billingMultiplier === 0;
-      if (free) {
-        return {
-          allowed: true, enterpriseFundsAllowed: true, creditRemainingCNY: 0,
-          walletBalanceCNY: 0, memberWalletBalanceCNY: 0, totalAvailableCNY: 0,
-          personalBalanceCNY: 0,
-        };
-      }
-    }
     if (paymentMode === 'PERSONAL_ONLY') {
       const balance = userId ? await this.personalWallet.getBalance(userId) : new Decimal(0);
       return {
@@ -400,24 +388,23 @@ export class ComputeCreditService {
    * 对话前 `check` 的结论 —— 那之间隔着一整次模型调用，同一个人的并发对话早把
    * 用量改了；闸门只在检查时生效、扣费时不生效，等于额度形同虚设。
    *
-   * 幂等：以 `sessionId:messageId` 为业务键，唯一约束兜底。流式对话的网络重试
+   * 幂等：以算力平台执行 ID 为业务键，唯一约束兜底。流式对话的网络重试
    * 会重复触发计费，靠调用方自觉挡不住 —— 命中唯一约束即视为已入账。
    */
   async chargeUsage(params: ChargeUsageParams): Promise<ChargeUsageResult> {
-    const idempotencyKey = params.computeExecutionId ? `compute:${params.computeExecutionId}` : `${params.sessionId}:${params.messageId}`;
-    const execution = params.computeExecutionId ? await this.prisma.computeIntegrationExecution.findUnique({ where: { id: params.computeExecutionId } }) : null;
-    if (params.computeExecutionId && (!execution || execution.enterpriseId !== params.enterpriseId || execution.kind !== 'chat'
-      || execution.feeStatus !== 'FINAL' || execution.grossCny === null)) throw new ConflictException('算力平台尚未确认该次模型调用的最终人民币费用');
-    if (!execution && !params.billingSnapshot && await this.integrations?.isEnterpriseMode(params.enterpriseId)) throw new ConflictException('企业模式必须使用算力执行费用结算');
-    const billingSnapshot = execution ? null : params.billingSnapshot
-      ? ModelBillingSnapshotSchema.parse(params.billingSnapshot)
-      : await this.getBillingSnapshot(params.modelId);
-    if (billingSnapshot && billingSnapshot.modelId !== params.modelId) throw new BadRequestException('模型计费快照不匹配');
-    const cost = billingSnapshot ? calculateBilledCost(billingSnapshot, params.inputTokens, params.outputTokens) : null;
-    const rate = billingSnapshot?.rate;
-    const costCNY = money(execution ? execution.grossCny : cost.costCNY);
-    if (!costCNY.isFinite() || costCNY.lt(0) || costCNY.gt('99999999.999999')) throw new ConflictException('实际费用超出本地账本范围，需人工对账');
-    const paymentMode = execution ? PaymentModeSchema.parse((execution.fundingContext as { paymentMode?: string })?.paymentMode ?? 'AUTO') : billingSnapshot?.paymentMode ?? 'AUTO';
+    if (!params.computeExecutionId || !this.integrations) throw new ConflictException({ code: 'COMPUTE_FINAL_FEE_REQUIRED',
+      message: '结算必须关联算力平台最终人民币费用，不能根据 Token、美元单价或历史快照计算' });
+    const idempotencyKey = `compute:${params.computeExecutionId}`;
+    const execution = await this.prisma.computeIntegrationExecution.findUnique({ where: { id: params.computeExecutionId } });
+    if (!execution || execution.enterpriseId !== params.enterpriseId || execution.kind !== 'chat'
+      || execution.feeStatus !== 'FINAL' || execution.grossCny === null || !execution.billId || !execution.billVersion) {
+      throw new ConflictException('算力平台尚未确认该次模型调用的最终人民币费用');
+    }
+    const context = execution.fundingContext as { modelId?: string; userId?: string; paymentMode?: string };
+    if (context?.modelId !== params.modelId || context?.userId !== params.userId) throw new ConflictException('算力费用的模型或付款用户与原执行不一致');
+    const costCNY = new Decimal(execution.grossCny);
+    if (!costCNY.isFinite() || costCNY.lt(0) || costCNY.gt('99999999.999999') || costCNY.decimalPlaces() > 6) throw new ConflictException('实际费用超出本地账本范围，需人工对账');
+    const paymentMode = PaymentModeSchema.parse(context.paymentMode ?? 'AUTO');
     const description = `对话算力消费（${params.modelId}，${params.inputTokens}+${params.outputTokens} tokens）`;
 
     // 钱包必须在事务前就位：事务内新建钱包会和乐观锁的版本比对纠缠在一起
@@ -570,10 +557,10 @@ export class ComputeCreditService {
             modelId: params.modelId,
             inputTokens: params.inputTokens,
             outputTokens: params.outputTokens,
-            inputPriceUsdPerMillion: cost ? money(cost.inputPriceUsdPerMillion) : null,
-            outputPriceUsdPerMillion: cost ? money(cost.outputPriceUsdPerMillion) : null,
-            usdToCnyRate: rate === undefined ? null : new Decimal(rate).toDecimalPlaces(4),
-            fallbackPricing: cost?.isFallback ?? false,
+            inputPriceUsdPerMillion: null,
+            outputPriceUsdPerMillion: null,
+            usdToCnyRate: null,
+            fallbackPricing: false,
             costCNY,
             creditPaidCNY: creditPaid,
             memberWalletPaidCNY: memberWalletResult.paid,
@@ -609,7 +596,7 @@ export class ComputeCreditService {
             walletPaidCNY: walletResult.paid,
             personalPaidCNY: personalResult.paid,
             unpaidCNY: unpaid,
-            fallbackPricing: cost?.isFallback ?? false,
+            fallbackPricing: false,
           },
           // 通知判定所需的一切都在这儿了：闸门刚读出的额度快照 + 这一笔的实际去向。
           // 攒成一个对象带出事务，是为了让「要不要发通知」这一步不必再打库。

@@ -55,9 +55,9 @@ function input(operation: 'generate' | 'edit' = 'generate') {
 function price(overrides: Record<string, unknown> = {}) {
   const now = Date.now();
   return {
-    object: 'sub2api.image_pricing', schema_version: 1, currency: 'USD', model: 'gpt-image-2',
+    object: 'sub2api.image_pricing', schema_version: 1, currency: 'CNY', contract_version: 1, quote_scope: 'platform_validation', model: 'gpt-image-2',
     operation: 'generate', size: '1024x1024', n: 1, quality: 'medium', billing_mode: 'image',
-    pricing_status: 'quoted', pricing_source: 'live-contract', amount_usd: '0.040000',
+    pricing_status: 'quoted', pricing_source: 'live-contract', amount_cny: '0.280000',
     pricing_version: 'price-v1', effective_rate_multiplier: 1,
     observed_at: new Date(now).toISOString(), expires_at: new Date(now + 60_000).toISOString(),
     ...overrides,
@@ -268,7 +268,7 @@ describe('Sub2apiImageAdapter', () => {
   it('accepts a current quoted non-token price matching the request', async () => {
     fetchMock.mockResolvedValueOnce(response(price()));
     const result = await adapter.pricing(input());
-    expect(result.amount_usd).toBe('0.040000');
+    expect(result.amount_cny).toBe('0.280000');
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, options] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe('https://media.example.test/v1/sub2api/images/pricing');
@@ -297,7 +297,7 @@ describe('Sub2apiImageAdapter', () => {
   it('accepts an effective fallback charge explicitly attested by sub2api customer billing', async () => {
     fetchMock.mockResolvedValueOnce(response(price({ pricing_source: 'fallback', pricing_authority: 'sub2api_customer_billing' })));
     await expect(adapter.pricing(input())).resolves.toMatchObject({
-      pricing_source: 'fallback', pricing_authority: 'sub2api_customer_billing', amount_usd: '0.040000',
+      pricing_source: 'fallback', pricing_authority: 'sub2api_customer_billing', amount_cny: '0.280000',
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -310,7 +310,7 @@ describe('Sub2apiImageAdapter', () => {
     ['unknown source despite authority', { pricing_source: 'unknown-default-fallback', pricing_authority: 'sub2api_customer_billing' }],
     ['token billing despite authority', { billing_mode: 'token', pricing_source: 'fallback', pricing_authority: 'sub2api_customer_billing' }],
     ['token billing', { billing_mode: 'token' }],
-    ['missing amount', { amount_usd: null }],
+    ['missing amount', { amount_cny: null }],
     ['wrong model', { model: 'other-image-model' }],
     ['wrong operation', { operation: 'edit' }],
     ['wrong size', { size: '1536x1024' }],

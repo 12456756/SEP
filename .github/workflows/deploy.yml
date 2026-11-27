@@ -2,6 +2,20 @@ name: Deploy to Production
 
 on:
   workflow_dispatch:
+    inputs:
+      action:
+        description: 'rehearse: clone DB only; stage: maintenance + final migration; activate: open verified candidate; rollback: restore retained group'
+        type: choice
+        default: rehearse
+        options: [rehearse, stage, activate, rollback, status]
+      release_tag:
+        description: 'Copy the release tag from rehearsal; required for stage/activate/rollback/status'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
 
 # 同一时间只跑一个部署，避免并发冲突
 concurrency:
@@ -14,10 +28,34 @@ jobs:
     name: Deploy standalone release
     runs-on: ubuntu-latest
     steps:
+      - name: Require production main
+        env:
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          [[ "$RELEASE_REPOSITORY" == 12456756/SEP && "$RELEASE_REF" == refs/heads/main ]] || {
+            echo 'Production releases must use 12456756/SEP main.' >&2
+            exit 1
+          }
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Require successful Quality Gates for this commit
+        if: inputs.action == 'rehearse' || inputs.action == 'stage'
+        timeout-minutes: 25
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/check-release-quality.cjs
       - name: Deploy standalone release
         env:
           GITHUB_SHA: ${{ github.sha }}
+          SEP_DEPLOY_ACTION: ${{ inputs.action }}
+          SEP_DEPLOY_TAG: ${{ inputs.release_tag }}
           SERVER_HOST: ${{ secrets.SERVER_HOST }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
           SERVER_PORT: ${{ secrets.SERVER_PORT || 22 }}

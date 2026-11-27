@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { MediaExecutionEvidence, MediaJsonValue } from 'shared';
+import type { MediaExecutionEvidence, MediaJsonValue, MediaUpstreamError } from 'shared';
 import { MediaJsonValueSchema, MediaReceiptOperationSchema, MediaSubmissionStatusSchema } from 'shared';
 import { MediaUpstreamException, mediaFailure, protectMediaCredential, readMediaUpstreamError } from '../../common/errors/media-upstream.exception';
 import { upstreamHeaders } from '../../common/errors/upstream-http.exception';
@@ -11,6 +11,17 @@ export const MEDIA_SAVE_GRACE_MS = 10_000;
 export const VIDEO_CREATE_TIMEOUT_MS = 300_000;
 export const IMAGE_CREATE_TIMEOUT_MS = 90_000;
 const identifier = z.string().regex(/^[A-Za-z0-9_.:-]{1,256}$/);
+const LongdaoBillingSchema = z.object({
+  status: z.enum(['pending', 'settled', 'not_charged', 'unknown', 'not_applicable']),
+  actual_cost_cny: z.string().regex(/^\d+(?:\.\d{1,6})?$/).nullable().optional(),
+  error: MediaJsonValueSchema.optional(),
+}).passthrough().superRefine((value, ctx) => {
+  const amount = value.actual_cost_cny;
+  if (amount != null && (value.status === 'not_charged' ? !/^0(?:\.0+)?$/.test(amount)
+    : ['pending', 'unknown', 'not_applicable'].includes(value.status))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['actual_cost_cny'], message: 'Inconsistent Longdao CNY billing evidence' });
+  }
+});
 export const LongdaoReceiptMetadataFields = {
   request_id: identifier.optional(), task_id: identifier.nullable().optional(),
   operation: z.string().optional(), receipt_operation: MediaReceiptOperationSchema.optional(),
@@ -18,8 +29,7 @@ export const LongdaoReceiptMetadataFields = {
   status: z.enum(['queued', 'processing', 'in_progress', 'completed', 'failed', 'cancelled']).nullable().optional(),
   is_final: z.boolean().nullable().optional(), status_observed_at: z.number().int().nonnegative().nullable().optional(),
   status_source: z.enum(['upstream', 'cached']).nullable().optional(),
-  billing: z.object({ status: z.enum(['pending', 'settled', 'not_charged', 'unknown', 'not_applicable']),
-    actual_cost_usd: z.string().regex(/^\d+(?:\.\d{1,12})?$/).nullable(), error: MediaJsonValueSchema.optional() }).passthrough().optional(),
+  billing: LongdaoBillingSchema.optional(),
   error: MediaJsonValueSchema.optional(), operation_error: MediaJsonValueSchema.optional(),
   task_error: MediaJsonValueSchema.optional(), submission_retry: MediaJsonValueSchema.optional(),
   submission_error: MediaJsonValueSchema.optional(), submission_record_error: MediaJsonValueSchema.optional(),
@@ -34,22 +44,22 @@ export const LongdaoMediaContractSchema = z.object({
   status: z.enum(['queued', 'processing', 'in_progress', 'completed', 'failed', 'cancelled']).nullable(),
   is_final: z.boolean().nullable().optional(), status_observed_at: z.number().int().nonnegative().nullable().optional(),
   status_source: z.enum(['upstream', 'cached']).nullable().optional(),
-  billing: z.object({ status: z.enum(['pending', 'settled', 'not_charged', 'unknown', 'not_applicable']),
-    actual_cost_usd: z.string().regex(/^\d+(?:\.\d{1,12})?$/).nullable(), error: MediaJsonValueSchema.optional() }).passthrough(),
+  billing: LongdaoBillingSchema,
   error: MediaJsonValueSchema.optional(), operation_error: MediaJsonValueSchema.optional(),
   task_error: MediaJsonValueSchema.optional(), submission_retry: MediaJsonValueSchema.optional(),
 }).passthrough().superRefine((value, ctx) => {
-  if (value.billing.status === 'not_charged' && !/^0(?:\.0+)?$/.test(value.billing.actual_cost_usd ?? '') ||
-      value.billing.status === 'settled' && value.billing.actual_cost_usd === null ||
-      ['pending', 'unknown', 'not_applicable'].includes(value.billing.status) && value.billing.actual_cost_usd !== null) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['billing'], message: 'Inconsistent Longdao billing evidence' });
-  }
   if (value.submission_status === 'unobserved' && (value.task_id != null || value.id != null || value.status !== null)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['submission_status'], message: 'Unobserved operations cannot supply task evidence' });
   }
 });
 export type LongdaoMediaContract = z.infer<typeof LongdaoMediaContractSchema>;
 export type LongdaoMediaResult = { contract: LongdaoMediaContract; httpStatus: number; headers: Record<string, string>; originalBody?: MediaJsonValue };
+
+/** Only this operation's HTTP response determines its failure, never a historical submission status. */
+export function mediaOperationFailure(result: LongdaoMediaResult): MediaUpstreamError | undefined {
+  return result.httpStatus >= 400 ? { status: result.httpStatus,
+    body: result.originalBody ?? MediaJsonValueSchema.parse(result.contract), headers: result.headers } : undefined;
+}
 
 export function recoverableTaskId(failure: unknown, requestId: string): string | null {
   const body = mediaFailure(failure).body;
@@ -98,7 +108,7 @@ export function executionEvidence(result: LongdaoMediaResult): MediaExecutionEvi
     requestId: c.request_id, taskId: c.task_id ?? null, submissionStatus: c.submission_status,
     generationStatus: status, isFinal: c.is_final ?? (status === null ? null : taskFinal),
     observedAt: c.status_observed_at ?? null, statusSource: c.status_source ?? null,
-    billing: { status: c.billing.status, actualCostUsd: c.billing.actual_cost_usd,
+    billing: { status: c.billing.status, actualCostCny: c.billing.actual_cost_cny ?? null,
       ...(c.billing.error !== undefined ? { error: c.billing.error } : {}) },
     ...(operation ? { operation } : {}),
     ...(submissionError != null ? { submissionError } : {}),

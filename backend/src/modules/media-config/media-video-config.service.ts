@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, InternalServerErrorException, Logger, NotFoundException, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { MediaModelProfile, Prisma } from '@prisma/client';
+import { Decimal } from '@prisma/client/runtime/library';
 import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -221,13 +222,17 @@ export class MediaVideoConfigService {
       if (profile.modelId !== 'minimax-h3' && !dto.verificationSpec) {
         throw new BadRequestException('新模型须显式提供 verificationSpec 校验通用视频协议，不能从目录推断规格');
       }
-      for (const operation of profile.operations) await this.videoAdapter.pricing(connection, {
-        protocolVersion: 3, specRevision: 1,
-        profileId: profile.profileId, configVersion: profile.configVersion, operation,
-        referenceIds: operation === 'image-to-video' ? ['verification-only'] : [],
-        ...(operation === 'video-to-video' ? { videoReferenceIds: ['verification-only'] } : {}), creativeBrief: 'Configuration verification only',
-        requestedSpec,
-      }, profile.modelId);
+      for (const operation of profile.operations) {
+        const price = await this.videoAdapter.pricing(connection, {
+          protocolVersion: 3, specRevision: 1,
+          profileId: profile.profileId, configVersion: profile.configVersion, operation,
+          referenceIds: operation === 'image-to-video' ? ['verification-only'] : [],
+          ...(operation === 'video-to-video' ? { videoReferenceIds: ['verification-only'] } : {}), creativeBrief: 'Configuration verification only',
+          requestedSpec,
+        }, profile.modelId, true);
+        if (price.currency !== 'CNY' || price.amount_cny == null || !new Decimal(price.amount_cny).isFinite()
+          || new Decimal(price.amount_cny).lt(0)) throw new ServiceUnavailableException('算力平台没有返回有效的人民币报价');
+      }
     }
     const updated = await this.prisma.mediaModelProfile.updateMany({
       where: { profileId, kind: 'video', configVersion: profile.configVersion },
