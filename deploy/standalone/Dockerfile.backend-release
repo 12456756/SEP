@@ -7,7 +7,9 @@ FROM ${SEP_BUILDER_BASE_IMAGE} AS builder
 WORKDIR /app
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-runtime /usr/local/include/node /usr/local/include/node
-RUN apk add --no-cache python3 make g++
+ARG SEP_ALPINE_MIRROR=https://mirrors.huaweicloud.com/alpine
+RUN sed -i "s|https://dl-cdn.alpinelinux.org/alpine|${SEP_ALPINE_MIRROR}|g" /etc/apk/repositories && \
+    apk add --no-cache python3 make g++
 ENV npm_config_nodedir=/usr/local
 COPY . .
 RUN sed -i '/^use-node-version=/d' .npmrc && \
