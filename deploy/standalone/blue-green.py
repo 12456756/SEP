@@ -12,6 +12,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from urllib.parse import quote
 
@@ -155,7 +156,9 @@ def render_caddy(original, template, maintenance=False):
         raise RuntimeError('Invalid AI block')
     if maintenance:
         sep = '''sep.longdaoec.com {
-    handle /sep-client/* { reverse_proxy sep-downloads:80 }
+    handle /sep-client/* {
+        reverse_proxy sep-downloads:80
+    }
     handle {
         header Retry-After 60
         respond "SEP is updating. Please retry shortly." 503
@@ -275,11 +278,17 @@ class Release:
             time.sleep(2)
         raise RuntimeError('Container not healthy: ' + name)
 
+    def validate_caddy(self, text):
+        temporary_root = ROOT / 'tmp'
+        temporary_root.mkdir(mode=0o700, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix='sep-caddy-', dir=temporary_root) as directory:
+            candidate = Path(directory) / 'Caddyfile'
+            candidate.write_text(text)
+            run('docker', 'cp', candidate, 'sep-caddy:/tmp/sep-bg-validate.caddy')
+            run('docker', 'exec', 'sep-caddy', 'caddy', 'validate', '--config', '/tmp/sep-bg-validate.caddy', '--adapter', 'caddyfile')
+
     def caddy(self, text):
-        candidate = self.path / 'Caddyfile.validate'
-        candidate.write_text(text)
-        run('docker', 'cp', candidate, 'sep-caddy:/tmp/sep-bg-validate.caddy')
-        run('docker', 'exec', 'sep-caddy', 'caddy', 'validate', '--config', '/tmp/sep-bg-validate.caddy', '--adapter', 'caddyfile')
+        self.validate_caddy(text)
         # Keep the inode because the edge container bind-mounts this file.
         (ROOT / 'deploy/Caddyfile').write_text(text)
         run('docker', 'exec', 'sep-caddy', 'caddy', 'reload', '--config', '/etc/caddy/Caddyfile')
@@ -308,6 +317,10 @@ class Release:
             names = run('docker', 'container', 'ls', '-a', '--format', '{{.Names}}').splitlines()
             if 'sep-blue-backend' in names or 'sep-blue-web' in names:
                 raise RuntimeError('Retained blue containers already exist; never overwrite them')
+            original = (ROOT / 'deploy/Caddyfile').read_text()
+            self.validate_caddy(render_caddy(original, '', maintenance=True))
+            self.validate_caddy(render_caddy(original, (SOURCE / 'deploy/standalone/Caddyfile').read_text()))
+            self.validate_caddy(original)
 
     def create(self, images):
         global LOG_PATH

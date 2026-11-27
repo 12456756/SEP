@@ -91,6 +91,20 @@ class RoutingChecks(unittest.TestCase):
         self.assertIn('sep-downloads:80', result)
         self.assertIn('other.example.com', result)
         self.assertNotIn('sep-blue-backend', result)
+        self.assertIn('handle /sep-client/* {\n        reverse_proxy sep-downloads:80\n    }', result)
+
+    def test_invalid_caddy_config_never_replaces_live_routing(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(bg, 'ROOT', Path(directory)):
+            deploy = Path(directory) / 'deploy'
+            deploy.mkdir()
+            live = deploy / 'Caddyfile'
+            live.write_text(self.original)
+            release = bg.Release('abcdef123456', 'final')
+            with patch.object(release, 'validate_caddy', side_effect=RuntimeError('invalid Caddyfile')), patch.object(bg, 'run') as run:
+                with self.assertRaisesRegex(RuntimeError, 'invalid Caddyfile'):
+                    release.caddy('invalid')
+                run.assert_not_called()
+            self.assertEqual(live.read_text(), self.original)
 
     def test_missing_site_boundaries_fail(self):
         with self.assertRaises(RuntimeError):
