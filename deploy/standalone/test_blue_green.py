@@ -13,6 +13,16 @@ spec.loader.exec_module(bg)
 
 
 class DataChecks(unittest.TestCase):
+    def test_backend_build_uses_embedded_node22_without_pnpm_musl_download(self):
+        dockerfile = (bg.SOURCE / 'deploy/standalone/Dockerfile.backend-release').read_text(encoding='utf-8')
+        self.assertEqual(dockerfile.count('COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node'), 2)
+        self.assertIn("sed -i '/^use-node-version=/d' .npmrc", dockerfile)
+        self.assertIn("process.versions.node.split('.')[0] !== '22'", dockerfile)
+        self.assertIn('COPY --from=node-runtime /usr/local/include/node /usr/local/include/node', dockerfile)
+        self.assertIn('apk add --no-cache python3 make g++', dockerfile)
+        self.assertIn('ENV npm_config_nodedir=/usr/local', dockerfile)
+        self.assertLess(dockerfile.index("sed -i"), dockerfile.index('CI=true pnpm install'))
+
     def test_file_audit_detects_changes_with_unchanged_file_size(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

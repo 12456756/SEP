@@ -1,10 +1,18 @@
 # Reuse the build toolchain, then install the release's locked dependencies.
 ARG SEP_BUILDER_BASE_IMAGE=sep-migrator:42fc2644a38b
 ARG SEP_RUNNER_BASE_IMAGE=sep-green-backend:42fc2644a38b
+ARG SEP_NODE_RUNTIME_IMAGE=sep-green-web:42fc2644a38b
+FROM ${SEP_NODE_RUNTIME_IMAGE} AS node-runtime
 FROM ${SEP_BUILDER_BASE_IMAGE} AS builder
 WORKDIR /app
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-runtime /usr/local/include/node /usr/local/include/node
+RUN apk add --no-cache python3 make g++
+ENV npm_config_nodedir=/usr/local
 COPY . .
-RUN CI=true pnpm install --frozen-lockfile --filter backend... && \
+RUN sed -i '/^use-node-version=/d' .npmrc && \
+    node -e "if (process.versions.node.split('.')[0] !== '22') throw new Error('Node 22 is required')" && \
+    CI=true pnpm install --frozen-lockfile --filter backend... && \
     pnpm --filter backend exec prisma generate && pnpm --filter backend run build && \
     rm -rf /prod-bundle && pnpm deploy --filter backend --prod /prod-bundle
 COPY backend/prisma /prod-bundle/prisma
@@ -16,6 +24,7 @@ CMD ["sh", "-c", "pnpm --filter backend exec prisma migrate deploy"]
 
 FROM ${SEP_RUNNER_BASE_IMAGE} AS runner
 USER root
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 RUN rm -rf /app/node_modules
 COPY --from=builder /prod-bundle/node_modules /app/node_modules
 COPY --from=builder /prod-bundle/package.json /app/package.json

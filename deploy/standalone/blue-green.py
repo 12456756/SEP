@@ -555,15 +555,19 @@ def old_migrator():
 
 
 def build_images(tag):
+    global LOG_PATH
+    LOG_PATH = ROOT / 'tmp' / ('blue-green-build-' + tag + '.private.log')
+    LOG_PATH.parent.mkdir(mode=0o700, exist_ok=True)
     images = {'backend': 'sep-blue-backend:' + tag, 'web': 'sep-blue-web:' + tag, 'migrator': 'sep-migrator:' + tag}
     names = run('docker', 'image', 'ls', '--format', '{{.Repository}}:{{.Tag}}').splitlines()
     if any(image in names for image in images.values()):
         raise RuntimeError('Immutable candidate image already exists')
-    backend, web, migrator = inspect(OLD_BACKEND)['Image'], inspect(OLD_WEB)['Image'], old_migrator()
+    backend, web, migrator = inspect(OLD_BACKEND)['Config']['Image'], inspect(OLD_WEB)['Config']['Image'], old_migrator()
     for target, name in [('migrator', images['migrator']), ('runner', images['backend'])]:
         print('Building ' + target, flush=True)
         run('docker', 'build', '--pull=false', '--build-arg', 'SEP_BUILDER_BASE_IMAGE=' + migrator,
-            '--build-arg', 'SEP_RUNNER_BASE_IMAGE=' + backend, '--target', target,
+            '--build-arg', 'SEP_RUNNER_BASE_IMAGE=' + backend,
+            '--build-arg', 'SEP_NODE_RUNTIME_IMAGE=' + web, '--target', target,
             '-f', SOURCE / 'deploy/standalone/Dockerfile.backend-release', '-t', name, SOURCE)
     print('Building paired web image', flush=True)
     run('docker', 'build', '--pull=false', '--network=none', '--build-arg', 'SEP_WEB_BASE_IMAGE=' + web,
